@@ -120,6 +120,9 @@ dependencies {
   validatesRunner project(path: ":beam-sdks-java-core", configuration: "shadowTest")
   validatesRunner project(path: ":beam-runners-core-java", configuration: "shadowTest")
   validatesRunner project(path: project.path, configuration: "shadow")
+  //LYFT CUSTOM
+  shadow "org.apache.flink:flink-connector-kafka-0.11_2.11:1.5-lyft20180815"
+  shadow "org.apache.flink:flink-connector-kinesis_2.11:1.5-lyft20180815"
 }
 
 class ValidatesRunnerConfig {

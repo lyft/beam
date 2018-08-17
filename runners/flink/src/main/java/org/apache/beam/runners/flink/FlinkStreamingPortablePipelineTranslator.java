@@ -211,6 +211,11 @@ public class FlinkStreamingPortablePipelineTranslator
     // Remove once Reads can be wrapped in SDFs
     translatorMap.put(PTransformTranslation.READ_TRANSFORM_URN, this::translateRead);
 
+    //LYFT CUSTOM
+    LyftFlinkStreamingPortableTranslations customTranslations =
+        new LyftFlinkStreamingPortableTranslations();
+    customTranslations.addTo(translatorMap);
+
     this.urnToTransformTranslator = translatorMap.build();
   }
 
