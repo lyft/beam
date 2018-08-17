@@ -126,6 +126,9 @@ dependencies {
   validatesRunner project(path: ":sdks:java:core", configuration: "shadowTest")
   validatesRunner project(path: ":runners:core-java", configuration: "testRuntime")
   validatesRunner project(project.path)
+  //LYFT CUSTOM
+  compile "org.apache.flink:flink-connector-kafka-0.11_2.11:1.8-lyft20190407"
+  compile "com.lyft:streamingplatform-kinesis:1.3-SNAPSHOT"
 }
 
 class ValidatesRunnerConfig {
