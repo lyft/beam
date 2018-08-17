@@ -54,6 +54,26 @@ class Repositories {
 
       // Apache release snapshots
       maven { url "https://repository.apache.org/content/repositories/releases" }
+
+      //LYFT CUSTOM pull in the central repo override from settings, if any
+      def settingsXml = new File(System.getProperty('user.home'), '.m2/settings.xml')
+      if (settingsXml.exists()) {
+        def serverId = "lyft-releases"
+        def repo = new XmlSlurper().parse(settingsXml).'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
+        if (repo) {
+          maven {
+            url repo.url.text()
+            def m2SettingCreds = new XmlSlurper().parse(settingsXml).servers.server.find { server -> serverId.equals(server.id.text()) }
+            if (m2SettingCreds) {
+              credentials {
+                username m2SettingCreds.username.text()
+                password m2SettingCreds.password.text()
+              }
+            }
+          }
+        }
+      }
+
     }
 
     // Apply a plugin which provides the 'updateOfflineRepository' task that creates an offline
