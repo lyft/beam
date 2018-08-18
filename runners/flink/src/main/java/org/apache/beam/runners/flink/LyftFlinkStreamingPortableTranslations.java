@@ -18,11 +18,13 @@
 package org.apache.beam.runners.flink;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.auto.service.AutoService;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.util.Map;
 import java.util.Properties;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.runners.core.construction.NativeTransforms;
+import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.flink.FlinkStreamingPortablePipelineTranslator.PTransformTranslator;
 import org.apache.beam.runners.flink.FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext;
 import org.apache.beam.runners.flink.translation.types.CoderTypeInformation;
@@ -35,6 +37,8 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
+import org.apache.flink.streaming.connectors.kinesis.FlinkKinesisConsumer;
+import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,10 +48,23 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final Logger logger =
       LoggerFactory.getLogger(LyftFlinkStreamingPortableTranslations.class.getName());
 
+  private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
+  private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
+
+  @AutoService(NativeTransforms.IsNativeTransform.class)
+  public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
+    @Override
+    public boolean test(RunnerApi.PTransform pTransform) {
+      return FLINK_KAFKA_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
+    }
+  }
+
   public void addTo(
       ImmutableMap.Builder<String, PTransformTranslator<StreamingTranslationContext>>
           translatorMap) {
-    translatorMap.put("lyft:flinkKafkaInput", this::translateKafkaInput);
+    translatorMap.put(FLINK_KAFKA_URN, this::translateKafkaInput);
+    translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
   }
 
   private void translateKafkaInput(
@@ -91,7 +108,6 @@ public class LyftFlinkStreamingPortableTranslations {
     private static final long serialVersionUID = -1L;
 
     private final TypeInformation<WindowedValue<byte[]>> ti;
-    long cnt = 0;
 
     public ByteArrayWindowedValueSchema() {
       this.ti =
@@ -107,14 +123,80 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public WindowedValue<byte[]> deserialize(
         byte[] messageKey, byte[] message, String topic, int partition, long offset) {
-      cnt++;
-      System.out.println("###Kafka record: " + new String(message, Charset.defaultCharset()));
+      // System.out.println("###Kafka record: " + new String(message, Charset.defaultCharset()));
       return WindowedValue.valueInGlobalWindow(message);
     }
 
     @Override
     public boolean isEndOfStream(WindowedValue<byte[]> nextElement) {
       return false;
+    }
+  }
+
+  private void translateKinesisInput(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    String stream;
+    Properties properties = new Properties();
+    ObjectMapper mapper = new ObjectMapper();
+    try {
+      Map<String, Object> params =
+          mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+
+      Preconditions.checkNotNull(
+          stream = (String) params.get("stream"), "'stream' needs to be set");
+      Map<?, ?> consumerProps = (Map) params.get("properties");
+      Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+      properties.putAll(consumerProps);
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
+    }
+
+    logger.info("Kinesis consumer for stream {} with properties {}", stream, properties);
+
+    DataStreamSource<WindowedValue<byte[]>> source =
+        context
+            .getExecutionEnvironment()
+            .addSource(
+                new FlinkKinesisConsumer<>(
+                    stream, new KinesisByteArrayWindowedValueSchema(), properties));
+    context.addDataStream(Iterables.getOnlyElement(pTransform.getOutputsMap().values()), source);
+  }
+
+  /**
+   * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
+   * operators.
+   */
+  private static class KinesisByteArrayWindowedValueSchema
+      implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
+    private static final long serialVersionUID = -1L;
+
+    private final TypeInformation<WindowedValue<byte[]>> ti;
+
+    public KinesisByteArrayWindowedValueSchema() {
+      this.ti =
+          new CoderTypeInformation<>(
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
+    }
+
+    @Override
+    public TypeInformation<WindowedValue<byte[]>> getProducedType() {
+      return ti;
+    }
+
+    @Override
+    public WindowedValue<byte[]> deserialize(
+        byte[] recordValue,
+        String partitionKey,
+        String seqNum,
+        long approxArrivalTimestamp,
+        String stream,
+        String shardId)
+        throws IOException {
+      return WindowedValue.valueInGlobalWindow(recordValue);
     }
   }
 }
