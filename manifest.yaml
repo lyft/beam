@@ -1,0 +1,17 @@
+name: beam
+description: Lyft version of Apache Beam python package
+repository: git@github.com:lyft/beam.git
+credentials: true
+slack: '#noop'
+team_email: 'no-reply@lyft.com'
+deploy:
+  - name: staging
+    legacy: true
+    role: lyftpypi-staging-iad-deploy
+  - name: production
+    legacy: true
+    role: lyftpypi-production-iad-deploy
+    automatic: true
+languages:
+  - python
+image_type: library
