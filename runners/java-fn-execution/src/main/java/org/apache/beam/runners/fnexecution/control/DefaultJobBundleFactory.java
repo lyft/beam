@@ -39,10 +39,10 @@ import org.apache.beam.runners.fnexecution.artifact.BeamFileSystemArtifactRetrie
 import org.apache.beam.runners.fnexecution.control.ProcessBundleDescriptors.ExecutableProcessBundleDescriptor;
 import org.apache.beam.runners.fnexecution.control.SdkHarnessClient.BundleProcessor;
 import org.apache.beam.runners.fnexecution.data.GrpcDataService;
-import org.apache.beam.runners.fnexecution.environment.DockerEnvironmentFactory;
 import org.apache.beam.runners.fnexecution.environment.EmbeddedEnvironmentFactory;
 import org.apache.beam.runners.fnexecution.environment.EnvironmentFactory;
 import org.apache.beam.runners.fnexecution.environment.ExternalEnvironmentFactory;
+import org.apache.beam.runners.fnexecution.environment.LyftPythonEnvironmentFactory;
 import org.apache.beam.runners.fnexecution.environment.ProcessEnvironmentFactory;
 import org.apache.beam.runners.fnexecution.environment.RemoteEnvironment;
 import org.apache.beam.runners.fnexecution.logging.GrpcLoggingService;
@@ -93,8 +93,11 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     Map<String, EnvironmentFactory.Provider> environmentFactoryProviderMap =
         ImmutableMap.of(
             BeamUrns.getUrn(StandardEnvironments.Environments.DOCKER),
-            new DockerEnvironmentFactory.Provider(
-                PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions())),
+            // new DockerEnvironmentFactory.Provider(
+            //    PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions())),
+            // START LYFT CUSTOM
+            new LyftPythonEnvironmentFactory.Provider(jobInfo),
+            // END LYFT CUSTOM
             BeamUrns.getUrn(StandardEnvironments.Environments.PROCESS),
             new ProcessEnvironmentFactory.Provider(),
             BeamUrns.getUrn(StandardEnvironments.Environments.EXTERNAL),
