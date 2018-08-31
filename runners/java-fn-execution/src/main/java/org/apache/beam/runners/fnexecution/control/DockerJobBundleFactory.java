@@ -59,6 +59,9 @@ public class DockerJobBundleFactory extends JobBundleFactoryBase {
           new JobBundleFactoryFactory() {
             @Override
             public JobBundleFactory create(JobInfo jobInfo) throws Exception {
+              if (System.getProperty("lyft.useDockerJobBundleFactory") == null) {
+                return LyftProcessJobBundleFactory.create(jobInfo);
+              }
               return new DockerJobBundleFactory(jobInfo);
             }
           });
