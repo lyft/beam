@@ -48,7 +48,8 @@ import org.slf4j.LoggerFactory;
 public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
 
   /**
-   * Required since the super constructor calls getEnvironmentFactory the instance is initialized.
+   * Required since super constructor calls getEnvironmentFactory before instance is fully
+   * initialized.
    */
   private static ThreadLocal<JobInfo> JOB_INFO = new ThreadLocal<>();
 
