@@ -39,9 +39,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A {@link JobBundleFactory} that uses direct Python SDK harness environments. It assumes that all
- * dependencies are present on the host machine and does not support artifact retrieval. In the
- * Python development environment, simply run the JMV within the Python virtualenv.
+ * A {@link JobBundleFactory} that uses direct Python SDK harness process environments.
+ *
+ * <p>Assumes that all dependencies are present on the host machine and doesn't need to support
+ * artifact retrieval. In the Python development environment, simply run the JVM within the Python
+ * virtualenv.
  */
 public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
 
@@ -72,7 +74,7 @@ public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
       ControlClientPool.Source clientSource,
       IdGenerator idGenerator) {
 
-    return new LyftPythonEnvironmentFactory(
+    return new PythonEnvironmentFactory(
         Preconditions.checkNotNull(JOB_INFO.get(), "jobInfo is null"),
         controlServiceServer,
         loggingServiceServer,
@@ -82,8 +84,16 @@ public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
         clientSource);
   }
 
-  private static class LyftPythonEnvironmentFactory implements EnvironmentFactory {
-    private static final Logger LOG = LoggerFactory.getLogger(LyftPythonEnvironmentFactory.class);
+  private static class PythonEnvironmentFactory implements EnvironmentFactory {
+    private static final Logger LOG = LoggerFactory.getLogger(PythonEnvironmentFactory.class);
+
+    // the command that will be run via bash
+    // default assumes execution within already activated virtualenv
+    // env is added for debugging purposes, output is only visible when debug logging is enabled
+    private static final String SDK_HARNESS_BASH_CMD =
+        System.getProperty(
+            "lyft.pythonWorkerCmd", "env; python -m apache_beam.runners.worker.sdk_worker_main");
+    private static final int HARNESS_CONNECT_TIMEOUT_MINS = 5;
 
     private final JobInfo jobInfo;
     private final ProcessManager processManager;
@@ -94,7 +104,7 @@ public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
     private final IdGenerator idGenerator;
     private final ControlClientPool.Source clientSource;
 
-    private LyftPythonEnvironmentFactory(
+    private PythonEnvironmentFactory(
         JobInfo jobInfo,
         GrpcFnServer<FnApiControlClientPoolService> controlServiceServer,
         GrpcFnServer<GrpcLoggingService> loggingServiceServer,
@@ -127,33 +137,42 @@ public class LyftProcessJobBundleFactory extends ProcessJobBundleFactory {
       env.put(
           "CONTROL_API_SERVICE_DESCRIPTOR",
           controlServiceServer.getApiServiceDescriptor().toString());
-      env.put("SEMI_PERSISTENT_DIRECTORY", "/tmp");
+      //env.put("SEMI_PERSISTENT_DIRECTORY", "/tmp");
 
-      String sdkHarnessEntrypoint = "apache_beam.runners.worker.sdk_worker_main";
       String executable = "bash";
-      //List<String> args = ImmutableList.of("-c", String.format("'env; python -m %s'", sdkHarnessEntrypoint));
-      List<String> args =
-          ImmutableList.of("-c", String.format("env; python -m %s", sdkHarnessEntrypoint));
+      List<String> args = ImmutableList.of("-c", SDK_HARNESS_BASH_CMD);
 
       LOG.info("Creating Process with ID {}", workerId);
       // Wrap the blocking call to clientSource.get in case an exception is thrown.
       InstructionRequestHandler instructionHandler = null;
       try {
         processManager.startProcess(workerId, executable, args, env);
-        // Wait on a client from the gRPC server.
-        while (instructionHandler == null) {
+        // Wait for the SDK harness to connect to the gRPC server.
+        long timeoutMillis =
+            System.currentTimeMillis()
+                + Duration.ofMinutes(HARNESS_CONNECT_TIMEOUT_MINS).toMillis();
+        while (instructionHandler == null && System.currentTimeMillis() < timeoutMillis) {
           try {
-            instructionHandler = clientSource.take(workerId, Duration.ofMinutes(2));
+            instructionHandler = clientSource.take(workerId, Duration.ofSeconds(30));
           } catch (TimeoutException timeoutEx) {
             LOG.info(
-                "Still waiting for startup of environment '{}' for worker id {}",
-                executable,
+                "Still waiting for connection from command '{}' for worker id {}",
+                SDK_HARNESS_BASH_CMD,
                 workerId);
           } catch (InterruptedException interruptEx) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(interruptEx);
           }
         }
+
+        if (instructionHandler == null) {
+          String msg =
+              String.format(
+                  "Timeout of %d minutes waiting for worker '%s' with command '%s' to connect to the service endpoint.",
+                  HARNESS_CONNECT_TIMEOUT_MINS, workerId, SDK_HARNESS_BASH_CMD);
+          throw new TimeoutException(msg);
+        }
+
       } catch (Exception e) {
         try {
           processManager.stopProcess(workerId);
