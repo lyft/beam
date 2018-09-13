@@ -182,7 +182,6 @@ public class LyftFlinkStreamingPortableTranslations {
         String stream,
         String shardId)
         throws IOException {
-      System.out.println("###Kinesis record: " + new String(recordValue, Charset.defaultCharset()));
       return WindowedValue.valueInGlobalWindow(recordValue);
     }
   }
