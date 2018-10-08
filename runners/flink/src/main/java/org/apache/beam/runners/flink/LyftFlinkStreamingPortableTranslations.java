@@ -19,6 +19,8 @@ package org.apache.beam.runners.flink;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
+import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
+import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Properties;
@@ -37,8 +39,7 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
-import org.apache.flink.streaming.connectors.kinesis.FlinkKinesisConsumer;
-import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
+import org.apache.flink.streaming.util.serialization.DeserializationSchema;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -152,26 +153,29 @@ public class LyftFlinkStreamingPortableTranslations {
       Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
       properties.putAll(consumerProps);
     } catch (IOException e) {
-      throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
+      throw new RuntimeException("Could not parse Kinesis consumer properties.", e);
     }
 
     logger.info("Kinesis consumer for stream {} with properties {}", stream, properties);
 
-    DataStreamSource<WindowedValue<byte[]>> source =
-        context
-            .getExecutionEnvironment()
-            .addSource(
-                new FlinkKinesisConsumer<>(
-                    stream, new KinesisByteArrayWindowedValueSchema(), properties));
-    context.addDataStream(Iterables.getOnlyElement(pTransform.getOutputsMap().values()), source);
+    FlinkLyftKinesisConsumer<WindowedValue<byte[]>> source =
+        FlinkLyftKinesisConsumer.create(
+            stream, new KinesisByteArrayWindowedValueSchema(), properties);
+    source.setShardAssigner(
+        InitialRoundRobinKinesisShardAssigner.fromInitialShards(
+            properties, stream, context.getExecutionEnvironment().getConfig().getParallelism()));
+    context.addDataStream(
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+        context.getExecutionEnvironment().addSource(source));
   }
 
   /**
    * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
    * operators.
    */
+  // TODO: switch to KinesisDeserializationSchema once FlinkLyftKinesisConsumer.create supports it
   private static class KinesisByteArrayWindowedValueSchema
-      implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
+      implements DeserializationSchema<WindowedValue<byte[]>> {
     private static final long serialVersionUID = -1L;
 
     private final TypeInformation<WindowedValue<byte[]>> ti;
@@ -188,15 +192,13 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public WindowedValue<byte[]> deserialize(
-        byte[] recordValue,
-        String partitionKey,
-        String seqNum,
-        long approxArrivalTimestamp,
-        String stream,
-        String shardId)
-        throws IOException {
+    public WindowedValue<byte[]> deserialize(byte[] recordValue) {
       return WindowedValue.valueInGlobalWindow(recordValue);
+    }
+
+    @Override
+    public boolean isEndOfStream(WindowedValue<byte[]> nextElement) {
+      return false;
     }
   }
 }
