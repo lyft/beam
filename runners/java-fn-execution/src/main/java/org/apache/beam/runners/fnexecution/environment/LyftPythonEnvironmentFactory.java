@@ -92,7 +92,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
 
     String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
     // https://issues.apache.org/jira/browse/BEAM-5509
-    //pipelineOptionsJson =
+    // pipelineOptionsJson =
     //    pipelineOptionsJson.replace(
     //        "beam:option:parallelism:v1", "beam:option:INVALIDparallelism:v1");
     HashMap<String, String> env = new HashMap<>();
@@ -104,7 +104,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
     env.put(
         "CONTROL_API_SERVICE_DESCRIPTOR",
         controlServiceServer.getApiServiceDescriptor().toString());
-    //env.put("SEMI_PERSISTENT_DIRECTORY", "/tmp");
+    // env.put("SEMI_PERSISTENT_DIRECTORY", "/tmp");
 
     String executable = "bash";
     List<String> args = ImmutableList.of("-c", SDK_HARNESS_BASH_CMD);
