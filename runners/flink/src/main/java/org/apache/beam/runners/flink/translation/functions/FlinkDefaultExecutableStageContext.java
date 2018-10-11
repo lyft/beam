@@ -80,6 +80,18 @@ class FlinkDefaultExecutableStageContext implements FlinkExecutableStageContext,
     }
   }
 
-  static final Factory MULTI_INSTANCE_FACTORY =
-      (jobInfo) -> FlinkDefaultExecutableStageContext.create(jobInfo);
+  enum MultiInstanceFactory implements Factory {
+    MULTI_INSTANCE;
+
+    private static final ThreadLocal<ReferenceCountingFlinkExecutableStageContextFactory> threadFactories =
+        ThreadLocal.withInitial(() ->
+            ReferenceCountingFlinkExecutableStageContextFactory.create(
+                FlinkDefaultExecutableStageContext::create));
+
+
+    @Override
+    public FlinkExecutableStageContext get(JobInfo jobInfo) {
+      return threadFactories.get().get(jobInfo);
+    }
+  }
 }

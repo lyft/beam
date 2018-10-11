@@ -41,7 +41,7 @@ public interface FlinkExecutableStageContext extends AutoCloseable {
     PortablePipelineOptions portableOptions = options.as(PortablePipelineOptions.class);
     if (PortablePipelineOptions.SDK_WORKER_PARALLELISM_STAGE.equals(
         portableOptions.getSdkWorkerParallelism())) {
-      return FlinkDefaultExecutableStageContext.MULTI_INSTANCE_FACTORY;
+      return FlinkDefaultExecutableStageContext.MultiInstanceFactory.MULTI_INSTANCE;
     } else {
       return FlinkDefaultExecutableStageContext.ReferenceCountingFactory.REFERENCE_COUNTING;
     }
