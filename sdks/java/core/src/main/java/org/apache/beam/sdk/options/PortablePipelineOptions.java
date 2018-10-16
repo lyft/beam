@@ -73,20 +73,12 @@ public interface PortablePipelineOptions extends PipelineOptions {
 
   void setDefaultEnvironmentConfig(@Nullable String config);
 
-  String SDK_WORKER_PARALLELISM_PIPELINE = "pipeline";
-  String SDK_WORKER_PARALLELISM_STAGE = "stage";
-
   @Description(
-      "SDK worker/harness process parallelism. Currently supported options are "
-          + "<null> (let the runner decide) or '"
-          + SDK_WORKER_PARALLELISM_PIPELINE
-          + "' (single SDK harness process per pipeline and runner process) or '"
-          + SDK_WORKER_PARALLELISM_STAGE
-          + "' (separate SDK harness for every executable stage).")
+      "Sets the number of sdk worker processes that will run on each worker node.")
   @Nullable
-  String getSdkWorkerParallelism();
+  Long getSdkWorkerParallelism();
 
-  void setSdkWorkerParallelism(@Nullable String parallelism);
+  void setSdkWorkerParallelism(@Nullable Long parallelism);
 
   @Description("Duration in milliseconds for environment cache within a job. 0 means no caching.")
   @Default.Integer(0)
@@ -94,3 +86,4 @@ public interface PortablePipelineOptions extends PipelineOptions {
 
   void setEnvironmentCacheMillis(int environmentCacheMillis);
 }
+

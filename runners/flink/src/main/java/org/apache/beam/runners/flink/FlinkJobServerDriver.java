@@ -90,9 +90,9 @@ public class FlinkJobServerDriver implements Runnable {
       name = "--sdk-worker-parallelism",
       usage = "Default parallelism for SDK worker processes (see portable pipeline options)"
     )
-    String sdkWorkerParallelism = PortablePipelineOptions.SDK_WORKER_PARALLELISM_PIPELINE;
+    private Long sdkWorkerParallelism = 1L;
 
-    String getSdkWorkerParallelism() {
+    public Long getSdkWorkerParallelism() {
       return this.sdkWorkerParallelism;
     }
   }
