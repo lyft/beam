@@ -81,15 +81,21 @@ class FlinkDefaultExecutableStageContext implements FlinkExecutableStageContext,
     private final int maxFactories;
 
     private JobFactoryState(int maxFactories) {
-      this.maxFactories = maxFactories;
+      if (maxFactories == 0) {
+        // Default to num_cores - 1 so that we leave some resources available for the java process
+        this.maxFactories = Math.max(Runtime.getRuntime().availableProcessors() - 1, 1);
+      } else {
+        this.maxFactories = maxFactories;
+      }
     }
 
     private synchronized FlinkExecutableStageContext.Factory getFactory() {
       int count = counter.getAndIncrement();
 
       if (count < maxFactories) {
-        factories.add(ReferenceCountingFlinkExecutableStageContextFactory
-            .create(FlinkDefaultExecutableStageContext::create));
+        factories.add(
+            ReferenceCountingFlinkExecutableStageContextFactory.create(
+                FlinkDefaultExecutableStageContext::create));
       }
 
       return factories.get(count % maxFactories);
@@ -99,20 +105,27 @@ class FlinkDefaultExecutableStageContext implements FlinkExecutableStageContext,
   enum MultiInstanceFactory implements Factory {
     MULTI_INSTANCE;
 
+    // This map should only ever have a single element, as each job will have its own
+    // classloader and therefore its own instance of MultiInstanceFactory.INSTANCE. This
+    // code supports multiple JobInfos in order to provide a sensible implementation of
+    // Factory.get(JobInfo), which in theory could be called with different JobInfos.
     private static final ConcurrentMap<String, JobFactoryState> jobFactories =
         new ConcurrentHashMap<>();
 
     @Override
     public FlinkExecutableStageContext get(JobInfo jobInfo) {
-      JobFactoryState state = jobFactories
-          .computeIfAbsent(jobInfo.jobId(), k -> {
-            PortablePipelineOptions portableOptions = PipelineOptionsTranslation
-                .fromProto(jobInfo.pipelineOptions())
-                .as(PortablePipelineOptions.class);
+      JobFactoryState state =
+          jobFactories.computeIfAbsent(
+              jobInfo.jobId(),
+              k -> {
+                PortablePipelineOptions portableOptions =
+                    PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions())
+                        .as(PortablePipelineOptions.class);
 
-            return new JobFactoryState(
-                MoreObjects.firstNonNull(portableOptions.getSdkWorkerParallelism(), 1L).intValue());
-          });
+                return new JobFactoryState(
+                    MoreObjects.firstNonNull(portableOptions.getSdkWorkerParallelism(), 1L)
+                        .intValue());
+              });
 
       return state.getFactory().get(jobInfo);
     }

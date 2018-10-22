@@ -25,7 +25,6 @@ import com.google.common.collect.Iterables;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.util.Map;
 import java.util.Properties;
 import org.apache.beam.model.pipeline.v1.RunnerApi;

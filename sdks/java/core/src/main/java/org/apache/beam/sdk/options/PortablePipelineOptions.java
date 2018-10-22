@@ -74,7 +74,8 @@ public interface PortablePipelineOptions extends PipelineOptions {
   void setDefaultEnvironmentConfig(@Nullable String config);
 
   @Description(
-      "Sets the number of sdk worker processes that will run on each worker node.")
+      "Sets the number of sdk worker processes that will run on each worker node. Default is 1. If"
+          + " 0, it will be automatically set according to the number of CPU cores on the worker.")
   @Nullable
   Long getSdkWorkerParallelism();
 
@@ -86,4 +87,3 @@ public interface PortablePipelineOptions extends PipelineOptions {
 
   void setEnvironmentCacheMillis(int environmentCacheMillis);
 }
-

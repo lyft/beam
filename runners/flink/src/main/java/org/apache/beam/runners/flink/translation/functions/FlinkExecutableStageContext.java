@@ -17,14 +17,12 @@
  */
 package org.apache.beam.runners.flink.translation.functions;
 
-import com.google.common.base.MoreObjects;
 import java.io.Serializable;
 import org.apache.beam.runners.core.construction.graph.ExecutableStage;
 import org.apache.beam.runners.flink.FlinkPipelineOptions;
 import org.apache.beam.runners.flink.translation.functions.FlinkDefaultExecutableStageContext.MultiInstanceFactory;
 import org.apache.beam.runners.fnexecution.control.StageBundleFactory;
 import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
-import org.apache.beam.sdk.options.PortablePipelineOptions;
 
 /** The Flink context required in order to execute {@link ExecutableStage stages}. */
 public interface FlinkExecutableStageContext extends AutoCloseable {
