@@ -17,6 +17,11 @@
  */
 package org.apache.beam.runners.flink;
 
+import static com.lyft.streamingplatform.analytics.EventUtils.BACKUP_DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
+import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
@@ -29,6 +34,12 @@ import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.time.DateTimeException;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
@@ -265,6 +276,21 @@ public class LyftFlinkStreamingPortableTranslations {
       }
     }
 
+    private static long parseDateTime(String datetime) {
+      try {
+        DateTimeFormatter formatterToUse =
+            (datetime.length() - datetime.indexOf('.') == 7)
+                ? DB_DATETIME_FORMATTER
+                : BACKUP_DB_DATETIME_FORMATTER;
+        TemporalAccessor temporalAccessor = formatterToUse.parse(datetime);
+        LocalDateTime localDateTime = LocalDateTime.from(temporalAccessor);
+        ZonedDateTime zonedDateTime = ZonedDateTime.of(localDateTime, GMT);
+        return java.time.Instant.from(zonedDateTime).toEpochMilli();
+      } catch (DateTimeParseException e) {
+        return java.time.Instant.from(ISO_DATETIME_FORMATTER.parse(datetime)).toEpochMilli();
+      }
+    }
+
     @Override
     public WindowedValue<byte[]> deserialize(byte[] message) throws IOException {
       String inflatedString = inflate(message);
@@ -278,9 +304,13 @@ public class LyftFlinkStreamingPortableTranslations {
       long timestamp = Long.MAX_VALUE;
       while (iter.hasNext()) {
         JsonNode occurredAt = iter.next().path(EventField.EventOccurredAt.fieldName());
-        if (occurredAt.isNumber()) {
-          timestamp = Math.min(occurredAt.longValue(), timestamp);
+        try {
+          timestamp = Math.min(parseDateTime(occurredAt.textValue()), timestamp);
+        } catch (DateTimeParseException e) {
+          // skip this timestamp
         }
+
+        // if we didn't find any valid timestamps, use Long.MIN_VALUE
         if (timestamp == Long.MAX_VALUE) {
           timestamp = Long.MIN_VALUE;
         }

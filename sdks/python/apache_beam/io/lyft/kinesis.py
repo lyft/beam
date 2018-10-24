@@ -15,6 +15,7 @@ class FlinkKinesisInput(PTransform):
     'flink.stream.initpos': 'TRIM_HORIZON'
   }
   stream = None
+  encoding = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -35,6 +36,7 @@ class FlinkKinesisInput(PTransform):
 
     return ("lyft:flinkKinesisInput", json.dumps({
       'stream': self.stream,
+      'encoding': self.encoding,
       'properties': self.consumer_properties}))
 
   @staticmethod
@@ -54,6 +56,9 @@ class FlinkKinesisInput(PTransform):
   def set_consumer_property(self, key, value):
     self.consumer_properties[key] = value
     return self
+
+  def with_encoding(self, encoding):
+    self.encoding = encoding
 
   def with_endpoint(self, endpoint, access_key, secret_key):
     # cannot have both region and endpoint
