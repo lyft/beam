@@ -87,7 +87,7 @@ dependencies {
   validatesRunner project(path: project.path, configuration: "shadow")
   //LYFT CUSTOM
   shadow "org.apache.flink:flink-connector-kafka-0.11_2.11:1.5-lyft20180920"
-  shadow "com.lyft:streamingplatform-kinesis:1.2.20181003"
+  shadow "com.lyft:streamingplatform-kinesis:1.2-SNAPSHOT"
 }
 
 class ValidatesRunnerConfig {

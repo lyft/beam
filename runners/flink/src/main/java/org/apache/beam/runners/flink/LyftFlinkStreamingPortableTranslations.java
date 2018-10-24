@@ -34,7 +34,6 @@ import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -56,8 +55,10 @@ import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
-import org.apache.flink.streaming.util.serialization.DeserializationSchema;
+import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
@@ -99,12 +100,12 @@ public class LyftFlinkStreamingPortableTranslations {
     Properties properties = new Properties();
     ObjectMapper mapper = new ObjectMapper();
     try {
-      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
+      Map<String, Object> params =
+          mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
 
-      Preconditions.checkNotNull(topic = params.path("topic").textValue(),
-          "'topic' needs to be set");
+      Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
 
-      Map<?, ?> consumerProps = mapper.convertValue(params.path("properties"), Map.class);
+      Map<?, ?> consumerProps = (Map) params.get("properties");
       Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
       properties.putAll(consumerProps);
     } catch (IOException e) {
@@ -163,7 +164,8 @@ public class LyftFlinkStreamingPortableTranslations {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
 
     String stream;
-    DeserializationSchema<WindowedValue<byte[]>> deserializationSchema;
+    FlinkLyftKinesisConsumer<WindowedValue<byte[]>> source;
+
     Properties properties = new Properties();
     ObjectMapper mapper = new ObjectMapper();
     try {
@@ -173,6 +175,10 @@ public class LyftFlinkStreamingPortableTranslations {
       Preconditions.checkNotNull(
           stream = params.path("stream").textValue(), "'stream' needs to be set");
 
+      Map<?, ?> consumerProps = mapper.convertValue(params.path("properties"), Map.class);
+      Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+      properties.putAll(consumerProps);
+
       String encoding = BYTES_ENCODING;
       if (params.hasNonNull("encoding")) {
         encoding = params.get("encoding").asText();
@@ -180,18 +186,17 @@ public class LyftFlinkStreamingPortableTranslations {
 
       switch (encoding) {
         case BYTES_ENCODING:
-          deserializationSchema = new KinesisByteArrayWindowedValueSchema();
+          source = FlinkLyftKinesisConsumer.create(
+              stream, new KinesisByteArrayWindowedValueSchema(), properties);
           break;
         case LYFT_KINESIS_EVENT_ENCODING:
-          deserializationSchema = new LyftBeamKinesisSchema();
+          source = FlinkLyftKinesisConsumer.create(
+              stream, new LyftBeamKinesisSchema(), properties);
+          source.setPeriodicWatermarkAssigner(new WindowedTimestampExtractor<>(Time.seconds(1)));
           break;
         default:
           throw new IllegalArgumentException("Unknown encoding '" + encoding + "'");
       }
-
-      Map<?, ?> consumerProps = mapper.convertValue(params.path("properties"), Map.class);
-      Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
-      properties.putAll(consumerProps);
 
       logger.info("Kinesis consumer for stream {} with properties {} and encoding {}", stream,
           properties, encoding);
@@ -200,9 +205,6 @@ public class LyftFlinkStreamingPortableTranslations {
       throw new RuntimeException("Could not parse Kinesis consumer properties.", e);
     }
 
-    FlinkLyftKinesisConsumer<WindowedValue<byte[]>> source =
-        FlinkLyftKinesisConsumer.create(
-            stream, deserializationSchema, properties);
     source.setShardAssigner(
         InitialRoundRobinKinesisShardAssigner.fromInitialShards(
             properties, stream, context.getExecutionEnvironment().getConfig().getParallelism()));
@@ -215,11 +217,8 @@ public class LyftFlinkStreamingPortableTranslations {
    * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
    * operators.
    */
-  // TODO: switch to KinesisDeserializationSchema once FlinkLyftKinesisConsumer.create supports it
   private static class KinesisByteArrayWindowedValueSchema
-      implements DeserializationSchema<WindowedValue<byte[]>> {
-    private static final long serialVersionUID = -1L;
-
+      implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
     public KinesisByteArrayWindowedValueSchema() {
@@ -234,13 +233,9 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public WindowedValue<byte[]> deserialize(byte[] recordValue) {
+    public WindowedValue<byte[]> deserialize(byte[] recordValue, String partitionKey, String seqNum,
+        long approxArrivalTimestamp, String stream, String shardId) throws IOException {
       return WindowedValue.valueInGlobalWindow(recordValue);
-    }
-
-    @Override
-    public boolean isEndOfStream(WindowedValue<byte[]> nextElement) {
-      return false;
     }
   }
 
@@ -251,7 +246,7 @@ public class LyftFlinkStreamingPortableTranslations {
    *
    * The output of this schema is utf-8 encoded json.
    */
-  private static class LyftBeamKinesisSchema implements DeserializationSchema<WindowedValue<byte[]>> {
+  private static class LyftBeamKinesisSchema implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final TypeInformation<WindowedValue<byte[]>> ti =
         new CoderTypeInformation<>(
@@ -292,8 +287,9 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public WindowedValue<byte[]> deserialize(byte[] message) throws IOException {
-      String inflatedString = inflate(message);
+    public WindowedValue<byte[]> deserialize(byte[] recordValue, String partitionKey, String seqNum,
+        long approxArrivalTimestamp, String stream, String shardId) throws IOException {
+      String inflatedString = inflate(recordValue);
 
       JsonNode events = mapper.readTree(inflatedString);
       if (!events.isArray()) {
@@ -321,13 +317,19 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public boolean isEndOfStream(WindowedValue<byte[]> nextElement) {
-      return false;
+    public TypeInformation<WindowedValue<byte[]>> getProducedType() {
+      return ti;
+    }
+  }
+
+  private static class WindowedTimestampExtractor<T> extends BoundedOutOfOrdernessTimestampExtractor<WindowedValue<T>> {
+    public WindowedTimestampExtractor(Time maxOutOfOrderness) {
+      super(maxOutOfOrderness);
     }
 
     @Override
-    public TypeInformation<WindowedValue<byte[]>> getProducedType() {
-      return ti;
+    public long extractTimestamp(WindowedValue<T> element) {
+      return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
     }
   }
 }
