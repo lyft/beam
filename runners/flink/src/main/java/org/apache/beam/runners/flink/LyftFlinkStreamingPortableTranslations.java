@@ -71,7 +71,7 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String BYTES_ENCODING = "bytes";
-  private static final String LYFT_KINESIS_EVENT_ENCODING = "lyft_kinesis_event";
+  private static final String LYFT_KINESIS_EVENT_ENCODING = "lyft-kinesis-event";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -174,7 +174,7 @@ public class LyftFlinkStreamingPortableTranslations {
           stream = params.path("stream").textValue(), "'stream' needs to be set");
 
       String encoding = BYTES_ENCODING;
-      if (params.has("encoding")) {
+      if (params.hasNonNull("encoding")) {
         encoding = params.get("encoding").asText();
       }
 

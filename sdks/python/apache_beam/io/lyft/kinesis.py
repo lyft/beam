@@ -46,6 +46,7 @@ class FlinkKinesisInput(PTransform):
     instance = FlinkKinesisInput()
     payload = json.loads(spec_parameter)
     instance.stream = payload['stream']
+    instance.encoding = payload['encoding']
     instance.consumer_properties = payload['properties']
     return instance
 
@@ -59,6 +60,7 @@ class FlinkKinesisInput(PTransform):
 
   def with_encoding(self, encoding):
     self.encoding = encoding
+    return self
 
   def with_endpoint(self, endpoint, access_key, secret_key):
     # cannot have both region and endpoint
