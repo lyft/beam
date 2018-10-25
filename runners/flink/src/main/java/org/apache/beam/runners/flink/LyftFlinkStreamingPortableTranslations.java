@@ -169,8 +169,7 @@ public class LyftFlinkStreamingPortableTranslations {
     Properties properties = new Properties();
     ObjectMapper mapper = new ObjectMapper();
     try {
-      JsonNode params = mapper.readTree(
-          pTransform.getSpec().getPayload().toByteArray());
+      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
 
       Preconditions.checkNotNull(
           stream = params.path("stream").textValue(), "'stream' needs to be set");
@@ -186,20 +185,23 @@ public class LyftFlinkStreamingPortableTranslations {
 
       switch (encoding) {
         case BYTES_ENCODING:
-          source = FlinkLyftKinesisConsumer.create(
-              stream, new KinesisByteArrayWindowedValueSchema(), properties);
+          source =
+              FlinkLyftKinesisConsumer.create(
+                  stream, new KinesisByteArrayWindowedValueSchema(), properties);
           break;
         case LYFT_KINESIS_EVENT_ENCODING:
-          source = FlinkLyftKinesisConsumer.create(
-              stream, new LyftBeamKinesisSchema(), properties);
+          source = FlinkLyftKinesisConsumer.create(stream, new LyftBeamKinesisSchema(), properties);
           source.setPeriodicWatermarkAssigner(new WindowedTimestampExtractor<>(Time.seconds(1)));
           break;
         default:
           throw new IllegalArgumentException("Unknown encoding '" + encoding + "'");
       }
 
-      logger.info("Kinesis consumer for stream {} with properties {} and encoding {}", stream,
-          properties, encoding);
+      logger.info(
+          "Kinesis consumer for stream {} with properties {} and encoding {}",
+          stream,
+          properties,
+          encoding);
 
     } catch (IOException e) {
       throw new RuntimeException("Could not parse Kinesis consumer properties.", e);
@@ -233,25 +235,31 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public WindowedValue<byte[]> deserialize(byte[] recordValue, String partitionKey, String seqNum,
-        long approxArrivalTimestamp, String stream, String shardId) throws IOException {
+    public WindowedValue<byte[]> deserialize(
+        byte[] recordValue,
+        String partitionKey,
+        String seqNum,
+        long approxArrivalTimestamp,
+        String stream,
+        String shardId)
+        throws IOException {
       return WindowedValue.valueInGlobalWindow(recordValue);
     }
   }
 
   /**
-   * Deserializer for Lyft's kinesis event format, which is a zlib-compressed, base64-encoded,
-   * json array of event objects. This schema tags events with the occurred_at time of the oldest
-   * event in the message.
+   * Deserializer for Lyft's kinesis event format, which is a zlib-compressed, base64-encoded, json
+   * array of event objects. This schema tags events with the occurred_at time of the oldest event
+   * in the message.
    *
-   * The output of this schema is utf-8 encoded json.
+   * <p>The output of this schema is utf-8 encoded json.
    */
-  private static class LyftBeamKinesisSchema implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
+  private static class LyftBeamKinesisSchema
+      implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final TypeInformation<WindowedValue<byte[]>> ti =
         new CoderTypeInformation<>(
             WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
-
 
     private static String inflate(byte[] deflatedData) throws IOException {
       Inflater inflater = new Inflater();
@@ -287,14 +295,21 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public WindowedValue<byte[]> deserialize(byte[] recordValue, String partitionKey, String seqNum,
-        long approxArrivalTimestamp, String stream, String shardId) throws IOException {
+    public WindowedValue<byte[]> deserialize(
+        byte[] recordValue,
+        String partitionKey,
+        String seqNum,
+        long approxArrivalTimestamp,
+        String stream,
+        String shardId)
+        throws IOException {
       String inflatedString = inflate(recordValue);
 
       JsonNode events = mapper.readTree(inflatedString);
       if (!events.isArray()) {
         throw new IOException("Events is not an array");
-      };
+      }
+      ;
 
       Iterator<JsonNode> iter = events.elements();
       long timestamp = Long.MAX_VALUE;
@@ -322,7 +337,8 @@ public class LyftFlinkStreamingPortableTranslations {
     }
   }
 
-  private static class WindowedTimestampExtractor<T> extends BoundedOutOfOrdernessTimestampExtractor<WindowedValue<T>> {
+  private static class WindowedTimestampExtractor<T>
+      extends BoundedOutOfOrdernessTimestampExtractor<WindowedValue<T>> {
     public WindowedTimestampExtractor(Time maxOutOfOrderness) {
       super(maxOutOfOrderness);
     }
