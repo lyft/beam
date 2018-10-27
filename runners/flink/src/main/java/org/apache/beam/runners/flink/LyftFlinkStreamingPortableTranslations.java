@@ -53,6 +53,7 @@ import org.apache.beam.runners.flink.translation.types.CoderTypeInformation;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.util.WindowedValue;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
@@ -72,7 +73,7 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String BYTES_ENCODING = "bytes";
-  private static final String LYFT_KINESIS_EVENT_ENCODING = "lyft-kinesis-event";
+  private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -183,15 +184,21 @@ public class LyftFlinkStreamingPortableTranslations {
         encoding = params.get("encoding").asText();
       }
 
+      long maxOutOfOrdernessMillis = 5_000;
+      if (params.hasNonNull("max_out_of_orderness_millis")) {
+        maxOutOfOrdernessMillis = params.get("max_out_of_orderness_millis").numberValue().longValue();
+      }
+
       switch (encoding) {
         case BYTES_ENCODING:
           source =
               FlinkLyftKinesisConsumer.create(
                   stream, new KinesisByteArrayWindowedValueSchema(), properties);
           break;
-        case LYFT_KINESIS_EVENT_ENCODING:
-          source = FlinkLyftKinesisConsumer.create(stream, new LyftBeamKinesisSchema(), properties);
-          source.setPeriodicWatermarkAssigner(new WindowedTimestampExtractor<>(Time.seconds(1)));
+        case LYFT_BASE64_ZLIB_JSON:
+          source = FlinkLyftKinesisConsumer.create(stream, new LyftBase64ZlibJsonSchema(), properties);
+          source.setPeriodicWatermarkAssigner(new WindowedTimestampExtractor<>(
+              Time.milliseconds(maxOutOfOrdernessMillis)));
           break;
         default:
           throw new IllegalArgumentException("Unknown encoding '" + encoding + "'");
@@ -241,8 +248,7 @@ public class LyftFlinkStreamingPortableTranslations {
         String seqNum,
         long approxArrivalTimestamp,
         String stream,
-        String shardId)
-        throws IOException {
+        String shardId) {
       return WindowedValue.valueInGlobalWindow(recordValue);
     }
   }
@@ -252,9 +258,10 @@ public class LyftFlinkStreamingPortableTranslations {
    * array of event objects. This schema tags events with the occurred_at time of the oldest event
    * in the message.
    *
-   * <p>The output of this schema is utf-8 encoded json.
+   * The output of this schema is utf-8 encoded json.
    */
-  private static class LyftBeamKinesisSchema
+  @VisibleForTesting
+  static class LyftBase64ZlibJsonSchema
       implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final TypeInformation<WindowedValue<byte[]>> ti =
@@ -306,17 +313,19 @@ public class LyftFlinkStreamingPortableTranslations {
       String inflatedString = inflate(recordValue);
 
       JsonNode events = mapper.readTree(inflatedString);
+
       if (!events.isArray()) {
         throw new IOException("Events is not an array");
       }
-      ;
 
       Iterator<JsonNode> iter = events.elements();
       long timestamp = Long.MAX_VALUE;
       while (iter.hasNext()) {
         JsonNode occurredAt = iter.next().path(EventField.EventOccurredAt.fieldName());
         try {
-          timestamp = Math.min(parseDateTime(occurredAt.textValue()), timestamp);
+          if (occurredAt.isTextual()) {
+            timestamp = Math.min(parseDateTime(occurredAt.textValue()), timestamp);
+          }
         } catch (DateTimeParseException e) {
           // skip this timestamp
         }

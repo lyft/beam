@@ -10,12 +10,16 @@ from apache_beam.transforms.core import Windowing
 class FlinkKinesisInput(PTransform):
   """Custom transform that wraps a Flink Kinesis consumer - only works with the
   portable Flink runner."""
+
+  LYFT_BASE64_ZLIB_JSON_ENCODING = "lyft-base64-zlib-json"
+
   consumer_properties = {
     'aws.region': 'us-east-1',
     'flink.stream.initpos': 'TRIM_HORIZON'
   }
   stream = None
   encoding = None
+  max_out_of_orderness_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -37,6 +41,7 @@ class FlinkKinesisInput(PTransform):
     return ("lyft:flinkKinesisInput", json.dumps({
       'stream': self.stream,
       'encoding': self.encoding,
+      'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
       'properties': self.consumer_properties}))
 
   @staticmethod
@@ -47,6 +52,7 @@ class FlinkKinesisInput(PTransform):
     payload = json.loads(spec_parameter)
     instance.stream = payload['stream']
     instance.encoding = payload['encoding']
+    instance.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
     instance.consumer_properties = payload['properties']
     return instance
 
@@ -59,7 +65,23 @@ class FlinkKinesisInput(PTransform):
     return self
 
   def with_encoding(self, encoding):
+    """
+    Sets the encoding used for messages in the stream. This is required for
+    watermarks to be emitted. Currently supported encodings:
+
+    * FlinkKinesisInput.LYFT_BASE64_ZLIB_JSON_ENCODING
+    """
     self.encoding = encoding
+    return self
+
+  def with_max_out_of_orderness_millis(self, max_out_of_orderness_millis):
+    """
+    The interval between the maximum timestamp seen so far and the watermark that
+    is emitted. For example, if this is set to 1000ms, after seeing a record for
+    10:00:01 we will emit a watermark for 10:00:00, indicating that we believe that all
+    data from before that time has arrived.
+    """
+    self.max_out_of_orderness_millis = max_out_of_orderness_millis
     return self
 
   def with_endpoint(self, endpoint, access_key, secret_key):
