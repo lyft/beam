@@ -258,7 +258,7 @@ public class LyftFlinkStreamingPortableTranslations {
    * array of event objects. This schema tags events with the occurred_at time of the oldest event
    * in the message.
    *
-   * The output of this schema is utf-8 encoded json.
+   * This schema passes through the original message.
    */
   @VisibleForTesting
   static class LyftBase64ZlibJsonSchema
@@ -336,8 +336,7 @@ public class LyftFlinkStreamingPortableTranslations {
         }
       }
 
-      return WindowedValue.timestampedValueInGlobalWindow(
-          inflatedString.getBytes(Charset.forName("UTF-8")), new Instant(timestamp));
+      return WindowedValue.timestampedValueInGlobalWindow(recordValue, new Instant(timestamp));
     }
 
     @Override
