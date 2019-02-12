@@ -148,7 +148,6 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public WindowedValue<byte[]> deserialize(
         byte[] messageKey, byte[] message, String topic, int partition, long offset) {
-      // System.out.println("###Kafka record: " + new String(message, Charset.defaultCharset()));
       return WindowedValue.valueInGlobalWindow(message);
     }
 
@@ -322,24 +321,42 @@ public class LyftFlinkStreamingPortableTranslations {
         throw new IOException("Events is not an array");
       }
 
+      // Determine the timestamp as minimum occurred_at of all contained events.
+      // For each event, attempt to extract occurred_at from either date string or number.
+      // Assume timestamp as logged_at, when occurred_at is an (invalid) future timestamp.
+
       Iterator<JsonNode> iter = events.elements();
       long timestamp = Long.MAX_VALUE;
       while (iter.hasNext()) {
-        JsonNode occurredAt = iter.next().path(EventField.EventOccurredAt.fieldName());
+        JsonNode event = iter.next();
+        JsonNode occurredAt = event.path(EventField.EventOccurredAt.fieldName());
         try {
+          long occurredAtMillis;
           if (occurredAt.isTextual()) {
-            timestamp = Math.min(parseDateTime(occurredAt.textValue()), timestamp);
+            occurredAtMillis = parseDateTime(occurredAt.textValue());
           } else if (occurredAt.isNumber()) {
-            timestamp = occurredAt.asLong();
+            occurredAtMillis = occurredAt.asLong();
+          } else {
+            continue;
           }
+          if (event.has(EventField.EventLoggedAt.fieldName())) {
+            long loggedAtMillis = event.path(EventField.EventLoggedAt.fieldName()).asLong();
+            if (loggedAtMillis > 0) {
+              if (loggedAtMillis < Integer.MAX_VALUE) {
+                loggedAtMillis = loggedAtMillis * 1000;
+              }
+              occurredAtMillis = Math.min(occurredAtMillis, loggedAtMillis);
+            }
+          }
+          timestamp = Math.min(occurredAtMillis, timestamp);
         } catch (DateTimeParseException e) {
           // skip this timestamp
         }
+      }
 
-        // if we didn't find any valid timestamps, use Long.MIN_VALUE
-        if (timestamp == Long.MAX_VALUE) {
-          timestamp = Long.MIN_VALUE;
-        }
+      // if we didn't find any valid timestamps, use Long.MIN_VALUE
+      if (timestamp == Long.MAX_VALUE) {
+        timestamp = Long.MIN_VALUE;
       }
 
       return WindowedValue.timestampedValueInGlobalWindow(recordValue, new Instant(timestamp));
