@@ -113,11 +113,12 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
     // Wrap the blocking call to clientSource.get in case an exception is thrown.
     InstructionRequestHandler instructionHandler = null;
     try {
-      processManager.startProcess(workerId, executable, args, env);
+      final ProcessManager.RunningProcess runningProcess = processManager.startProcess(workerId, executable, args, env);
       // Wait for the SDK harness to connect to the gRPC server.
       long timeoutMillis =
           System.currentTimeMillis() + Duration.ofMinutes(HARNESS_CONNECT_TIMEOUT_MINS).toMillis();
       while (instructionHandler == null && System.currentTimeMillis() < timeoutMillis) {
+        runningProcess.isAliveOrThrow();
         try {
           instructionHandler = clientSource.take(workerId, Duration.ofSeconds(30));
         } catch (TimeoutException timeoutEx) {
