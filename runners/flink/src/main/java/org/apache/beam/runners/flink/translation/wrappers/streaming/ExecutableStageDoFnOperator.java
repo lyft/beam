@@ -388,6 +388,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     try {
       stateBackendLock.lock();
       getKeyedStateBackend().setCurrentKey(encodedKey);
+      LOG.info("###firing timer {}", timer);
       super.fireTimer(timer);
     } finally {
       stateBackendLock.unlock();
@@ -751,6 +752,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     StatefulDoFnRunner.StateCleaner<BoundedWindow> stateCleaner =
         window -> {
           try {
+            LOG.info("###state cleanup for {} {}", window, getKeyedStateBackend().getCurrentKey());
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
