@@ -19,9 +19,9 @@ package org.apache.beam.runners.flink.translation.wrappers.streaming;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -263,6 +263,14 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             stateBackendLock.lock();
             prepareStateBackend(key, keyCoder);
             StateNamespace namespace = StateNamespaces.window(windowCoder, window);
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(
+                  "State get for {} {} {} {}",
+                  pTransformId,
+                  userStateId,
+                  Arrays.toString(keyedStateBackend.getCurrentKey().array()),
+                  window);
+            }
             BagState<V> bagState =
                 stateInternals.state(namespace, StateTags.bag(userStateId, valueCoder));
             return bagState.read();
@@ -302,13 +310,17 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         }
 
         private void prepareStateBackend(K key, Coder<K> keyCoder) {
-          ByteArrayOutputStream baos = new ByteArrayOutputStream();
+          final ByteBuffer encodedKey;
           try {
-            keyCoder.encode(key, baos);
-          } catch (IOException e) {
-            throw new RuntimeException("Failed to encode key for Flink state backend", e);
+            // We need to have NESTED context here with the ByteStringCoder.
+            // See StateRequestHandlers.
+            // TODO: eliminate double encoding
+            encodedKey =
+                    ByteBuffer.wrap(CoderUtils.encodeToByteArray(keyCoder, key, Coder.Context.NESTED));
+          } catch (CoderException e) {
+            throw new RuntimeException("Couldn't set key for state");
           }
-          keyedStateBackend.setCurrentKey(ByteBuffer.wrap(baos.toByteArray()));
+          keyedStateBackend.setCurrentKey(encodedKey);
         }
       };
     }
@@ -367,8 +379,18 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     }
   }
 
+  private final List<InternalTimer<?, TimerInternals.TimerData>> deferredTimers = new ArrayList<>();
+
   @Override
   public void fireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
+    if (GC_TIMER_ID.equals(timer.getNamespace().getTimerId())) {
+      deferredTimers.add(timer);
+    } else {
+      reallyFireTimer(timer);
+    }
+  }
+
+  private void reallyFireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
     // We need to decode the key
     final ByteBuffer encodedKey = (ByteBuffer) timer.getKey();
     @SuppressWarnings("ByteBufferBackingArray")
@@ -482,6 +504,11 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
                 // we are restoring the previous hold in case it was already set for side inputs
                 setPushedBackWatermark(backupWatermarkHold);
                 super.processWatermark(mark);
+                // fire cleanup timers, they can only execute after the bundle is complete
+                // as they remove the state that the timer callback may rely on
+                while (!deferredTimers.isEmpty()) {
+                  reallyFireTimer(deferredTimers.remove(0));
+                }
               } catch (Exception e) {
                 throw new RuntimeException(
                     "Failed to process pushed back watermark after finished bundle.", e);
@@ -490,6 +517,12 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       }
     }
     super.processWatermark(mark);
+    // if this was the final watermark, then no callback was scheduled
+    if (mark.getTimestamp() >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
+      while (!deferredTimers.isEmpty()) {
+        reallyFireTimer(deferredTimers.remove(0));
+      }
+    }
   }
 
   private static class SdkHarnessDoFnRunner<InputT, OutputT>
@@ -687,6 +720,8 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     }
   }
 
+  private static final String GC_TIMER_ID = "__user-state-cleanup__";
+
   private DoFnRunner<InputT, OutputT> ensureStateCleanup(
       SdkHarnessDoFnRunner<InputT, OutputT> sdkHarnessRunner) {
     if (keyCoder == null) {
@@ -698,8 +733,6 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     Coder windowCoder = windowingStrategy.getWindowFn().windowCoder();
     StatefulDoFnRunner.CleanupTimer<InputT> cleanupTimer =
         new StatefulDoFnRunner.CleanupTimer<InputT>() {
-
-          private static final String GC_TIMER_ID = "__user-state-cleanup__";
 
           @Override
           public Instant currentInputWatermarkTime() {
@@ -713,9 +746,10 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             Instant gcTime = LateDataUtils.garbageCollectionTime(window, windowingStrategy).plus(1);
             ByteBuffer key;
             try {
+              // this needs to match the encoding in prepareStateBackend for the state request handler
               key =
                   ByteBuffer.wrap(
-                      CoderUtils.encodeToByteArray((Coder) keyCoder, ((KV) input).getKey()));
+                      CoderUtils.encodeToByteArray((Coder) keyCoder, ((KV) input).getKey(), Coder.Context.NESTED));
             } catch (CoderException e) {
               throw new RuntimeException("Failed to encode key for Flink state backend", e);
             }
@@ -751,6 +785,12 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     StatefulDoFnRunner.StateCleaner<BoundedWindow> stateCleaner =
         window -> {
           try {
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(
+                  "State cleanup for {} {}",
+                  window,
+                  Arrays.toString(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array()));
+            }
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
