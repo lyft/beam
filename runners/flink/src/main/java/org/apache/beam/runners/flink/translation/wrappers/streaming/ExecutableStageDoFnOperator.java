@@ -22,6 +22,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -367,8 +368,19 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     }
   }
 
+  private final List<InternalTimer<?, TimerInternals.TimerData>> deferredTimers = new ArrayList<>();
+
   @Override
   public void fireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
+    if (GC_TIMER_ID.equals(timer.getNamespace().getTimerId())) {
+      deferredTimers.add(timer);
+      LOG.info("###deferred cleanup timer {}", timer);
+    } else {
+      reallyFireTimer(timer);
+    }
+  }
+
+  private void reallyFireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
     // We need to decode the key
     final ByteBuffer encodedKey = (ByteBuffer) timer.getKey();
     @SuppressWarnings("ByteBufferBackingArray")
@@ -470,6 +482,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       if (mark.getTimestamp() >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
         invokeFinishBundle();
         setPushedBackWatermark(Long.MAX_VALUE);
+        LOG.info("###final watermark");
       } else {
         // It is not safe to advance the output watermark yet, so add a hold on the current
         // output watermark.
@@ -483,6 +496,11 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
                 // we are restoring the previous hold in case it was already set for side inputs
                 setPushedBackWatermark(backupWatermarkHold);
                 super.processWatermark(mark);
+                // fire cleanup timers, they can only execute after the bundle is complete
+                // as they remove the state that the timer callback may rely on
+                while (!deferredTimers.isEmpty()) {
+                  reallyFireTimer(deferredTimers.remove(0));
+                }
               } catch (Exception e) {
                 throw new RuntimeException(
                     "Failed to process pushed back watermark after finished bundle.", e);
@@ -491,6 +509,12 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       }
     }
     super.processWatermark(mark);
+    // if this was the final watermark, then no callback was scheduled
+    if (mark.getTimestamp() >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
+      while (!deferredTimers.isEmpty()) {
+        reallyFireTimer(deferredTimers.remove(0));
+      }
+    }
   }
 
   private static class SdkHarnessDoFnRunner<InputT, OutputT>
@@ -688,6 +712,8 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     }
   }
 
+  private static final String GC_TIMER_ID = "__user-state-cleanup__";
+
   private DoFnRunner<InputT, OutputT> ensureStateCleanup(
       SdkHarnessDoFnRunner<InputT, OutputT> sdkHarnessRunner) {
     if (keyCoder == null) {
@@ -699,8 +725,6 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     Coder windowCoder = windowingStrategy.getWindowFn().windowCoder();
     StatefulDoFnRunner.CleanupTimer<InputT> cleanupTimer =
         new StatefulDoFnRunner.CleanupTimer<InputT>() {
-
-          private static final String GC_TIMER_ID = "__user-state-cleanup__";
 
           @Override
           public Instant currentInputWatermarkTime() {
