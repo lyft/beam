@@ -264,6 +264,14 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             stateBackendLock.lock();
             prepareStateBackend(key, keyCoder);
             StateNamespace namespace = StateNamespaces.window(windowCoder, window);
+            if (LOG.isInfoEnabled()) {
+              LOG.info(
+                      "###State get for {} {} {} {}",
+                      pTransformId,
+                      userStateId,
+                      Arrays.toString(keyedStateBackend.getCurrentKey().array()),
+                      window);
+            }
             BagState<V> bagState =
                 stateInternals.state(namespace, StateTags.bag(userStateId, valueCoder));
             return bagState.read();
@@ -776,7 +784,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     StatefulDoFnRunner.StateCleaner<BoundedWindow> stateCleaner =
         window -> {
           try {
-            LOG.info("###state cleanup for {} {}", window, getKeyedStateBackend().getCurrentKey());
+            LOG.info("###state cleanup for {} {}", window, Arrays.toString(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array()));
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
