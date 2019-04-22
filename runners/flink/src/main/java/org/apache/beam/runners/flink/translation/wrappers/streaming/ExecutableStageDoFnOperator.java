@@ -21,6 +21,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -263,17 +264,19 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             stateBackendLock.lock();
             prepareStateBackend(key, keyCoder);
             StateNamespace namespace = StateNamespaces.window(windowCoder, window);
-            if (LOG.isInfoEnabled()) {
-              LOG.info(
-                  "###State get for {} {} {} {}",
-                  pTransformId,
-                  userStateId,
-                  Arrays.toString(keyedStateBackend.getCurrentKey().array()),
-                  window);
-            }
             BagState<V> bagState =
                 stateInternals.state(namespace, StateTags.bag(userStateId, valueCoder));
-            return bagState.read();
+            Iterable<V> value = bagState.read();
+            if (LOG.isInfoEnabled()) {
+              LOG.info(
+                      "TIMERDEBUG State get for {} {} value={} key={} {}",
+                      pTransformId,
+                      userStateId,
+                      value,
+                      new String(keyedStateBackend.getCurrentKey().array(), Charset.defaultCharset()),
+                      window);
+            }
+            return value;
           } finally {
             stateBackendLock.unlock();
           }
@@ -364,7 +367,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         stateBackendLock.lock();
         LOG.info(
                 "TIMERDEBUG setTimer for {} {} {}",
-                Arrays.toString(((ByteBuffer)key).array()),
+                new String(((ByteBuffer)key).array(), Charset.defaultCharset()),
                 timerElement, timerData);
         getKeyedStateBackend().setCurrentKey(key);
         if (timerData.getTimestamp().isAfter(BoundedWindow.TIMESTAMP_MAX_VALUE)) {
@@ -415,7 +418,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     try {
       stateBackendLock.lock();
       getKeyedStateBackend().setCurrentKey(encodedKey);
-      LOG.info("TIMERDEBUG firing timer {} {}", timer, Arrays.toString(bytes));
+      LOG.info("TIMERDEBUG firing timer {} {}", timer, new String(bytes, Charset.defaultCharset()));
       super.fireTimer(timer);
     } finally {
       stateBackendLock.unlock();
@@ -795,7 +798,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             LOG.info(
                 "TIMERDEBUG state cleanup for {} {}",
                 window,
-                Arrays.toString(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array()));
+                new String(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array(), Charset.defaultCharset()));
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
