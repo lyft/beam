@@ -269,10 +269,10 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             Iterable<V> value = bagState.read();
             if (LOG.isInfoEnabled()) {
               LOG.info(
-                      "TIMERDEBUG State get for {} {} value={} key={} {}",
+                      "TIMERDEBUG State get for value={} {} {} key={} {}",
+                      value,
                       pTransformId,
                       userStateId,
-                      value,
                       new String(keyedStateBackend.getCurrentKey().array(), Charset.defaultCharset()),
                       window);
             }
