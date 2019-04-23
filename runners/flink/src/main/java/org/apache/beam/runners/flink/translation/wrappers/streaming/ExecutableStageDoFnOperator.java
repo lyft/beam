@@ -267,10 +267,9 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             BagState<V> bagState =
                 stateInternals.state(namespace, StateTags.bag(userStateId, valueCoder));
             Iterable<V> value = bagState.read();
-            if (LOG.isInfoEnabled()) {
+            if (LOG.isInfoEnabled() && ((Collection<?>)value).size() == 0) {
               LOG.info(
-                      "TIMERDEBUG State get for value={} {} {} key={} {}",
-                      value,
+                      "TIMERDEBUG State get for {} {} key={} {}",
                       pTransformId,
                       userStateId,
                       new String(keyedStateBackend.getCurrentKey().array(), Charset.defaultCharset()),
@@ -366,7 +365,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       try {
         stateBackendLock.lock();
         LOG.info(
-                "TIMERDEBUG setTimer for {} {} {}",
+                "TIMERDEBUG setTimer for key={} {} {}",
                 new String(((ByteBuffer)key).array(), Charset.defaultCharset()),
                 timerElement, timerData);
         getKeyedStateBackend().setCurrentKey(key);
@@ -418,7 +417,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     try {
       stateBackendLock.lock();
       getKeyedStateBackend().setCurrentKey(encodedKey);
-      LOG.info("TIMERDEBUG firing timer {} {}", timer, new String(bytes, Charset.defaultCharset()));
+      LOG.info("TIMERDEBUG firing timer key={} {}", new String(bytes, Charset.defaultCharset()), timer);
       super.fireTimer(timer);
     } finally {
       stateBackendLock.unlock();
@@ -796,9 +795,9 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         window -> {
           try {
             LOG.info(
-                "TIMERDEBUG state cleanup for {} {}",
-                window,
-                new String(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array(), Charset.defaultCharset()));
+                "TIMERDEBUG state cleanup for key={} {}",
+                new String(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array(), Charset.defaultCharset()),
+                window);
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
