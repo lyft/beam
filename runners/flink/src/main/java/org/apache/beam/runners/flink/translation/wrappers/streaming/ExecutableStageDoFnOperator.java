@@ -269,12 +269,12 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             Iterable<V> value = bagState.read();
             if (LOG.isInfoEnabled()) {
               LOG.info(
-                      "TIMERDEBUG State get for value={} {} {} key={} {}",
-                      value,
-                      pTransformId,
-                      userStateId,
-                      new String(keyedStateBackend.getCurrentKey().array(), Charset.defaultCharset()),
-                      window);
+                  "TIMERDEBUG State get for value={} {} {} key={} {}",
+                  value,
+                  pTransformId,
+                  userStateId,
+                  new String(keyedStateBackend.getCurrentKey().array(), Charset.defaultCharset()),
+                  window);
             }
             return value;
           } finally {
@@ -319,7 +319,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             // See StateRequestHandlers.
             // TODO: eliminate double encoding
             encodedKey =
-                    ByteBuffer.wrap(CoderUtils.encodeToByteArray(keyCoder, key, Coder.Context.NESTED));
+                ByteBuffer.wrap(CoderUtils.encodeToByteArray(keyCoder, key, Coder.Context.NESTED));
           } catch (CoderException e) {
             throw new RuntimeException("Couldn't set key for state");
           }
@@ -366,9 +366,10 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       try {
         stateBackendLock.lock();
         LOG.info(
-                "TIMERDEBUG setTimer for {} {} {}",
-                new String(((ByteBuffer)key).array(), Charset.defaultCharset()),
-                timerElement, timerData);
+            "TIMERDEBUG setTimer for {} {} {}",
+            new String(((ByteBuffer) key).array(), Charset.defaultCharset()),
+            timerElement,
+            timerData);
         getKeyedStateBackend().setCurrentKey(key);
         if (timerData.getTimestamp().isAfter(BoundedWindow.TIMESTAMP_MAX_VALUE)) {
           timerInternals.deleteTimer(
@@ -386,12 +387,13 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     }
   }
 
-  private final List<InternalTimer<?, TimerInternals.TimerData>> deferredTimers = new ArrayList<>();
+  private final List<KV<RemoteBundle, InternalTimer<?, TimerInternals.TimerData>>> cleanupTimers =
+      new ArrayList<>();
 
   @Override
   public void fireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
     if (GC_TIMER_ID.equals(timer.getNamespace().getTimerId())) {
-      deferredTimers.add(timer);
+      cleanupTimers.add(KV.of(sdkHarnessRunner.remoteBundle, timer));
       LOG.info("TIMERDEBUG deferred cleanup timer {}", timer);
     } else {
       reallyFireTimer(timer);
@@ -422,6 +424,24 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       super.fireTimer(timer);
     } finally {
       stateBackendLock.unlock();
+    }
+  }
+
+  @SuppressWarnings("ByteBufferBackingArray")
+  private void fireCleanupTimers() {
+    while (!cleanupTimers.isEmpty()) {
+      KV<RemoteBundle, InternalTimer<?, TimerInternals.TimerData>> kv = cleanupTimers.get(0);
+      if (kv.getKey() != null && kv.getKey() == sdkHarnessRunner.remoteBundle) {
+        // user timers and cleanup can trigger in same bundle on watermark
+        // stop processing the timers since the bundle hasn't completed yet
+        LOG.info(
+            "TIMERDEBUG defer cleanup due to bundle not complete for {} {}",
+            new String(((ByteBuffer) kv.getValue().getKey()).array(), Charset.defaultCharset()),
+            kv.getValue());
+        return;
+      }
+      cleanupTimers.remove(0);
+      reallyFireTimer(kv.getValue());
     }
   }
 
@@ -516,9 +536,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
                 super.processWatermark(mark);
                 // fire cleanup timers, they can only execute after the bundle is complete
                 // as they remove the state that the timer callback may rely on
-                while (!deferredTimers.isEmpty()) {
-                  reallyFireTimer(deferredTimers.remove(0));
-                }
+                fireCleanupTimers();
               } catch (Exception e) {
                 throw new RuntimeException(
                     "Failed to process pushed back watermark after finished bundle.", e);
@@ -529,9 +547,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     super.processWatermark(mark);
     // if this was the final watermark, then no callback was scheduled
     if (mark.getTimestamp() >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
-      while (!deferredTimers.isEmpty()) {
-        reallyFireTimer(deferredTimers.remove(0));
-      }
+      fireCleanupTimers();
     }
   }
 
@@ -756,10 +772,12 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             Instant gcTime = LateDataUtils.garbageCollectionTime(window, windowingStrategy).plus(1);
             ByteBuffer key;
             try {
-              // this needs to match the encoding in prepareStateBackend for the state request handler
+              // this needs to match the encoding in prepareStateBackend for the state request
+              // handler
               key =
                   ByteBuffer.wrap(
-                      CoderUtils.encodeToByteArray((Coder) keyCoder, ((KV) input).getKey(), Coder.Context.NESTED));
+                      CoderUtils.encodeToByteArray(
+                          (Coder) keyCoder, ((KV) input).getKey(), Coder.Context.NESTED));
             } catch (CoderException e) {
               throw new RuntimeException("Failed to encode key for Flink state backend", e);
             }
@@ -798,7 +816,9 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             LOG.info(
                 "TIMERDEBUG state cleanup for {} {}",
                 window,
-                new String(((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array(), Charset.defaultCharset()));
+                new String(
+                    ((ByteBuffer) getKeyedStateBackend().getCurrentKey()).array(),
+                    Charset.defaultCharset()));
             stateBackendLock.lock();
             for (UserStateReference userState : executableStage.getUserStates()) {
               StateNamespace namespace = StateNamespaces.window(windowCoder, window);
