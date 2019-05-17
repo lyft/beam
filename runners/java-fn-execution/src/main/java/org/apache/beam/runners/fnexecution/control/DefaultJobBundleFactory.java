@@ -23,6 +23,8 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.Target;
 import org.apache.beam.model.pipeline.v1.RunnerApi.Environment;
@@ -57,6 +59,8 @@ import org.apache.beam.sdk.fn.IdGenerators;
 import org.apache.beam.sdk.fn.data.FnDataReceiver;
 import org.apache.beam.sdk.fn.stream.OutboundObserverFactory;
 import org.apache.beam.sdk.function.ThrowingFunction;
+import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.options.PortablePipelineOptions;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
 import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
@@ -85,6 +89,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   private final ExecutorService executor;
   private final MapControlClientPool clientPool;
   private final IdGenerator stageIdGenerator;
+  private final int environmentExpirationMillis;
 
   public static DefaultJobBundleFactory create(JobInfo jobInfo) {
     Map<String, EnvironmentFactory.Provider> environmentFactoryProviderMap =
@@ -117,6 +122,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     this.executor = Executors.newCachedThreadPool();
     this.clientPool = MapControlClientPool.create();
     this.stageIdGenerator = stageIdGenerator;
+    PipelineOptions pipelineOptions =
+        PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions());
+    this.environmentExpirationMillis =
+        pipelineOptions.as(PortablePipelineOptions.class).getEnvironmentExpirationMillis();
     this.environmentCache =
         createEnvironmentCache(serverFactory -> createServerInfo(jobInfo, serverFactory));
   }
@@ -144,47 +153,54 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             .setDataServer(dataServer)
             .setStateServer(stateServer)
             .build();
+    this.environmentExpirationMillis = 0;
     this.environmentCache = createEnvironmentCache(serverFactory -> serverInfo);
   }
 
   private LoadingCache<Environment, WrappedSdkHarnessClient> createEnvironmentCache(
       ThrowingFunction<ServerFactory, ServerInfo> serverInfoCreator) {
-    return CacheBuilder.newBuilder()
-        .removalListener(
-            (RemovalNotification<Environment, WrappedSdkHarnessClient> notification) -> {
-              LOG.debug("Cleaning up for environment {}", notification.getKey().getUrn());
-              try {
-                notification.getValue().close();
-              } catch (Exception e) {
-                LOG.warn(
-                    String.format("Error cleaning up environment %s", notification.getKey()), e);
-              }
-            })
-        .build(
-            new CacheLoader<Environment, WrappedSdkHarnessClient>() {
-              @Override
-              public WrappedSdkHarnessClient load(Environment environment) throws Exception {
-                EnvironmentFactory.Provider environmentFactoryProvider =
-                    environmentFactoryProviderMap.get(environment.getUrn());
-                ServerFactory serverFactory = environmentFactoryProvider.getServerFactory();
-                ServerInfo serverInfo = serverInfoCreator.apply(serverFactory);
+    CacheBuilder builder =
+        CacheBuilder.newBuilder()
+            .removalListener(
+                (RemovalNotification<Environment, WrappedSdkHarnessClient> notification) -> {
+                  int refCount = notification.getValue().unref();
+                  LOG.debug(
+                      "Removed environment {} with {} remaining bundle references.",
+                      notification.getKey(),
+                      refCount);
+                });
 
-                EnvironmentFactory environmentFactory =
-                    environmentFactoryProvider.createEnvironmentFactory(
-                        serverInfo.getControlServer(),
-                        serverInfo.getLoggingServer(),
-                        serverInfo.getRetrievalServer(),
-                        serverInfo.getProvisioningServer(),
-                        clientPool,
-                        stageIdGenerator);
-                return WrappedSdkHarnessClient.wrapping(
-                    environmentFactory.createEnvironment(environment), serverInfo);
-              }
-            });
+    if (environmentExpirationMillis > 0) {
+      builder = builder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
+    }
+    return builder.build(
+        new CacheLoader<Environment, WrappedSdkHarnessClient>() {
+          @Override
+          public WrappedSdkHarnessClient load(Environment environment) throws Exception {
+            EnvironmentFactory.Provider environmentFactoryProvider =
+                environmentFactoryProviderMap.get(environment.getUrn());
+            ServerFactory serverFactory = environmentFactoryProvider.getServerFactory();
+            ServerInfo serverInfo = serverInfoCreator.apply(serverFactory);
+
+            EnvironmentFactory environmentFactory =
+                environmentFactoryProvider.createEnvironmentFactory(
+                    serverInfo.getControlServer(),
+                    serverInfo.getLoggingServer(),
+                    serverInfo.getRetrievalServer(),
+                    serverInfo.getProvisioningServer(),
+                    clientPool,
+                    stageIdGenerator);
+            return WrappedSdkHarnessClient.wrapping(
+                environmentFactory.createEnvironment(environment), serverInfo);
+          }
+        });
   }
 
   @Override
   public StageBundleFactory forStage(ExecutableStage executableStage) {
+    if (true) {
+      return new SmarterStageBundleFactory(executableStage);
+    }
     WrappedSdkHarnessClient wrappedClient =
         environmentCache.getUnchecked(executableStage.getEnvironment());
     ExecutableProcessBundleDescriptor processBundleDescriptor;
@@ -285,6 +301,84 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     }
   }
 
+  /** A {@link StageBundleFactory} that supports environment expiration. */
+  private class SmarterStageBundleFactory implements StageBundleFactory {
+
+    private final ExecutableStage executableStage;
+    private SimpleStageBundleFactory currentFactory;
+
+    private SmarterStageBundleFactory(ExecutableStage executableStage) {
+      this.executableStage = executableStage;
+      WrappedSdkHarnessClient wrappedClient =
+          environmentCache.getUnchecked(executableStage.getEnvironment());
+      currentFactory = createBundleFactory(wrappedClient);
+    }
+
+    private SimpleStageBundleFactory createBundleFactory(WrappedSdkHarnessClient wrappedClient) {
+      ExecutableProcessBundleDescriptor processBundleDescriptor;
+      try {
+        processBundleDescriptor =
+            ProcessBundleDescriptors.fromExecutableStage(
+                stageIdGenerator.getId(),
+                executableStage,
+                wrappedClient.getServerInfo().getDataServer().getApiServiceDescriptor(),
+                wrappedClient.getServerInfo().getStateServer().getApiServiceDescriptor());
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+      return SimpleStageBundleFactory.create(
+          wrappedClient, processBundleDescriptor, wrappedClient.getServerInfo().getStateServer());
+    }
+
+    @Override
+    public RemoteBundle getBundle(
+        OutputReceiverFactory outputReceiverFactory,
+        StateRequestHandler stateRequestHandler,
+        BundleProgressHandler progressHandler)
+        throws Exception {
+
+      if (environmentExpirationMillis > 0) {
+        WrappedSdkHarnessClient wrappedClient =
+            environmentCache.getUnchecked(executableStage.getEnvironment());
+        if (currentFactory.wrappedClient != wrappedClient) {
+          // environment expired
+          currentFactory = createBundleFactory(wrappedClient);
+        }
+      }
+      currentFactory.wrappedClient.ref();
+
+      RemoteBundle bundle =
+          currentFactory.getBundle(outputReceiverFactory, stateRequestHandler, progressHandler);
+      return new RemoteBundle() {
+        @Override
+        public String getId() {
+          return bundle.getId();
+        }
+
+        @Override
+        public Map<String, FnDataReceiver<WindowedValue<?>>> getInputReceivers() {
+          return bundle.getInputReceivers();
+        }
+
+        @Override
+        public void close() throws Exception {
+          bundle.close();
+          currentFactory.wrappedClient.unref();
+        }
+      };
+    }
+
+    @Override
+    public ExecutableProcessBundleDescriptor getProcessBundleDescriptor() {
+      return currentFactory.getProcessBundleDescriptor();
+    }
+
+    @Override
+    public void close() throws Exception {
+      currentFactory.close();
+    }
+  }
+
   /**
    * Holder for an {@link SdkHarnessClient} along with its associated state and data servers. As of
    * now, there is a 1:1 relationship between data services and harness clients. The servers are
@@ -295,6 +389,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     private final RemoteEnvironment environment;
     private final SdkHarnessClient client;
     private final ServerInfo serverInfo;
+    private final AtomicInteger bundleRefCount = new AtomicInteger();
 
     static WrappedSdkHarnessClient wrapping(RemoteEnvironment environment, ServerInfo serverInfo) {
       SdkHarnessClient client =
@@ -308,6 +403,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       this.environment = environment;
       this.client = client;
       this.serverInfo = serverInfo;
+      ref();
     }
 
     SdkHarnessClient getClient() {
@@ -330,6 +426,24 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
           AutoCloseable retrievalServer = serverInfo.getRetrievalServer();
           AutoCloseable provisioningServer = serverInfo.getProvisioningServer()) {}
       // TODO: Wait for executor shutdown?
+    }
+
+    private int ref() {
+      return bundleRefCount.incrementAndGet();
+    }
+
+    private int unref() {
+      int count = bundleRefCount.decrementAndGet();
+      if (count == 0) {
+        // Close environment after it was removed from cache and all bundles finished.
+        LOG.info("Closing environment {}", environment.getEnvironment());
+        try {
+          close();
+        } catch (Exception e) {
+          LOG.warn("Error cleaning up environment {}", environment.getEnvironment(), e);
+        }
+      }
+      return count;
     }
   }
 
