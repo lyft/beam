@@ -5,6 +5,8 @@ WORKDIR /src/beam
 COPY . .
 # Add a symlink to the setup.py code root at the lyft conventional root
 RUN ln -sf /src/beam/sdks/python /code/beam
+# Install the same cython version which is used by beam
+Run pip install "cython==0.28.1" 
 RUN \
     cp \
         /code/containers/pythonlibrary/Makefile \
