@@ -1,4 +1,4 @@
-FROM lyft/pythonlibrary:da49cb1d41a1bce9c284e5c8238eb3af0872c433
+FROM lyft/pythonlibrary:66d815e6ba03c9515c0c2273ecca13036015715d
 # add source to a different directory, the code root and the setup.py root
 # are at different locations than lyft conventions expect
 WORKDIR /src/beam
