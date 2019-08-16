@@ -1,14 +1,23 @@
-FROM lyft/pythonlibrary:66d815e6ba03c9515c0c2273ecca13036015715d
+FROM lyft/pythonlibrary:aade5cd71241b7e490cd9d576154a013298a0892
+RUN : \
+    && apt-get update \
+    && apt-get install -y \
+        python3.6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+RUN : \
+    && virtualenv -ppython2.7 venvs/venv2 \
+    && virtualenv -ppython3 venvs/venv3 \
+    && venvs/venv2/bin/pip install "pip==9.0.0" "setuptools==39.0.1" "cython==0.28.1" "wheel" \
+    && venvs/venv3/bin/pip install "pip==9.0.3" "setuptools==39.0.1" "cython==0.28.1" "wheel"
+ENV PATH=/code/venvs/venv2/bin:/code/venvs/venv3/bin:$PATH
 # add source to a different directory, the code root and the setup.py root
 # are at different locations than lyft conventions expect
 WORKDIR /src/beam
 COPY . .
 # Add a symlink to the setup.py code root at the lyft conventional root
 RUN ln -sf /src/beam/sdks/python /code/beam
-# Install the same version of cython required by beam build
-RUN pip install "cython==0.28.1"
 RUN \
     cp \
-        /code/containers/pythonlibrary/Makefile \
         /src/beam/manifest.yaml \
         /code/beam/
