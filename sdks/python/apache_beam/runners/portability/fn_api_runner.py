@@ -27,6 +27,7 @@ import itertools
 import logging
 import os
 import queue
+import random
 import subprocess
 import sys
 import threading
@@ -69,6 +70,8 @@ from apache_beam.runners.worker import bundle_processor
 from apache_beam.runners.worker import data_plane
 from apache_beam.runners.worker import sdk_worker
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
+from apache_beam.runners.worker.sdk_worker import _Future
+from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.transforms import trigger
 from apache_beam.transforms.window import GlobalWindows
 from apache_beam.utils import profiler
@@ -308,7 +311,8 @@ class FnApiRunner(runner.PipelineRunner):
       default_environment=None,
       bundle_repeat=0,
       use_state_iterables=False,
-      provision_info=None):
+      provision_info=None,
+      state_cache_size=100):
     """Creates a new Fn API Runner.
 
     Args:
@@ -330,6 +334,7 @@ class FnApiRunner(runner.PipelineRunner):
     self._profiler_factory = None
     self._use_state_iterables = use_state_iterables
     self._provision_info = provision_info
+    self._state_cache_size = state_cache_size
 
   def _next_uid(self):
     self._last_uid += 1
@@ -439,7 +444,9 @@ class FnApiRunner(runner.PipelineRunner):
       stages (list[fn_api_runner_transforms.Stage])
     """
     worker_handler_manager = WorkerHandlerManager(
-        stage_context.components.environments, self._provision_info)
+        stage_context.components.environments,
+        self._state_cache_size,
+        self._provision_info)
     metrics_by_stage = {}
     monitoring_infos_by_stage = {}
 
@@ -482,7 +489,7 @@ class FnApiRunner(runner.PipelineRunner):
                 side_input_id=tag,
                 window=window,
                 key=key))
-        worker_handler.state.blocking_append(state_key, elements_data)
+        worker_handler.state.append_raw(state_key, elements_data)
 
   def _run_bundle_multiple_times_for_testing(
       self, worker_handler_list, process_bundle_descriptor, data_input,
@@ -635,7 +642,7 @@ class FnApiRunner(runner.PipelineRunner):
       out = create_OutputStream()
       for element in values:
         element_coder_impl.encode_to_stream(element, out, True)
-      worker_handler.state.blocking_append(
+      worker_handler.state.append_raw(
           beam_fn_api_pb2.StateKey(
               runner=beam_fn_api_pb2.StateKey.Runner(key=token)),
           out.get())
@@ -911,7 +918,7 @@ class FnApiRunner(runner.PipelineRunner):
     def process_instruction_id(self, unused_instruction_id):
       yield
 
-    def blocking_get(self, state_key, continuation_token=None):
+    def get_raw(self, state_key, continuation_token=None):
       with self._lock:
         full_state = self._state[self._to_key(state_key)]
         if self._use_continuation_tokens:
@@ -932,13 +939,15 @@ class FnApiRunner(runner.PipelineRunner):
           assert not continuation_token
           return b''.join(full_state), None
 
-    def blocking_append(self, state_key, data):
+    def append_raw(self, state_key, data):
       with self._lock:
         self._state[self._to_key(state_key)].append(data)
+      return _Future.done()
 
-    def blocking_clear(self, state_key):
+    def clear(self, state_key):
       with self._lock:
         del self._state[self._to_key(state_key)]
+      return _Future.done()
 
     @staticmethod
     def _to_key(state_key):
@@ -954,19 +963,19 @@ class FnApiRunner(runner.PipelineRunner):
       for request in request_stream:
         request_type = request.WhichOneof('request')
         if request_type == 'get':
-          data, continuation_token = self._state.blocking_get(
+          data, continuation_token = self._state.get_raw(
               request.state_key, request.get.continuation_token)
           yield beam_fn_api_pb2.StateResponse(
               id=request.id,
               get=beam_fn_api_pb2.StateGetResponse(
                   data=data, continuation_token=continuation_token))
         elif request_type == 'append':
-          self._state.blocking_append(request.state_key, request.append.data)
+          self._state.append_raw(request.state_key, request.append.data)
           yield beam_fn_api_pb2.StateResponse(
               id=request.id,
               append=beam_fn_api_pb2.StateAppendResponse())
         elif request_type == 'clear':
-          self._state.blocking_clear(request.state_key)
+          self._state.clear(request.state_key)
           yield beam_fn_api_pb2.StateResponse(
               id=request.id,
               clear=beam_fn_api_pb2.StateClearResponse())
@@ -1064,10 +1073,9 @@ class EmbeddedWorkerHandler(WorkerHandler):
         self, data_plane.InMemoryDataChannel(), state, provision_info)
     self.control_conn = self
     self.data_conn = self.data_plane_handler
-
     self.worker = sdk_worker.SdkWorker(
         sdk_worker.BundleProcessorCache(
-            FnApiRunner.SingletonStateHandlerFactory(self.state),
+            FnApiRunner.SingletonStateHandlerFactory(state),
             data_plane.InMemoryDataChannelFactory(
                 self.data_plane_handler.inverse()),
             {}))
@@ -1381,11 +1389,13 @@ class DockerSdkWorkerHandler(GrpcWorkerHandler):
 
 
 class WorkerHandlerManager(object):
-  def __init__(self, environments, job_provision_info=None):
+  def __init__(self, environments, state_cache_size, job_provision_info=None):
     self._environments = environments
     self._job_provision_info = job_provision_info
     self._cached_handlers = collections.defaultdict(list)
-    self._state = FnApiRunner.StateServicer() # rename?
+    self._state = sdk_worker.CachingMaterializingStateHandler(
+        StateCache(state_cache_size),
+        FnApiRunner.StateServicer())
     self._grpc_server = None
 
   def get_worker_handlers(self, environment_id, num_workers):
@@ -1622,7 +1632,8 @@ class BundleManager(object):
     process_bundle_req = beam_fn_api_pb2.InstructionRequest(
         instruction_id=process_bundle_id,
         process_bundle=beam_fn_api_pb2.ProcessBundleRequest(
-            process_bundle_descriptor_reference=self._bundle_descriptor.id))
+            process_bundle_descriptor_reference=self._bundle_descriptor.id,
+            cache_tokens=[self._generate_cache_token()]))
     result_future = self._worker_handler.control_conn.push(process_bundle_req)
 
     split_results = []
@@ -1659,6 +1670,12 @@ class BundleManager(object):
       self._worker_handler.control_conn.push(finalize_request)
 
     return result, split_results
+
+  @staticmethod
+  def _generate_cache_token():
+    return beam_fn_api_pb2.ProcessBundleRequest.CacheToken(
+        user_state=beam_fn_api_pb2.ProcessBundleRequest.CacheToken.UserState(),
+        token=bytes(bytearray(random.getrandbits(8) for _ in range(16))))
 
 
 class ParallelBundleManager(BundleManager):

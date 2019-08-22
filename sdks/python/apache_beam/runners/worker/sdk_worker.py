@@ -37,11 +37,13 @@ import grpc
 from future.utils import raise_
 from future.utils import with_metaclass
 
+from apache_beam.coders import coder_impl
 from apache_beam.portability.api import beam_fn_api_pb2
 from apache_beam.portability.api import beam_fn_api_pb2_grpc
 from apache_beam.runners.worker import bundle_processor
 from apache_beam.runners.worker import data_plane
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
+from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.runners.worker.worker_id_interceptor import WorkerIdInterceptor
 
 
@@ -51,7 +53,7 @@ class SdkHarness(object):
 
   def __init__(
       self, control_address, worker_count, credentials=None, worker_id=None,
-      profiler_factory=None):
+      state_cache_size=100, profiler_factory=None):
     self._alive = True
     self._worker_count = worker_count
     self._worker_index = 0
@@ -71,7 +73,8 @@ class SdkHarness(object):
         self._control_channel, WorkerIdInterceptor(self._worker_id))
     self._data_channel_factory = data_plane.GrpcClientDataChannelFactory(
         credentials, self._worker_id)
-    self._state_handler_factory = GrpcStateHandlerFactory(credentials)
+    self._state_handler_factory = GrpcStateHandlerFactory(state_cache_size,
+                                                          credentials)
     self._profiler_factory = profiler_factory
     self._fns = {}
     # BundleProcessor cache across all workers.
@@ -107,7 +110,7 @@ class SdkHarness(object):
       # SdkHarness manage function registration and share self._fns with all
       # the workers. This is needed because function registration (register)
       # and exceution(process_bundle) are send over different request and we
-      # do not really know which woker is going to process bundle
+      # do not really know which worker is going to process bundle
       # for a function till we get process_bundle request. Moreover
       # same function is reused by different process bundle calls and
       # potentially get executed by different worker. Hence we need a
@@ -331,7 +334,8 @@ class BundleProcessorCache(object):
 
 class SdkWorker(object):
 
-  def __init__(self, bundle_processor_cache, profiler_factory=None):
+  def __init__(self, bundle_processor_cache,
+               profiler_factory=None):
     self.bundle_processor_cache = bundle_processor_cache
     self.profiler_factory = profiler_factory
 
@@ -363,7 +367,7 @@ class SdkWorker(object):
         instruction_id, request.process_bundle_descriptor_reference)
     try:
       with bundle_processor.state_handler.process_instruction_id(
-          instruction_id):
+          instruction_id, request.cache_tokens):
         with self.maybe_profile(instruction_id):
           delayed_applications, requests_finalization = (
               bundle_processor.process_bundle(instruction_id))
@@ -459,11 +463,12 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
   Caches the created channels by ``state descriptor url``.
   """
 
-  def __init__(self, credentials=None):
+  def __init__(self, state_cache_size, credentials=None):
     self._state_handler_cache = {}
     self._lock = threading.Lock()
     self._throwing_state_handler = ThrowingStateHandler()
     self._credentials = credentials
+    self._state_cache = StateCache(state_cache_size)
 
   def create_state_handler(self, api_service_descriptor):
     if not api_service_descriptor:
@@ -489,8 +494,10 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           # Add workerId to the grpc channel
           grpc_channel = grpc.intercept_channel(grpc_channel,
                                                 WorkerIdInterceptor())
-          self._state_handler_cache[url] = GrpcStateHandler(
-              beam_fn_api_pb2_grpc.BeamFnStateStub(grpc_channel))
+          self._state_handler_cache[url] = CachingMaterializingStateHandler(
+              self._state_cache,
+              GrpcStateHandler(
+                  beam_fn_api_pb2_grpc.BeamFnStateStub(grpc_channel)))
     return self._state_handler_cache[url]
 
   def close(self):
@@ -498,28 +505,26 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
     for _, state_handler in self._state_handler_cache.items():
       state_handler.done()
     self._state_handler_cache.clear()
+    self._state_cache.clear_all()
 
 
 class ThrowingStateHandler(object):
   """A state handler that errors on any requests."""
 
-  def blocking_get(self, state_key, instruction_reference):
+  def blocking_get(self, state_key, coder):
     raise RuntimeError(
         'Unable to handle state requests for ProcessBundleDescriptor without '
-        'out state ApiServiceDescriptor for instruction %s and state key %s.'
-        % (state_key, instruction_reference))
+        'state ApiServiceDescriptor for state key %s.' % (state_key,))
 
-  def blocking_append(self, state_key, data, instruction_reference):
+  def append(self, state_key, coder, elements):
     raise RuntimeError(
         'Unable to handle state requests for ProcessBundleDescriptor without '
-        'out state ApiServiceDescriptor for instruction %s and state key %s.'
-        % (state_key, instruction_reference))
+        'state ApiServiceDescriptor for state key %s.' % (state_key,))
 
-  def blocking_clear(self, state_key, instruction_reference):
+  def clear(self, state_key):
     raise RuntimeError(
         'Unable to handle state requests for ProcessBundleDescriptor without '
-        'out state ApiServiceDescriptor for instruction %s and state key %s.'
-        % (state_key, instruction_reference))
+        'state ApiServiceDescriptor for state key %s.' % (state_key,))
 
 
 class GrpcStateHandler(object):
@@ -527,7 +532,6 @@ class GrpcStateHandler(object):
   _DONE = object()
 
   def __init__(self, state_stub):
-    self._lock = threading.Lock()
     self._state_stub = state_stub
     self._requests = queue.Queue()
     self._responses_by_id = {}
@@ -577,7 +581,7 @@ class GrpcStateHandler(object):
     self._done = True
     self._requests.put(self._DONE)
 
-  def blocking_get(self, state_key, continuation_token=None):
+  def get_raw(self, state_key, continuation_token=None):
     response = self._blocking_request(
         beam_fn_api_pb2.StateRequest(
             state_key=state_key,
@@ -585,31 +589,35 @@ class GrpcStateHandler(object):
                 continuation_token=continuation_token)))
     return response.get.data, response.get.continuation_token
 
-  def blocking_append(self, state_key, data):
-    self._blocking_request(
+  def append_raw(self, state_key, data):
+    return self._request(
         beam_fn_api_pb2.StateRequest(
             state_key=state_key,
             append=beam_fn_api_pb2.StateAppendRequest(data=data)))
 
-  def blocking_clear(self, state_key):
-    self._blocking_request(
+  def clear(self, state_key):
+    return self._request(
         beam_fn_api_pb2.StateRequest(
             state_key=state_key,
             clear=beam_fn_api_pb2.StateClearRequest()))
 
-  def _blocking_request(self, request):
+  def _request(self, request):
     request.id = self._next_id()
     request.instruction_reference = self._context.process_instruction_id
     self._responses_by_id[request.id] = future = _Future()
     self._requests.put(request)
-    while not future.wait(timeout=1):
+    return future
+
+  def _blocking_request(self, request):
+    req_future = self._request(request)
+    while not req_future.wait(timeout=1):
       if self._exc_info:
         t, v, tb = self._exc_info
         raise_(t, v, tb)
       elif self._done:
         raise RuntimeError()
     del self._responses_by_id[request.id]
-    response = future.get()
+    response = req_future.get()
     if response.error:
       raise RuntimeError(response.error)
     else:
@@ -618,6 +626,106 @@ class GrpcStateHandler(object):
   def _next_id(self):
     self._last_id += 1
     return str(self._last_id)
+
+
+class CachingMaterializingStateHandler(object):
+  """ A State handler which retrieves and caches state. """
+
+  def __init__(self, global_state_cache, underlying_state):
+    self._underlying = underlying_state
+    self._state_cache = global_state_cache
+    self._context = threading.local()
+
+  @contextlib.contextmanager
+  def process_instruction_id(self, bundle_id, cache_tokens):
+    if getattr(self._context, 'cache_token', None) is not None:
+      raise RuntimeError(
+          'Cache tokens already set to %s' % self._context.cache_token)
+    # TODO Also handle cache tokens for side input, if present
+    user_state_cache_token = None
+    for cache_token_struct in cache_tokens:
+      if cache_token_struct.HasField("user_state"):
+        # There should only be one user state token present
+        assert not user_state_cache_token
+        user_state_cache_token = cache_token_struct.token
+    try:
+      self._context.cache_token = user_state_cache_token
+      with self._underlying.process_instruction_id(bundle_id):
+        yield
+    finally:
+      self._context.cache_token = None
+
+  def blocking_get(self, state_key, coder, is_cached=False):
+    if not self._should_be_cached(is_cached):
+      # no cache / tokens, can't do a lookup/store in the cache
+      return self._materialize_iter(state_key, coder)
+    # Cache lookup
+    cache_state_key = self._convert_to_cache_key(state_key)
+    cached_value = self._state_cache.get(cache_state_key,
+                                         self._context.cache_token)
+    if cached_value is None:
+      # Cache miss, need to retrieve from the Runner
+      materialized = cached_value = []
+      for val in self._materialize_iter(state_key, coder):
+        materialized.append(val)
+      self._state_cache.append(
+          cache_state_key,
+          self._context.cache_token,
+          materialized)
+    return iter(cached_value)
+
+  def append(self, state_key, coder, elements, is_cached=False):
+    if self._should_be_cached(is_cached):
+      # Update the cache
+      cache_key = self._convert_to_cache_key(state_key)
+      self._state_cache.append(cache_key, self._context.cache_token, elements)
+    # Write to state handler
+    out = coder_impl.create_OutputStream()
+    for element in elements:
+      coder.encode_to_stream(element, out, True)
+    return self._underlying.append_raw(state_key, out.get())
+
+  def clear(self, state_key, is_cached=False):
+    if self._should_be_cached(is_cached):
+      self._state_cache.clear(self._convert_to_cache_key(state_key))
+    return self._underlying.clear(state_key)
+
+  # The following methods are for interaction with the FnApiRunner:
+
+  def get_raw(self, state_key, continuation_token=None):
+    return self._underlying.get_raw(state_key, continuation_token)
+
+  def append_raw(self, state_key, data):
+    return self._underlying.append_raw(state_key, data)
+
+  def restore(self):
+    self._underlying.restore()
+
+  def checkpoint(self):
+    self._underlying.checkpoint()
+
+  def done(self):
+    self._underlying.done()
+
+  def _materialize_iter(self, state_key, coder):
+    continuation_token = None
+    while True:
+      data, continuation_token = \
+          self._underlying.get_raw(state_key, continuation_token)
+      input_stream = coder_impl.create_InputStream(data)
+      while input_stream.size() > 0:
+        yield coder.decode_from_stream(input_stream, True)
+      if not continuation_token:
+        break
+
+  def _should_be_cached(self, request_is_cached):
+    return self._state_cache.is_cache_enabled() and \
+           request_is_cached and \
+           self._context.cache_token
+
+  @staticmethod
+  def _convert_to_cache_key(state_key):
+    return state_key.SerializeToString()
 
 
 class _Future(object):
@@ -639,3 +747,11 @@ class _Future(object):
   def set(self, value):
     self._value = value
     self._event.set()
+
+  @classmethod
+  def done(cls):
+    if not hasattr(cls, 'DONE'):
+      done_future = _Future()
+      done_future.set(None)
+      cls.DONE = done_future
+    return cls.DONE
