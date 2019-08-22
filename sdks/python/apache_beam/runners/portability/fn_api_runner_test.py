@@ -1176,6 +1176,17 @@ class FnApiRunnerTestWithGrpcMultiThreaded(FnApiRunnerTest):
                 payload=b'2')))
 
 
+class FnApiRunnerTestWithDisabledCaching(FnApiRunnerTest):
+
+  def create_pipeline(self):
+    return beam.Pipeline(
+        runner=fn_api_runner.FnApiRunner(
+            state_cache_size=0,
+            default_environment=beam_runner_api_pb2.Environment(
+                urn=python_urns.EMBEDDED_PYTHON_GRPC,
+                payload=b'2')))
+
+
 class FnApiRunnerTestWithBundleRepeat(FnApiRunnerTest):
 
   def create_pipeline(self):
