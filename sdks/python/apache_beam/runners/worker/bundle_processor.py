@@ -199,25 +199,19 @@ class DataInputOperation(RunnerIOOperation):
 
 
 class _StateBackedIterable(object):
-  def __init__(self, state_handler, state_key, coder_or_impl):
+  def __init__(self, state_handler, state_key, coder_or_impl,
+               is_cached=False):
     self._state_handler = state_handler
     self._state_key = state_key
     if isinstance(coder_or_impl, coders.Coder):
       self._coder_impl = coder_or_impl.get_impl()
     else:
       self._coder_impl = coder_or_impl
+    self._is_cached = is_cached
 
   def __iter__(self):
-    data, continuation_token = self._state_handler.blocking_get(self._state_key)
-    while True:
-      input_stream = coder_impl.create_InputStream(data)
-      while input_stream.size() > 0:
-        yield self._coder_impl.decode_from_stream(input_stream, True)
-      if not continuation_token:
-        break
-      else:
-        data, continuation_token = self._state_handler.blocking_get(
-            self._state_key, continuation_token)
+    return self._state_handler.blocking_get(
+        self._state_key, self._coder_impl, is_cached=self._is_cached)
 
   def __reduce__(self):
     return list, (list(self),)
@@ -293,6 +287,7 @@ class StateBackedSideInputMap(object):
 
 
 class CombiningValueRuntimeState(userstate.RuntimeState):
+
   def __init__(self, underlying_bag_state, combinefn):
     self._combinefn = combinefn
     self._underlying_bag_state = underlying_bag_state
@@ -346,8 +341,8 @@ class _ConcatIterable(object):
 coder_impl.FastPrimitivesCoderImpl.register_iterable_like_type(_ConcatIterable)
 
 
-# TODO(BEAM-5428): Implement cross-bundle state caching.
 class SynchronousBagRuntimeState(userstate.RuntimeState):
+
   def __init__(self, state_handler, state_key, value_coder):
     self._state_handler = state_handler
     self._state_key = state_key
@@ -358,7 +353,8 @@ class SynchronousBagRuntimeState(userstate.RuntimeState):
   def read(self):
     return _ConcatIterable(
         [] if self._cleared else _StateBackedIterable(
-            self._state_handler, self._state_key, self._value_coder),
+            self._state_handler, self._state_key, self._value_coder,
+            is_cached=True),
         self._added_elements)
 
   def add(self, value):
@@ -370,13 +366,13 @@ class SynchronousBagRuntimeState(userstate.RuntimeState):
 
   def _commit(self):
     if self._cleared:
-      self._state_handler.blocking_clear(self._state_key)
+      self._state_handler.clear(self._state_key, is_cached=True).get()
     if self._added_elements:
-      value_coder_impl = self._value_coder.get_impl()
-      out = coder_impl.create_OutputStream()
-      for element in self._added_elements:
-        value_coder_impl.encode_to_stream(element, out, True)
-      self._state_handler.blocking_append(self._state_key, out.get())
+      self._state_handler.append(
+          self._state_key,
+          self._value_coder.get_impl(),
+          self._added_elements,
+          is_cached=True).get()
 
 
 class OutputTimer(object):
