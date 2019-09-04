@@ -505,7 +505,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
     for _, state_handler in self._state_handler_cache.items():
       state_handler.done()
     self._state_handler_cache.clear()
-    self._state_cache.clear_all()
+    self._state_cache.evict_all()
 
 
 class ThrowingStateHandler(object):
@@ -665,9 +665,8 @@ class CachingMaterializingStateHandler(object):
                                          self._context.cache_token)
     if cached_value is None:
       # Cache miss, need to retrieve from the Runner
-      materialized = cached_value = []
-      for val in self._materialize_iter(state_key, coder):
-        materialized.append(val)
+      materialized = cached_value = list(
+          self._materialize_iter(state_key, coder))
       self._state_cache.append(
           cache_state_key,
           self._context.cache_token,
@@ -687,7 +686,8 @@ class CachingMaterializingStateHandler(object):
 
   def clear(self, state_key, is_cached=False):
     if self._should_be_cached(is_cached):
-      self._state_cache.clear(self._convert_to_cache_key(state_key))
+      cache_key = self._convert_to_cache_key(state_key)
+      self._state_cache.clear(cache_key, self._context.cache_token)
     return self._underlying.clear(state_key)
 
   # The following methods are for interaction with the FnApiRunner:
@@ -719,9 +719,9 @@ class CachingMaterializingStateHandler(object):
         break
 
   def _should_be_cached(self, request_is_cached):
-    return self._state_cache.is_cache_enabled() and \
-           request_is_cached and \
-           self._context.cache_token
+    return (self._state_cache.is_cache_enabled() and
+            request_is_cached and
+            self._context.cache_token)
 
   @staticmethod
   def _convert_to_cache_key(state_key):

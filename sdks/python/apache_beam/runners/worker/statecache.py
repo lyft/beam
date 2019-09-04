@@ -55,21 +55,33 @@ class StateCache(object):
     assert cache_token and self.is_cache_enabled()
     with self._lock:
       token, value = self._cache.get(state_key)
-      if token != cache_token:
+      if token in [cache_token, None]:
+        if value is None:
+          value = []
+        value.extend(elements)
+        self._cache.put(state_key, (cache_token, value))
+      else:
         # Discard cached state if tokens do not match
-        value = []
-      for element in elements:
-        value.append(element)
-      self._cache.put(state_key, (cache_token, value))
+        self._cache.evict(state_key)
 
-  def clear(self, state_key):
+  def clear(self, state_key, cache_token):
+    assert cache_token and self.is_cache_enabled()
+    with self._lock:
+      token, _ = self._cache.get(state_key)
+      if token in [cache_token, None]:
+        self._cache.put(state_key, (cache_token, []))
+      else:
+        # Discard cached state if tokens do not match
+        self._cache.evict(state_key)
+
+  def evict(self, state_key):
     assert self.is_cache_enabled()
     with self._lock:
-      self._cache.clear(state_key)
+      self._cache.evict(state_key)
 
-  def clear_all(self):
+  def evict_all(self):
     with self._lock:
-      self._cache.clear_all()
+      self._cache.evict_all()
 
   def is_cache_enabled(self):
     return self._cache._max_entries > 0
@@ -86,7 +98,7 @@ class StateCache(object):
 
     def get(self, key):
       value = self._cache.pop(key, self._default_entry)
-      if value:
+      if value != self._default_entry:
         self._cache[key] = value
       return value
 
@@ -95,10 +107,10 @@ class StateCache(object):
       while len(self._cache) > self._max_entries:
         self._cache.popitem(last=False)
 
-    def clear(self, key):
+    def evict(self, key):
       self._cache.pop(key, self._default_entry)
 
-    def clear_all(self):
+    def evict_all(self):
       self._cache.clear()
 
     def __len__(self):

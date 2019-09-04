@@ -27,7 +27,6 @@ import itertools
 import logging
 import os
 import queue
-import random
 import subprocess
 import sys
 import threading
@@ -493,7 +492,7 @@ class FnApiRunner(runner.PipelineRunner):
 
   def _run_bundle_multiple_times_for_testing(
       self, worker_handler_list, process_bundle_descriptor, data_input,
-      data_output, get_input_coder_callable):
+      data_output, get_input_coder_callable, cache_token_generator):
 
     # all workers share state, so use any worker_handler.
     worker_handler = worker_handler_list[0]
@@ -503,7 +502,9 @@ class FnApiRunner(runner.PipelineRunner):
         ParallelBundleManager(
             worker_handler_list, lambda pcoll_id: [],
             get_input_coder_callable, process_bundle_descriptor,
-            self._progress_frequency, k, num_workers=self._num_workers
+            self._progress_frequency, k,
+            num_workers=self._num_workers,
+            cache_token_generator=cache_token_generator
         ).process_bundle(data_input, data_output)
       finally:
         worker_handler.state.restore()
@@ -726,16 +727,18 @@ class FnApiRunner(runner.PipelineRunner):
           ).coder_id
       ]].get_impl()
 
-    self._run_bundle_multiple_times_for_testing(worker_handler_list,
-                                                process_bundle_descriptor,
-                                                data_input,
-                                                data_output,
-                                                get_input_coder_impl)
+    # Change cache token across bundle repeats
+    cache_token_generator = FnApiRunner.get_cache_token_generator(static=False)
+
+    self._run_bundle_multiple_times_for_testing(
+        worker_handler_list, process_bundle_descriptor, data_input, data_output,
+        get_input_coder_impl, cache_token_generator=cache_token_generator)
 
     bundle_manager = ParallelBundleManager(
         worker_handler_list, get_buffer, get_input_coder_impl,
         process_bundle_descriptor, self._progress_frequency,
-        num_workers=self._num_workers)
+        num_workers=self._num_workers,
+        cache_token_generator=cache_token_generator)
 
     result, splits = bundle_manager.process_bundle(data_input, data_output)
 
@@ -995,6 +998,46 @@ class FnApiRunner(runner.PipelineRunner):
     def close(self):
       """Does nothing."""
       pass
+
+  @staticmethod
+  def get_cache_token_generator(static=True):
+    """A generator for cache tokens.
+       :arg static If True, generator always returns the same cache token
+                   If False, generator returns a new cache token each time
+       :return A generator which returns a cache token on next(generator)
+    """
+    def generate_token(identifier):
+      return beam_fn_api_pb2.ProcessBundleRequest.CacheToken(
+          user_state=beam_fn_api_pb2
+          .ProcessBundleRequest.CacheToken.UserState(),
+          token="cache_token_{}".format(identifier).encode("utf-8"))
+
+    class StaticGenerator(object):
+      def __init__(self):
+        self._token = generate_token(1)
+
+      def __iter__(self):
+        # pylint: disable=non-iterator-returned
+        return self
+
+      def __next__(self):
+        return self._token
+
+    class DynamicGenerator(object):
+      def __init__(self):
+        self._counter = 0
+        self._lock = threading.Lock()
+
+      def __iter__(self):
+        # pylint: disable=non-iterator-returned
+        return self
+
+      def __next__(self):
+        with self._lock:
+          self._counter += 1
+          return generate_token(self._counter)
+
+    return StaticGenerator() if static else DynamicGenerator()
 
 
 class WorkerHandler(object):
@@ -1491,7 +1534,8 @@ class BundleManager(object):
 
   def __init__(
       self, worker_handler_list, get_buffer, get_input_coder_impl,
-      bundle_descriptor, progress_frequency=None, skip_registration=False):
+      bundle_descriptor, progress_frequency=None, skip_registration=False,
+      cache_token_generator=FnApiRunner.get_cache_token_generator()):
     """Set up a bundle manager.
 
     Args:
@@ -1509,6 +1553,7 @@ class BundleManager(object):
     self._registered = skip_registration
     self._progress_frequency = progress_frequency
     self._worker_handler = None
+    self._cache_token_generator = cache_token_generator
 
   def _send_input_to_worker(self,
                             process_bundle_id,
@@ -1633,7 +1678,7 @@ class BundleManager(object):
         instruction_id=process_bundle_id,
         process_bundle=beam_fn_api_pb2.ProcessBundleRequest(
             process_bundle_descriptor_reference=self._bundle_descriptor.id,
-            cache_tokens=[self._generate_cache_token()]))
+            cache_tokens=[next(self._cache_token_generator)]))
     result_future = self._worker_handler.control_conn.push(process_bundle_req)
 
     split_results = []
@@ -1671,22 +1716,17 @@ class BundleManager(object):
 
     return result, split_results
 
-  @staticmethod
-  def _generate_cache_token():
-    return beam_fn_api_pb2.ProcessBundleRequest.CacheToken(
-        user_state=beam_fn_api_pb2.ProcessBundleRequest.CacheToken.UserState(),
-        token=bytes(bytearray(random.getrandbits(8) for _ in range(16))))
-
 
 class ParallelBundleManager(BundleManager):
 
   def __init__(
       self, worker_handler_list, get_buffer, get_input_coder_impl,
       bundle_descriptor, progress_frequency=None, skip_registration=False,
-      **kwargs):
+      cache_token_generator=None, **kwargs):
     super(ParallelBundleManager, self).__init__(
         worker_handler_list, get_buffer, get_input_coder_impl,
-        bundle_descriptor, progress_frequency, skip_registration)
+        bundle_descriptor, progress_frequency, skip_registration,
+        cache_token_generator=cache_token_generator)
     self._num_workers = kwargs.pop('num_workers', 1)
 
   def process_bundle(self, inputs, expected_outputs):
@@ -1701,7 +1741,8 @@ class ParallelBundleManager(BundleManager):
       for result, split_result in executor.map(lambda part: BundleManager(
           self._worker_handler_list, self._get_buffer,
           self._get_input_coder_impl, self._bundle_descriptor,
-          self._progress_frequency, self._registered).process_bundle(
+          self._progress_frequency, self._registered,
+          cache_token_generator=self._cache_token_generator).process_bundle(
               part, expected_outputs), part_inputs):
 
         split_result_list += split_result

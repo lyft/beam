@@ -396,7 +396,8 @@ class SynchronousSetRuntimeState(userstate.SetRuntimeState):
       self._state_handler.append(
           self._state_key,
           self._value_coder.get_impl(),
-          accumulator).get()
+          accumulator,
+          is_cached=True).get()
 
       # Since everthing is already committed so we can safely reinitialize
       # added_elements here.
@@ -423,7 +424,7 @@ class SynchronousSetRuntimeState(userstate.SetRuntimeState):
 
   def _commit(self):
     if self._cleared:
-      self._state_handler.clear(self._state_key, is_cached=True)
+      self._state_handler.clear(self._state_key, is_cached=True).get()
     if self._added_elements:
       self._state_handler.append(
           self._state_key,

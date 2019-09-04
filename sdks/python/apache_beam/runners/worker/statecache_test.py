@@ -63,35 +63,42 @@ class StateCacheTest(unittest.TestCase):
     self.assertEqual(cache.get("key2", "cache_token"), ['another', 'val'])
     # test eviction in case the cache token changes
     cache.append("key2", "new_token", ['new_value'])
-    self.assertEqual(len(cache), 2)
-    self.assertEqual(cache.get("key2", "new_token"), ['new_value'])
-
-  def test_eviction(self):
-    cache = StateCache(2)
-    # check that put does not cause unnecessary cache eviction
-    cache.put("key", "cache_token", "value")
-    cache.put("key2", "cache_token", "value")
-    self.assertEqual(len(cache), 2)
-    cache.put("key2", "cache_token", "value")
-    self.assertEqual(len(cache), 2)
-    cache.put("key", "cache_token", "value")
-    self.assertEqual(len(cache), 2)
+    self.assertEqual(cache.get("key2", "new_token"), None)
+    self.assertEqual(len(cache), 1)
 
   def test_clear(self):
     cache = StateCache(5)
-    cache.clear("non-existing")
-    cache.put("key", "cache_token", "value")
-    self.assertEqual(len(cache), 1)
-    cache.clear("key")
-    self.assertEqual(len(cache), 0)
-    self.assertEqual(cache.get("key", "cache_token"), None)
+    cache.clear("new-key", "cache_token")
+    cache.put("key", "cache_token", ["value"])
+    self.assertEqual(len(cache), 2)
+    self.assertEqual(cache.get("new-key", "new_token"), None)
+    self.assertEqual(cache.get("key", "cache_token"), ['value'])
+    # test clear without existing key/token
+    cache.clear("non-existing", "token")
+    self.assertEqual(len(cache), 3)
+    self.assertEqual(cache.get("non-existing", "token"), [])
+    # test eviction in case the cache token changes
+    cache.clear("new-key", "wrong_token")
+    self.assertEqual(len(cache), 2)
+    self.assertEqual(cache.get("new-key", "cache_token"), None)
+    self.assertEqual(cache.get("new-key", "wrong_token"), None)
 
-  def test_clear_all(self):
+  def test_max_size(self):
+    cache = StateCache(2)
+    cache.put("key", "cache_token", "value")
+    cache.put("key2", "cache_token", "value")
+    self.assertEqual(len(cache), 2)
+    cache.put("key2", "cache_token", "value")
+    self.assertEqual(len(cache), 2)
+    cache.put("key", "cache_token", "value")
+    self.assertEqual(len(cache), 2)
+
+  def test_evict_all(self):
     cache = StateCache(5)
     cache.put("key", "cache_token", "value")
     cache.put("key2", "cache_token", "value2")
     self.assertEqual(len(cache), 2)
-    cache.clear_all()
+    cache.evict_all()
     self.assertEqual(len(cache), 0)
     self.assertEqual(cache.get("key", "cache_token"), None)
     self.assertEqual(cache.get("key2", "cache_token"), None)
