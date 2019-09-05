@@ -1,7 +1,6 @@
 name: beam
 description: Lyft version of Apache Beam python package
 repository: git@github.com:lyft/beam.git
-credentials: true
 slack: '#noop'
 team_email: 'no-reply@lyft.com'
 deploy:
