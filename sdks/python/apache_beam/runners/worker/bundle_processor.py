@@ -397,7 +397,7 @@ class SynchronousSetRuntimeState(userstate.SetRuntimeState):
           self._state_key,
           self._value_coder.get_impl(),
           accumulator,
-          is_cached=True).get()
+          is_cached=True)
 
       # Since everthing is already committed so we can safely reinitialize
       # added_elements here.
