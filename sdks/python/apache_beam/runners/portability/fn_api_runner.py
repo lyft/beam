@@ -242,6 +242,8 @@ class FnApiRunner(runner.PipelineRunner):
       bundle_repeat=0,
       use_state_iterables=False,
       provision_info=None,
+      # Caching is always enabled for testing,
+      # expect for one test suite (FnApiRunnerTestWithDisabledCaching)
       state_cache_size=100):
     """Creates a new Fn API Runner.
 
@@ -1231,7 +1233,8 @@ class EmbeddedGrpcWorkerHandler(GrpcWorkerHandler):
 
   def start_worker(self):
     self.worker = sdk_worker.SdkHarness(
-        self.control_address, worker_count=self._num_threads)
+        self.control_address, worker_count=self._num_threads,
+        state_cache_size=100)
     self.worker_thread = threading.Thread(
         name='run_worker', target=self.worker.run)
     self.worker_thread.daemon = True

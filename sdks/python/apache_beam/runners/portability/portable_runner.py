@@ -193,6 +193,7 @@ class PortableRunner(runner.PipelineRunner):
       portable_options.environment_config, server = (
           BeamFnExternalWorkerPoolServicer.start(
               sdk_worker_main._get_worker_count(options),
+              state_cache_size=sdk_worker_main._get_state_cache_size(options),
               use_process=use_loopback_process_worker))
       globals()['x'] = server
       cleanup_callbacks = [functools.partial(server.stop, 1)]

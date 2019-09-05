@@ -177,6 +177,8 @@ class PortableRunnerTest(fn_api_runner_test.FnApiRunnerTest):
     # Override the default environment type for testing.
     options.view_as(PortableOptions).environment_type = (
         python_urns.EMBEDDED_PYTHON)
+    # Enable caching (disabled by default)
+    add_experiment(options, 'state_cache_size=100')
     return options
 
   def create_pipeline(self):
@@ -191,6 +193,7 @@ class PortableRunnerOptimized(PortableRunnerTest):
   def create_options(self):
     options = super(PortableRunnerOptimized, self).create_options()
     options.view_as(DebugOptions).add_experiment('pre_optimize=all')
+    add_experiment(options, 'state_cache_size=100')
     return options
 
 
@@ -223,6 +226,8 @@ class PortableRunnerTestWithSubprocesses(PortableRunnerTest):
     options.view_as(PortableOptions).environment_config = (
         b'%s -m apache_beam.runners.worker.sdk_worker_main' %
         sys.executable.encode('ascii'))
+    # Enable caching (disabled by default)
+    add_experiment(options, 'state_cache_size=100')
     return options
 
   @classmethod
@@ -283,6 +288,12 @@ class PortableRunnerInternalTest(unittest.TestCase):
             ).SerializeToString()))
 
 
+
+
+def add_experiment(options, experiment):
+  experiments = options.view_as(DebugOptions).experiments or []
+  experiments.append(experiment)
+  options.view_as(DebugOptions).experiments = experiments
 if __name__ == '__main__':
   logging.getLogger().setLevel(logging.INFO)
   unittest.main()
