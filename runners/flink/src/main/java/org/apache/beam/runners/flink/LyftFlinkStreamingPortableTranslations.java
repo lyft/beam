@@ -67,6 +67,7 @@ import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/** Lyft specific translators for custom transforms. */
 public class LyftFlinkStreamingPortableTranslations {
 
   private static final Logger logger =
@@ -78,6 +79,7 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
 
+  /** Checks whether we can replace a transform with a Flink native transform. */
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
     @Override
@@ -195,6 +197,7 @@ public class LyftFlinkStreamingPortableTranslations {
         .name(FlinkKafkaProducer011.class.getSimpleName() + "-" + topic);
   }
 
+  /** Extracts the raw bytes from a WindowedValue. */
   public static class ByteArrayWindowedValueSerializer
       implements SerializationSchema<WindowedValue<byte[]>> {
     @Override

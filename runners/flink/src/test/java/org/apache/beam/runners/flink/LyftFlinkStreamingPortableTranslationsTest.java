@@ -29,6 +29,7 @@ import org.apache.beam.sdk.util.WindowedValue;
 import org.junit.Assert;
 import org.junit.Test;
 
+/** Tests for LyftFlinkStreamingPortableTranslations. */
 public class LyftFlinkStreamingPortableTranslationsTest {
 
   @Test
