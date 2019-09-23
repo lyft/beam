@@ -120,5 +120,5 @@ class FlinkKafkaSink(PTransform):
     return self
 
   def with_bootstrap_servers(self, bootstrap_servers):
-    return self.set_kafka_consumer_property('bootstrap.servers',
+    return self.set_kafka_producer_property('bootstrap.servers',
                                             bootstrap_servers)
