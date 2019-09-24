@@ -177,11 +177,6 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
   }
 
   @Override
-  protected Lock getLockToAcquireForStateAccessDuringBundles() {
-    return stateBackendLock;
-  }
-
-  @Override
   public void open() throws Exception {
     executableStage = ExecutableStage.fromPayload(payload);
     initializeUserState(executableStage, getKeyedStateBackend());
@@ -564,7 +559,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     private final StageBundleFactory stageBundleFactory;
     private final StateRequestHandler stateRequestHandler;
     private final BundleProgressHandler progressHandler;
-    private final BufferedOutputManager<OutputT> outputManager;
+    private final FlinkOutputManager<OutputT> outputManager;
     private final Map<String, TupleTag<?>> outputMap;
     /** Timer Output Pcollection id => TimerSpec. */
     private final Map<String, TimerSpec> timerOutputIdToSpecMap;
@@ -581,7 +576,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         StageBundleFactory stageBundleFactory,
         StateRequestHandler stateRequestHandler,
         BundleProgressHandler progressHandler,
-        BufferedOutputManager<OutputT> outputManager,
+        FlinkOutputManager<OutputT> outputManager,
         Map<String, TupleTag<?>> outputMap,
         Coder<BoundedWindow> windowCoder,
         BiConsumer<WindowedValue<InputT>, TimerInternals.TimerData> timerRegistration,
