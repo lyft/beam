@@ -19,12 +19,13 @@ package org.apache.beam.runners.flink.translation.wrappers.streaming.io;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.beam.sdk.util.WindowedValue;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Charsets;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A streaming source that periodically produces an empty byte array. This is mostly useful for
+ * A streaming source that periodically produces a byte array. This is mostly useful for
  * debugging, or for triggering periodic behavior in a portable pipeline.
  *
  * @deprecated Legacy non-portable source which can be replaced by a DoFn with timers.
@@ -34,9 +35,10 @@ public class StreamingImpulseSource extends RichParallelSourceFunction<WindowedV
   private static final Logger LOG = LoggerFactory.getLogger(StreamingImpulseSource.class);
 
   private final AtomicBoolean cancelled = new AtomicBoolean(false);
-  private long count = 0;
   private final int intervalMillis;
   private final int messageCount;
+
+  private long count;
 
   public StreamingImpulseSource(int intervalMillis, int messageCount) {
     this.intervalMillis = intervalMillis;
@@ -57,7 +59,7 @@ public class StreamingImpulseSource extends RichParallelSourceFunction<WindowedV
 
     while (!cancelled.get() && (messageCount == 0 || count < subtaskCount)) {
       synchronized (ctx.getCheckpointLock()) {
-        ctx.collect(WindowedValue.valueInGlobalWindow(new byte[] {}));
+        ctx.collect(WindowedValue.valueInGlobalWindow(String.valueOf(count).getBytes(Charsets.UTF_8)));
         count++;
       }
 
