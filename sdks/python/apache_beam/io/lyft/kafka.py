@@ -1,6 +1,7 @@
 import logging
 import json
 
+import apache_beam as beam
 from apache_beam import pvalue
 from apache_beam.transforms.ptransform import PTransform
 from apache_beam.transforms.window import GlobalWindows
@@ -60,6 +61,7 @@ class FlinkKafkaInput(PTransform):
     return self.set_kafka_consumer_property('group.id', group_id)
 
 
+@beam.typehints.with_input_types(bytes)
 class FlinkKafkaSink(PTransform):
   """
     Custom transform that wraps a Flink Kafka producer - only works with the
@@ -87,9 +89,6 @@ class FlinkKafkaSink(PTransform):
 
   def get_windowing(self, inputs):
     return Windowing(GlobalWindows())
-
-  def infer_output_type(self, unused_input_type):
-    return bytes
 
   def to_runner_api_parameter(self, context):
     assert isinstance(self, FlinkKafkaSink), \
