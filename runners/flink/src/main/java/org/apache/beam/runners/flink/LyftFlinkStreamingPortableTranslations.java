@@ -56,13 +56,20 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.ChainingStrategy;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011;
 import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -102,32 +109,43 @@ public class LyftFlinkStreamingPortableTranslations {
       FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
 
-    final String topic;
-    final Properties properties = new Properties();
-    ObjectMapper mapper = new ObjectMapper();
+    final Map<String, Object> params;
     try {
-      Map<String, Object> params =
-          mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
-
-      Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
-
-      Map<?, ?> consumerProps = (Map) params.get("properties");
-      Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
-      properties.putAll(consumerProps);
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
     } catch (IOException e) {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
 
+    final String topic;
+    Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
+
+    Map<?, ?> consumerProps = (Map) params.get("properties");
+    final Properties properties = new Properties();
+    Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+    properties.putAll(consumerProps);
+
     logger.info("Kafka consumer for topic {} with properties {}", topic, properties);
 
-    DataStreamSource<WindowedValue<byte[]>> source =
+    FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource =
+        new FlinkKafkaConsumer011<>(topic, new ByteArrayWindowedValueSchema(), properties);
+
+    kafkaSource.setStartFromLatest();
+
+    if (params.containsKey("max_out_of_orderness_millis")) {
+      Number maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
+      if (maxOutOfOrdernessMillis != null) {
+        kafkaSource.assignTimestampsAndWatermarks(
+            new WindowedTimestampExtractor<>(
+                Time.milliseconds(maxOutOfOrdernessMillis.longValue())));
+      }
+    }
+
+    context.addDataStream(
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
         context
             .getExecutionEnvironment()
-            .addSource(
-                new FlinkKafkaConsumer011<>(topic, new ByteArrayWindowedValueSchema(), properties)
-                    .setStartFromLatest(),
-                FlinkKafkaConsumer011.class.getSimpleName() + "-" + topic);
-    context.addDataStream(Iterables.getOnlyElement(pTransform.getOutputsMap().values()), source);
+            .addSource(kafkaSource, FlinkKafkaConsumer011.class.getSimpleName() + "-" + topic));
   }
 
   /**
@@ -154,7 +172,13 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public WindowedValue<byte[]> deserialize(
         byte[] messageKey, byte[] message, String topic, int partition, long offset) {
-      return WindowedValue.valueInGlobalWindow(message);
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public WindowedValue<byte[]> deserialize(ConsumerRecord<byte[], byte[]> record) {
+      return WindowedValue.timestampedValueInGlobalWindow(
+          record.value(), new Instant(record.timestamp()));
     }
 
     @Override
@@ -189,9 +213,13 @@ public class LyftFlinkStreamingPortableTranslations {
     DataStream<WindowedValue<byte[]>> inputDataStream =
         context.getDataStreamOrThrow(inputCollectionId);
 
+    FlinkKafkaProducer011<WindowedValue<byte[]>> producer =
+        new FlinkKafkaProducer011<>(topic, new ByteArrayWindowedValueSerializer(), properties);
+    // assigner below sets the required Flink record timestamp
+    producer.setWriteTimestampToKafka(true);
     inputDataStream
-        .addSink(
-            new FlinkKafkaProducer011<>(topic, new ByteArrayWindowedValueSerializer(), properties))
+        .transform("setTimestamp", inputDataStream.getType(), new FlinkTimestampAssigner<>())
+        .addSink(producer)
         .name(FlinkKafkaProducer011.class.getSimpleName() + "-" + topic);
   }
 
@@ -200,6 +228,31 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public byte[] serialize(WindowedValue<byte[]> element) {
       return element.getValue();
+    }
+  }
+
+  /**
+   * Assign the timestamp of {@link WindowedValue} as the Flink record timestamp. The Flink
+   * timestamp is otherwise not set by the Beam Flink operators but is necessary for native Flink
+   * operators such as the Kafka producer.
+   *
+   * @param <T>
+   */
+  private static class FlinkTimestampAssigner<T> extends AbstractStreamOperator<WindowedValue<T>>
+      implements OneInputStreamOperator<WindowedValue<T>, WindowedValue<T>> {
+    {
+      super.setChainingStrategy(ChainingStrategy.ALWAYS);
+    }
+
+    @Override
+    public void processElement(StreamRecord<WindowedValue<T>> element) {
+      super.output.collect(
+          element.replace(element.getValue(), element.getValue().getTimestamp().getMillis()));
+    }
+
+    @Override
+    public void setup(StreamTask containingTask, StreamConfig config, Output output) {
+      super.setup(containingTask, config, output);
     }
   }
 
