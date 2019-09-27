@@ -13,6 +13,7 @@ class FlinkKafkaInput(PTransform):
   portable Flink runner."""
   consumer_properties = {'bootstrap.servers': 'localhost:9092'}
   topic = None
+  max_out_of_orderness_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -33,6 +34,7 @@ class FlinkKafkaInput(PTransform):
 
     return ("lyft:flinkKafkaInput", json.dumps({
       'topic': self.topic,
+      'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
       'properties': self.consumer_properties}))
 
   @staticmethod
@@ -42,6 +44,7 @@ class FlinkKafkaInput(PTransform):
     instance = FlinkKafkaInput()
     payload = json.loads(spec_parameter)
     instance.topic = payload['topic']
+    instance.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
     instance.consumer_properties = payload['properties']
     return instance
 
@@ -59,6 +62,16 @@ class FlinkKafkaInput(PTransform):
 
   def with_group_id(self, group_id):
     return self.set_kafka_consumer_property('group.id', group_id)
+
+  def with_max_out_of_orderness_millis(self, max_out_of_orderness_millis):
+    """
+    The interval between the maximum timestamp seen so far and the watermark that
+    is emitted. For example, if this is set to 1000ms, after seeing a record for
+    10:00:01 we will emit a watermark for 10:00:00, indicating that we believe that all
+    data from before that time has arrived.
+    """
+    self.max_out_of_orderness_millis = max_out_of_orderness_millis
+    return self
 
 
 @beam.typehints.with_input_types(bytes)
