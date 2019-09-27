@@ -6,6 +6,11 @@ from apache_beam.io.lyft.kafka import FlinkKafkaInput
 from apache_beam.io.lyft.kinesis import FlinkKinesisInput
 from apache_beam.options.pipeline_options import PipelineOptions
 
+class LogFn(beam.DoFn):
+  def process(self, element, timestamp=beam.DoFn.TimestampParam, window=beam.DoFn.WindowParam):
+    import time
+    logging.warn(('RESULT: {} ({}-{})\t{}\n\n'.format(timestamp, window.start, window.end, str(element))))
+    yield element
 
 if __name__ == "__main__":
   options_string = sys.argv.extend([
@@ -27,13 +32,13 @@ if __name__ == "__main__":
     (p
         # | 'Create' >> beam.Create(['hello', 'world', 'world'])
         # | 'Read' >> ReadFromText("gs://dataflow-samples/shakespeare/kinglear.txt")
-        | 'Kafka' >> FlinkKafkaInput().with_topic('beam-example').with_bootstrap_servers('localhost:9092').with_group_id('beam-example-group')
+        | 'Kafka' >> FlinkKafkaInput().with_topic('beam-example').with_bootstrap_servers('localhost:9092').with_group_id('beam-example-group').with_max_out_of_orderness_millis(10000)
         # | 'Kinesis' >> FlinkKinesisInput().with_stream('beam-example').with_endpoint('http://localhost:4567', 'fakekey', 'fakesecret')
+        | 'reshuffle' >> beam.Reshuffle()
         #| 'Split' >> (beam.FlatMap(lambda x: re.findall(r'[A-Za-z\']+', x))
         #                .with_output_types(unicode))
         #| 'PairWithOne' >> beam.Map(lambda x: (x, 1))
         #| 'GroupAndSum' >> beam.CombinePerKey(sum)
-        | beam.Map(lambda x: logging.info("Got record: %s", x) or (x, 1))
+        #| beam.Map(lambda x: logging.info("Got record: %s", x) or (x, 1))
+        | beam.ParDo(LogFn())
      )
-
-
