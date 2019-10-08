@@ -62,6 +62,7 @@ class SdkHarness(object):
     self._worker_count = worker_count
     self._worker_index = 0
     self._worker_id = worker_id
+    self._state_cache = StateCache(state_cache_size)
     if credentials is None:
       logging.info('Creating insecure control channel for %s.', control_address)
       self._control_channel = GRPCChannelFactory.insecure_channel(
@@ -77,7 +78,7 @@ class SdkHarness(object):
         self._control_channel, WorkerIdInterceptor(self._worker_id))
     self._data_channel_factory = data_plane.GrpcClientDataChannelFactory(
         credentials, self._worker_id)
-    self._state_handler_factory = GrpcStateHandlerFactory(state_cache_size,
+    self._state_handler_factory = GrpcStateHandlerFactory(self._state_cache,
                                                           credentials)
     self._profiler_factory = profiler_factory
     self._fns = {}
@@ -90,6 +91,8 @@ class SdkHarness(object):
     self.workers = queue.Queue()
     # one worker for progress/split request.
     self.progress_worker = SdkWorker(self._bundle_processor_cache,
+                                     #state_cache_metrics_fn=
+                                     #self._state_cache.get_monitoring_infos,
                                      profiler_factory=self._profiler_factory)
     # one thread is enough for getting the progress report.
     # Assumption:
@@ -121,6 +124,8 @@ class SdkHarness(object):
       # centralized function list shared among all the workers.
       self.workers.put(
           SdkWorker(self._bundle_processor_cache,
+                    state_cache_metrics_fn=
+                    self._state_cache.get_monitoring_infos,
                     profiler_factory=self._profiler_factory))
 
     def get_responses():
@@ -339,8 +344,10 @@ class BundleProcessorCache(object):
 class SdkWorker(object):
 
   def __init__(self, bundle_processor_cache,
+               state_cache_metrics_fn=list,
                profiler_factory=None):
     self.bundle_processor_cache = bundle_processor_cache
+    self.state_cache_metrics_fn = state_cache_metrics_fn
     self.profiler_factory = profiler_factory
 
   def do_instruction(self, request):
@@ -375,12 +382,15 @@ class SdkWorker(object):
         with self.maybe_profile(instruction_id):
           delayed_applications, requests_finalization = (
               bundle_processor.process_bundle(instruction_id))
+          monitoring_infos = bundle_processor.monitoring_infos()
+          if self.state_cache_metrics_fn:
+            monitoring_infos.extend(self.state_cache_metrics_fn())
           response = beam_fn_api_pb2.InstructionResponse(
               instruction_id=instruction_id,
               process_bundle=beam_fn_api_pb2.ProcessBundleResponse(
                   residual_roots=delayed_applications,
                   metrics=bundle_processor.metrics(),
-                  monitoring_infos=bundle_processor.monitoring_infos(),
+                  monitoring_infos=monitoring_infos,
                   requires_finalization=requests_finalization))
       # Don't release here if finalize is needed.
       if not requests_finalization:
@@ -407,11 +417,13 @@ class SdkWorker(object):
     # It is an error to get progress for a not-in-flight bundle.
     processor = self.bundle_processor_cache.lookup(
         request.instruction_reference)
+    monitoring_infos = processor.monitoring_infos() if processor else []
+    monitoring_infos.extend(self.state_cache_metrics_fn())
     return beam_fn_api_pb2.InstructionResponse(
         instruction_id=instruction_id,
         process_bundle_progress=beam_fn_api_pb2.ProcessBundleProgressResponse(
             metrics=processor.metrics() if processor else None,
-            monitoring_infos=processor.monitoring_infos() if processor else []))
+            monitoring_infos=monitoring_infos))
 
   def finalize_bundle(self, request, instruction_id):
     processor = self.bundle_processor_cache.lookup(
@@ -467,12 +479,12 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
   Caches the created channels by ``state descriptor url``.
   """
 
-  def __init__(self, state_cache_size, credentials=None):
+  def __init__(self, state_cache, credentials=None):
     self._state_handler_cache = {}
     self._lock = threading.Lock()
     self._throwing_state_handler = ThrowingStateHandler()
     self._credentials = credentials
-    self._state_cache = StateCache(state_cache_size)
+    self._state_cache = state_cache
 
   def create_state_handler(self, api_service_descriptor):
     if not api_service_descriptor:
@@ -498,7 +510,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           # Add workerId to the grpc channel
           grpc_channel = grpc.intercept_channel(grpc_channel,
                                                 WorkerIdInterceptor())
-          self._state_handler_cache[url] = CachingMaterializingStateHandler(
+          self._state_handler_cache[url] = CachingStateHandler(
               self._state_cache,
               GrpcStateHandler(
                   beam_fn_api_pb2_grpc.BeamFnStateStub(grpc_channel)))
@@ -632,7 +644,7 @@ class GrpcStateHandler(object):
     return str(self._last_id)
 
 
-class CachingMaterializingStateHandler(object):
+class CachingStateHandler(object):
   """ A State handler which retrieves and caches state. """
 
   def __init__(self, global_state_cache, underlying_state):
@@ -678,11 +690,11 @@ class CachingMaterializingStateHandler(object):
           materialized)
     return iter(cached_value)
 
-  def append(self, state_key, coder, elements, is_cached=False):
+  def extend(self, state_key, coder, elements, is_cached=False):
     if self._should_be_cached(is_cached):
       # Update the cache
       cache_key = self._convert_to_cache_key(state_key)
-      self._state_cache.append(cache_key, self._context.cache_token, elements)
+      self._state_cache.extend(cache_key, self._context.cache_token, elements)
     # Write to state handler
     out = coder_impl.create_OutputStream()
     for element in elements:
