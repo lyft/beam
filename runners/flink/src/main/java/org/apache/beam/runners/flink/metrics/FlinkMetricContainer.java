@@ -190,7 +190,7 @@ public class FlinkMetricContainer {
   }
 
   /** Flink {@link Gauge} for {@link GaugeResult}. */
-  public static class FlinkGauge implements Gauge<GaugeResult> {
+  public static class FlinkGauge implements Gauge<Long> {
 
     GaugeResult data;
 
@@ -203,8 +203,8 @@ public class FlinkMetricContainer {
     }
 
     @Override
-    public GaugeResult getValue() {
-      return data;
+    public Long getValue() {
+      return data.getValue();
     }
   }
 }

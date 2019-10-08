@@ -117,7 +117,7 @@ public class FlinkMetricContainerTest {
     gauge.set(1);
     gauge.set(42);
     container.updateMetrics("step");
-    assertThat(flinkGauge.getValue().getValue(), is(42L));
+    assertThat(flinkGauge.getValue(), is(42L));
   }
 
   @Test
