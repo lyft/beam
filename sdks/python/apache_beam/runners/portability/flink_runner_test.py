@@ -30,6 +30,9 @@ from tempfile import mkdtemp
 import apache_beam as beam
 from apache_beam import Impulse
 from apache_beam import Map
+from apache_beam import Pipeline
+from apache_beam.coders import VarIntCoder
+from apache_beam.io.flink.flink_streaming_impulse_source import FlinkStreamingImpulseSource
 from apache_beam.io.external.generate_sequence import GenerateSequence
 from apache_beam.io.external.kafka import ReadFromKafka
 from apache_beam.io.external.kafka import WriteToKafka
@@ -41,6 +44,7 @@ from apache_beam.runners.portability import portable_runner
 from apache_beam.runners.portability import portable_runner_test
 from apache_beam.testing.util import assert_that
 from apache_beam.testing.util import equal_to
+from apache_beam.transforms import userstate
 
 if __name__ == '__main__':
   # Run as
@@ -140,7 +144,7 @@ if __name__ == '__main__':
       options = super(FlinkRunnerTest, self).create_options()
       options.view_as(DebugOptions).experiments = [
           'beam_fn_api'] + extra_experiments
-      options._all_options['parallelism'] = 1
+      options._all_options['parallelism'] = 2
       options._all_options['shutdown_sources_on_final_watermark'] = True
       options.view_as(PortableOptions).environment_type = (
           environment_type.upper())
@@ -218,43 +222,59 @@ if __name__ == '__main__':
           with_transcoding=False)
 
     def test_metrics(self):
-      """Run a simple DoFn that increments a counter, and verify that its
-       expected value is written to a temporary file by the FileReporter"""
+      """Run a simple DoFn that increments a counter and verifies state
+      caching metrics. Verifies that its expected value is written to a
+      temporary file by the FileReporter"""
 
       counter_name = 'elem_counter'
+      state_spec = userstate.BagStateSpec('state', VarIntCoder())
 
       class DoFn(beam.DoFn):
         def __init__(self):
           self.counter = Metrics.counter(self.__class__, counter_name)
           logging.info('counter: %s' % self.counter.metric_name)
 
-        def process(self, v):
+        def process(self, kv, state=beam.DoFn.StateParam(state_spec)):
+          # Trigger materilization
+          list(state.read())
           self.counter.inc()
 
-      p = self.create_pipeline()
-      n = 100
+      options = self.create_options()
+      # Test only supports parallelism of 1
+      options._all_options['parallelism'] = 1
+      options._all_options['max_bundle_size'] = 50
+      options._all_options['max_bundle_time_millis'] = 951305901359
+      experiments = options.view_as(DebugOptions).experiments or []
+      experiments.append('state_cache_size=123')
+      options.view_as(DebugOptions).experiments = experiments
+      with Pipeline(self.get_runner(), options) as p:
+        # pylint: disable=expression-not-assigned
+        (p
+         # | beam.Create([num % 10 for num in range(0, 100)])
+         | FlinkStreamingImpulseSource()
+         .set_interval_ms(0).set_message_count(100)
+         | beam.Map(lambda x: (int(x) % 10, 'val'))
+         | beam.ParDo(DoFn()))
 
-      # pylint: disable=expression-not-assigned
-      p \
-      | beam.Create(list(range(n))) \
-      | beam.ParDo(DoFn())
-
-      result = p.run()
-      result.wait_until_finish()
-
+      lines_expected = set(['counter: 100',
+                            # Test Gauge metrics
+                            'statecache:capacity: 123',
+                            # There are 10 unique keys
+                            'statecache:size: 10',
+                            # Test Counters
+                            'statecache:get: 50',
+                            'statecache:miss: 10',
+                            'statecache:hit: 40',
+                           ] * 2)
+      lines_actual = set()
       with open(self.test_metrics_path, 'r') as f:
-        lines = [line for line in f.readlines() if counter_name in line]
-        self.assertEqual(
-            len(lines), 1,
-            msg='Expected 1 line matching "%s":\n%s' % (
-                counter_name, '\n'.join(lines))
-        )
-        line = lines[0]
-        self.assertTrue(
-            '%s: 100' % counter_name in line,
-            msg='Failed to find expected counter %s in line %s' % (
-                counter_name, line)
-        )
+        line = f.readline()
+        while line:
+          for metric_str in lines_expected:
+            if metric_str in line:
+              lines_actual.add(metric_str)
+          line = f.readline()
+        self.assertSetEqual(lines_actual, lines_expected)
 
     def test_sdf_with_sdf_initiated_checkpointing(self):
       raise unittest.SkipTest("BEAM-2939")

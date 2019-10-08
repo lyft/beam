@@ -30,6 +30,7 @@ import org.apache.beam.model.pipeline.v1.MetricsApi.CounterData;
 import org.apache.beam.model.pipeline.v1.MetricsApi.ExtremaData;
 import org.apache.beam.model.pipeline.v1.MetricsApi.IntDistributionData;
 import org.apache.beam.model.pipeline.v1.MetricsApi.MonitoringInfo;
+import org.apache.beam.runners.core.construction.BeamUrns;
 import org.apache.beam.runners.core.metrics.MetricUpdates.MetricUpdate;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
@@ -306,8 +307,15 @@ public class MetricsContainerImpl implements Serializable, MetricsContainer {
           if (metric.hasCounterData()) {
             CounterData counterData = metric.getCounterData();
             if (counterData.getValueCase() == CounterData.ValueCase.INT64_VALUE) {
-              Counter counter = getCounter(metricName);
-              counter.inc(counterData.getInt64Value());
+              String gaugeURN =
+                  BeamUrns.getUrn(MetricsApi.MonitoringInfoTypeUrns.Enum.LATEST_INT64_TYPE);
+              if (gaugeURN.equals(monitoringInfo.getType())) {
+                GaugeCell gauge = getGauge(metricName);
+                gauge.set(counterData.getInt64Value());
+              } else {
+                Counter counter = getCounter(metricName);
+                counter.inc(counterData.getInt64Value());
+              }
             } else {
               LOG.warn("Unsupported CounterData type: {}", counterData);
             }
