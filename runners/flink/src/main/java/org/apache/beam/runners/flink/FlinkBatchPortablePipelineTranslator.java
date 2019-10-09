@@ -327,6 +327,7 @@ public class FlinkBatchPortablePipelineTranslator
 
     final FlinkExecutableStageFunction<InputT> function =
         new FlinkExecutableStageFunction<>(
+            transform.getTransform().getUniqueName(),
             stagePayload,
             context.getJobInfo(),
             outputMap,

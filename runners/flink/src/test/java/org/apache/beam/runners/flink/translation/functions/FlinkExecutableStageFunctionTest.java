@@ -257,7 +257,13 @@ public class FlinkExecutableStageFunctionTest {
         Mockito.mock(FlinkExecutableStageContextFactory.class);
     when(contextFactory.get(any())).thenReturn(stageContext);
     FlinkExecutableStageFunction<Integer> function =
-        new FlinkExecutableStageFunction<>(stagePayload, jobInfo, outputMap, contextFactory, null);
+        new FlinkExecutableStageFunction<>(
+            "step",
+            stagePayload,
+            jobInfo,
+            outputMap,
+            contextFactory,
+            null);
     function.setRuntimeContext(runtimeContext);
     Whitebox.setInternalState(function, "stateRequestHandler", stateRequestHandler);
     return function;
