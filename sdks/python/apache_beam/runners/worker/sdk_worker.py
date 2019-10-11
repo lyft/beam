@@ -536,6 +536,7 @@ class GrpcStateHandler(object):
   _DONE = object()
 
   def __init__(self, state_stub):
+    self._lock = threading.Lock()
     self._state_stub = state_stub
     self._requests = queue.Queue()
     self._responses_by_id = {}
@@ -570,7 +571,8 @@ class GrpcStateHandler(object):
     def pull_responses():
       try:
         for response in responses:
-          future = self._responses_by_id.pop(response.id)
+          with self._lock:
+            future = self._responses_by_id.pop(response.id)
           future.set(response)
           if self._done:
             break
@@ -609,7 +611,9 @@ class GrpcStateHandler(object):
   def _request(self, request):
     request.id = self._next_id()
     request.instruction_reference = self._context.process_instruction_id
-    self._responses_by_id[request.id] = future = _Future()
+    with self._lock:
+      self._responses_by_id[request.id] = future = _Future()
+    # Request queue is thread-safe
     self._requests.put(request)
     return future
 
