@@ -548,6 +548,7 @@ class GrpcStateHandler(object):
   _DONE = object()
 
   def __init__(self, state_stub):
+    self._lock = threading.Lock()
     self._state_stub = state_stub
     self._requests = queue.Queue()
     self._responses_by_id = {}
@@ -582,6 +583,7 @@ class GrpcStateHandler(object):
     def pull_responses():
       try:
         for response in responses:
+          # Popping an item from a dictionary is atomic in cPython
           future = self._responses_by_id.pop(response.id)
           future.set(response)
           if self._done:
@@ -621,7 +623,9 @@ class GrpcStateHandler(object):
   def _request(self, request):
     request.id = self._next_id()
     request.instruction_reference = self._context.process_instruction_id
+    # Adding a new item to a dictionary is atomic in cPython
     self._responses_by_id[request.id] = future = _Future()
+    # Request queue is thread-safe
     self._requests.put(request)
     return future
 
@@ -640,8 +644,14 @@ class GrpcStateHandler(object):
       return response
 
   def _next_id(self):
-    self._last_id += 1
-    return str(self._last_id)
+    with self._lock:
+      # Use a lock here because this GrpcStateHandler is shared across all
+      # requests which have the same process bundle descriptor. State requests
+      # can concurrently access this section if a Runner uses threads / workers
+      # (aka "parallelism") to send data to this SdkHarness and its workers.
+      self._last_id += 1
+      request_id = self._last_id
+    return str(request_id)
 
 
 class CachingStateHandler(object):
