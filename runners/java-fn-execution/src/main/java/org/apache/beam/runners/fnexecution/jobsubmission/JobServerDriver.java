@@ -136,6 +136,11 @@ public abstract class JobServerDriver implements Runnable {
     this.artifactServerFactory = artifactServerFactory;
   }
 
+  // Can be used to discover the address of the job server, and if it is ready
+  public String getJobServerUrl() {
+    return (jobServer != null) ? jobServer.getApiServiceDescriptor().getUrl() : null;
+  }
+
   // This method is executed by TestPortableRunner via Reflection
   public String start() throws IOException {
     jobServer = createJobServer();

@@ -64,7 +64,7 @@ import org.slf4j.LoggerFactory;
  */
 public class LyftFlinkPipelineRunner {
   private static final Logger LOG = LoggerFactory.getLogger(LyftFlinkPipelineRunner.class);
-  private static String DRIVER_CMD_FLAGS = "--job_endpoint=localhost:%s";
+  private static String DRIVER_CMD_FLAGS = "--job_endpoint=%s";
 
   private final String driverCmd;
   private FlinkJobServerDriver driver = null;
@@ -119,39 +119,32 @@ public class LyftFlinkPipelineRunner {
   }
 
   private void startJobService() throws Exception {
-    final PrintStream oldErr = System.err;
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    PrintStream newErr = new PrintStream(baos);
-    try {
-      System.setErr(newErr);
-      driver =
-          FlinkJobServerDriver.fromParams(
-              new String[] {"--job-port=" + jobPort, "--artifact-port=0", "--expansion-port=0"});
-      driverThread = new Thread(driver);
-      driverThread.start();
-      boolean success = false;
+    driver =
+        FlinkJobServerDriver.fromParams(
+            new String[] {"--job-port=" + jobPort, "--artifact-port=0", "--expansion-port=0"});
+    driverThread = new Thread(driver);
+    driverThread.start();
 
-      // TODO: check for job service ready
-      Thread.sleep(5000);
-      success = true;
-
-      while (!success) {
-        newErr.flush();
-        String output = baos.toString(Charsets.UTF_8.name());
-        if (output.contains("JobService started on localhost:")
-            && output.contains("ArtifactStagingService started on localhost:")
-            && output.contains("ExpansionService started on localhost:")) {
-          success = true;
-        } else {
-          Thread.sleep(100);
-        }
+    Duration timeout = Duration.ofSeconds(30);
+    Deadline deadline = Deadline.fromNow(timeout);
+    while (driver.getJobServerUrl() == null && deadline.hasTimeLeft()) {
+      try {
+        Thread.sleep(500);
+      } catch (InterruptedException interruptEx) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException(interruptEx);
       }
+    }
 
-      if (!driverThread.isAlive()) {
-        throw new IllegalStateException("Job service thread is not alive");
-      }
-    } finally {
-      System.setErr(oldErr);
+    if (!driverThread.isAlive()) {
+      throw new IllegalStateException("Job service thread is not alive");
+    }
+
+    if (driver.getJobServerUrl() == null) {
+      String msg =
+              String.format(
+                      "Timeout of %s waiting for job service to start.", deadline);
+      throw new TimeoutException(msg);
     }
   }
 
@@ -159,7 +152,7 @@ public class LyftFlinkPipelineRunner {
     ProcessManager processManager = ProcessManager.create();
     String executable = "bash";
     List<String> args =
-        ImmutableList.of("-c", String.format("exec %s " + DRIVER_CMD_FLAGS, driverCmd, jobPort));
+        ImmutableList.of("-c", String.format("exec %s " + DRIVER_CMD_FLAGS, driverCmd, driver.getJobServerUrl()));
     String processId = "client1";
 
     Duration timeout = Duration.ofSeconds(30);
