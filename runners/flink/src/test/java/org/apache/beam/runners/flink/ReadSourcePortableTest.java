@@ -104,7 +104,7 @@ public class ReadSourcePortableTest implements Serializable {
 
     // execute the pipeline
     JobInvocation jobInvocation =
-        FlinkJobInvoker.createJobInvocation(
+        FlinkJobInvoker.create(null).createJobInvocation(
             "fakeId",
             "fakeRetrievalToken",
             flinkJobExecutor,

@@ -104,8 +104,6 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.client.program.DetachedEnvironment;
-import org.apache.flink.client.program.OptimizerPlanEnvironment;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
@@ -172,12 +170,7 @@ public class FlinkStreamingPortablePipelineTranslator
 
     @Override
     public JobExecutionResult execute(String jobName) throws Exception {
-      try {
-        return getExecutionEnvironment().execute(jobName);
-      } catch (OptimizerPlanEnvironment.ProgramAbortException ex) {
-        // the job will be submitted by the caller, we don't have a result
-        return DetachedEnvironment.DetachedJobExecutionResult.INSTANCE;
-      }
+      return getExecutionEnvironment().execute(jobName);
     }
 
     public StreamExecutionEnvironment getExecutionEnvironment() {

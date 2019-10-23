@@ -209,7 +209,7 @@ public class FlinkSavepointTest implements Serializable {
     FlinkPipelineOptions pipelineOptions = pipeline.getOptions().as(FlinkPipelineOptions.class);
     try {
       JobInvocation jobInvocation =
-          FlinkJobInvoker.createJobInvocation(
+          FlinkJobInvoker.create(null).createJobInvocation(
               "id",
               "none",
               executorService,

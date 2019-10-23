@@ -106,8 +106,20 @@ public class FlinkJobServerDriver extends JobServerDriver {
     super(configuration, jobServerFactory, artifactServerFactory);
   }
 
+  // TODO: move to JobServerDriver
+  private JobInvokerFactory jobInvokerFactory = () -> FlinkJobInvoker.create((FlinkServerConfiguration) configuration);
+
+  public void setJobInvokerFactory(JobInvokerFactory jobInvokerFactory) {
+    this.jobInvokerFactory = jobInvokerFactory;
+  }
+
   @Override
   protected JobInvoker createJobInvoker() {
-    return FlinkJobInvoker.create((FlinkServerConfiguration) configuration);
+    return jobInvokerFactory.create();
   }
+
+  public interface JobInvokerFactory {
+    JobInvoker create();
+  }
+
 }
