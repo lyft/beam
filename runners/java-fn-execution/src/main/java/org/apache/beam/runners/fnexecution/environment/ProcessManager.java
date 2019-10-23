@@ -28,7 +28,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.concurrent.ThreadSafe;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +62,7 @@ public class ProcessManager {
     this.processes = Collections.synchronizedMap(new HashMap<>());
   }
 
-  static class RunningProcess {
+  public static class RunningProcess {
     private Process process;
 
     RunningProcess(Process process) {
@@ -71,14 +70,13 @@ public class ProcessManager {
     }
 
     /** Checks if the underlying process is still running. */
-    void isAliveOrThrow() throws IllegalStateException {
+    public void isAliveOrThrow() throws IllegalStateException {
       if (!process.isAlive()) {
         throw new IllegalStateException("Process died with exit code " + process.exitValue());
       }
     }
 
-    @VisibleForTesting
-    Process getUnderlyingProcess() {
+    public Process getUnderlyingProcess() {
       return process;
     }
   }
