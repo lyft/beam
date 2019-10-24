@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.fnexecution.environment.ProcessManager;
 import org.apache.beam.runners.fnexecution.jobsubmission.JobInvocation;
@@ -44,28 +43,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Launch a Beam pipeline via external SDK driver program in the Flink {@link OptimizerPlanEnvironment}.
+ * Launch a Beam pipeline via external SDK driver program in the Flink {@link
+ * OptimizerPlanEnvironment}.
  *
  * <p>This entry point can be used to execute an external program to launch a Beam pipeline within
- * the Flink {@link OptimizerPlanEnvironment}, which is present when running a job via the REST
- * API.
+ * the Flink {@link OptimizerPlanEnvironment}, which is present when running a job via the REST API.
  *
- * <p>Designed for non-interactive Flink REST client and container with the Beam job server jar
- * and SDK client (for example when using the FlinkK8sOperator).
+ * <p>Designed for non-interactive Flink REST client and container with the Beam job server jar and
+ * SDK client (for example when using the FlinkK8sOperator).
  *
- * <p>Eliminates the need to build jar files with materialized pipeline protos offline. Allows
- * the driver program to access actual execution environment and services, on par with code
- * executed by SDK workers.
+ * <p>Eliminates the need to build jar files with materialized pipeline protos offline. Allows the
+ * driver program to access actual execution environment and services, on par with code executed by
+ * SDK workers.
  *
  * <p>The entry point starts the job server and provides the endpoint to the the driver program.
  *
  * <p>The driver program constructs the Beam pipeline and submits it to the job service.
  *
- * <p>The job service defers execution of the pipeline to the plan environment and returns the "detached"
- * status to the driver program.
+ * <p>The job service defers execution of the pipeline to the plan environment and returns the
+ * "detached" status to the driver program.
  *
- * <p>Upon arrival of the job invocation, the entry point executes the runner, which prepares ("executes")
- * the Flink job through the plan environment.
+ * <p>Upon arrival of the job invocation, the entry point executes the runner, which prepares
+ * ("executes") the Flink job through the plan environment.
  *
  * <p>Finally Flink launches the job.
  */
@@ -129,10 +128,10 @@ public class LyftFlinkPipelineRunner {
   private void startJobService() throws Exception {
     jobInvokerFactory = new DetachedJobInvokerFactory();
     driver =
-        FlinkJobServerDriver.fromParams(
-            new String[] {"--job-port=" + jobPort, "--artifact-port=0", "--expansion-port=0"});
-    driver.setJobInvokerFactory(jobInvokerFactory);
-
+        FlinkJobServerDriver.fromConfig(
+            FlinkJobServerDriver.fromParams(
+                new String[] {"--job-port=" + jobPort, "--artifact-port=0", "--expansion-port=0"}),
+            jobInvokerFactory);
     driverThread = new Thread(driver);
     driverThread.start();
 
@@ -152,9 +151,7 @@ public class LyftFlinkPipelineRunner {
     }
 
     if (driver.getJobServerUrl() == null) {
-      String msg =
-              String.format(
-                      "Timeout of %s waiting for job service to start.", deadline);
+      String msg = String.format("Timeout of %s waiting for job service to start.", deadline);
       throw new TimeoutException(msg);
     }
   }
@@ -163,13 +160,14 @@ public class LyftFlinkPipelineRunner {
     ProcessManager processManager = ProcessManager.create();
     String executable = "bash";
     List<String> args =
-        ImmutableList.of("-c", String.format("exec %s " + DRIVER_CMD_FLAGS, driverCmd, driver.getJobServerUrl()));
+        ImmutableList.of(
+            "-c",
+            String.format("exec %s " + DRIVER_CMD_FLAGS, driverCmd, driver.getJobServerUrl()));
     String processId = "client1";
 
     try {
       final ProcessManager.RunningProcess driverProcess =
-          processManager
-              .startProcess(processId, executable, args, System.getenv());
+          processManager.startProcess(processId, executable, args, System.getenv());
       driverProcess.isAliveOrThrow();
       LOG.info("Started driver program");
 
@@ -202,29 +200,39 @@ public class LyftFlinkPipelineRunner {
     private RunnerApi.Pipeline pipeline;
     private JobInfo jobInfo;
 
-    private PortablePipelineRunner handoverPipelineRunner = new PortablePipelineRunner() {
-      @Override
-      public PortablePipelineResult run(RunnerApi.Pipeline pipeline, JobInfo jobInfo) {
-        DetachedJobInvokerFactory.this.pipeline = pipeline;
-        DetachedJobInvokerFactory.this.jobInfo = jobInfo;
-        LOG.info("Handover execution for {}", jobInfo.jobId());
-        latch.countDown();
-        return new FlinkPortableRunnerResult.Detached();
-      }
-    };
+    private PortablePipelineRunner handoverPipelineRunner =
+        new PortablePipelineRunner() {
+          @Override
+          public PortablePipelineResult run(RunnerApi.Pipeline pipeline, JobInfo jobInfo) {
+            DetachedJobInvokerFactory.this.pipeline = pipeline;
+            DetachedJobInvokerFactory.this.jobInfo = jobInfo;
+            LOG.info("Pipeline execution handover for {}", jobInfo.jobId());
+            latch.countDown();
+            return new FlinkPortableRunnerResult.Detached();
+          }
+        };
 
     @Override
     public JobInvoker create() {
-      return new FlinkJobInvoker((FlinkJobServerDriver.FlinkServerConfiguration) driver.configuration) {
+      return new FlinkJobInvoker(
+          (FlinkJobServerDriver.FlinkServerConfiguration) driver.configuration) {
         @Override
-        protected JobInvocation createJobInvocation(String invocationId, String retrievalToken,
-                                                    ListeningExecutorService executorService,
-                                                    RunnerApi.Pipeline pipeline,
-                                                    FlinkPipelineOptions flinkOptions,
-                                                    PortablePipelineRunner pipelineRunner) {
+        protected JobInvocation createJobInvocation(
+            String invocationId,
+            String retrievalToken,
+            ListeningExecutorService executorService,
+            RunnerApi.Pipeline pipeline,
+            FlinkPipelineOptions flinkOptions,
+            PortablePipelineRunner pipelineRunner) {
           // replace pipeline runner to handover execution
           actualPipelineRunner = pipelineRunner;
-          return super.createJobInvocation(invocationId, retrievalToken, executorService, pipeline, flinkOptions, handoverPipelineRunner);
+          return super.createJobInvocation(
+              invocationId,
+              retrievalToken,
+              executorService,
+              pipeline,
+              flinkOptions,
+              handoverPipelineRunner);
         }
       };
     }
@@ -234,10 +242,9 @@ public class LyftFlinkPipelineRunner {
       if (latch.await(timeout.getSeconds(), TimeUnit.SECONDS)) {
         actualPipelineRunner.run(pipeline, jobInfo);
       } else {
-        throw new TimeoutException(String.format("Timeout of %s seconds waiting for job submission.", timeout));
+        throw new TimeoutException(
+            String.format("Timeout of %s seconds waiting for job submission.", timeout));
       }
     }
-
   }
-
 }

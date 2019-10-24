@@ -258,12 +258,7 @@ public class FlinkExecutableStageFunctionTest {
     when(contextFactory.get(any())).thenReturn(stageContext);
     FlinkExecutableStageFunction<Integer> function =
         new FlinkExecutableStageFunction<>(
-            "step",
-            stagePayload,
-            jobInfo,
-            outputMap,
-            contextFactory,
-            null);
+            "step", stagePayload, jobInfo, outputMap, contextFactory, null);
     function.setRuntimeContext(runtimeContext);
     Whitebox.setInternalState(function, "stateRequestHandler", stateRequestHandler);
     return function;
