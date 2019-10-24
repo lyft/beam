@@ -109,7 +109,7 @@ public class LyftFlinkPipelineRunner {
         usage =
             "Command that launches the Python driver program. "
                 + "(The job service endpoint will be appended as --job_endpoint=localhost:<port>.)")
-    private String driverCmd = null;
+    private String driverCmd;
   }
 
   private static EntryPointConfiguration parseArgs(String[] args) {
