@@ -58,7 +58,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The entry point starts the job server and provides the endpoint to the the driver program.
  *
- * <p>The driver program constructs the Beam pipeline and submits it to the job service.
+ * <p>The external driver program constructs the Beam pipeline and submits it to the job service.
  *
  * <p>The job service defers execution of the pipeline to the plan environment and returns the
  * "detached" status to the driver program.
