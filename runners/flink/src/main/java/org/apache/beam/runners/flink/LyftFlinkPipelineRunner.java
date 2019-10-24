@@ -76,7 +76,7 @@ public class LyftFlinkPipelineRunner {
   private FlinkJobServerDriver driver;
   private Thread driverThread;
   private DetachedJobInvokerFactory jobInvokerFactory;
-  private int jobPort = 55555;
+  private int jobPort = 0; // any free port
 
   public LyftFlinkPipelineRunner(String driverCmd) {
     this.driverCmd = driverCmd;
