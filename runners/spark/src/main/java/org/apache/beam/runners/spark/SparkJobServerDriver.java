@@ -92,6 +92,6 @@ public class SparkJobServerDriver extends JobServerDriver {
         configuration,
         jobServerFactory,
         artifactServerFactory,
-        () -> SparkJobInvoker.create((SparkServerConfiguration) configuration));
+        () -> SparkJobInvoker.create(configuration));
   }
 }
