@@ -161,7 +161,7 @@ public class FlinkPortableClientEntryPoint {
         ImmutableList.of(
             "-c",
             String.format(
-                "exec %s %s=%s", driverCmd, JOB_ENDPOINT_FLAG, jobServer.getJobServerUrl()));
+                "%s %s=%s", driverCmd, JOB_ENDPOINT_FLAG, jobServer.getJobServerUrl()));
     String processId = "client1";
 
     try {
