@@ -52,7 +52,7 @@ public class FlinkJobServerDriverTest {
   @Test
   public void testConfigurationFromArgs() {
     FlinkJobServerDriver.FlinkServerConfiguration config =
-        FlinkJobServerDriver.fromParams(
+        FlinkJobServerDriver.parseArgs(
             new String[] {
               "--job-host=test",
               "--job-port",
@@ -91,7 +91,7 @@ public class FlinkJobServerDriverTest {
       System.setErr(newErr);
       driver =
           FlinkJobServerDriver.fromConfig(
-              FlinkJobServerDriver.fromParams(
+              FlinkJobServerDriver.parseArgs(
                   new String[] {"--job-port=0", "--artifact-port=0", "--expansion-port=0"}));
       driverThread = new Thread(driver);
       driverThread.start();

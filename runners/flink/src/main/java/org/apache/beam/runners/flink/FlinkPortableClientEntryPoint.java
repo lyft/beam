@@ -34,8 +34,6 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditio
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.util.concurrent.ListeningExecutorService;
 import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.client.program.OptimizerPlanEnvironment;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
@@ -43,18 +41,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Launch a Beam pipeline via external SDK driver program in the Flink {@link
- * OptimizerPlanEnvironment}.
+ * Flink job entry point to launch a Beam pipeline by executing an external SDK driver program.
  *
- * <p>This entry point can be used to execute an external program to launch a Beam pipeline within
- * the Flink {@link OptimizerPlanEnvironment}, which is present when running a job via the REST API.
+ * <p>Designed for non-interactive Flink REST client and container with Beam job server jar and SDK
+ * client (for example when using the FlinkK8sOperator). In the future it would be possible to
+ * support driver program execution in a separate (sidecar) container by introducing a client
+ * environment abstraction similar to how it exists for SDK workers.
  *
- * <p>Designed for non-interactive Flink REST client and container with the Beam job server jar and
- * SDK client (for example when using the FlinkK8sOperator).
- *
- * <p>Eliminates the need to build jar files with materialized pipeline protos offline. Allows the
- * driver program to access actual execution environment and services, on par with code executed by
- * SDK workers.
+ * <p>Using this entry point eliminates the need to build jar files with materialized pipeline
+ * protos offline. Allows the driver program to access actual execution environment and services, on
+ * par with code executed by SDK workers.
  *
  * <p>The entry point starts the job server and provides the endpoint to the the driver program.
  *
@@ -68,28 +64,31 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Finally Flink launches the job.
  */
-public class LyftFlinkPipelineRunner {
-  private static final Logger LOG = LoggerFactory.getLogger(LyftFlinkPipelineRunner.class);
-  private static String DRIVER_CMD_FLAGS = "--job_endpoint=%s";
+public class FlinkPortableClientEntryPoint {
+  private static final Logger LOG = LoggerFactory.getLogger(FlinkPortableClientEntryPoint.class);
+  private static final String JOB_ENDPOINT_FLAG = "--job_endpoint";
+  private static final Duration JOB_INVOCATION_TIMEOUT = Duration.ofSeconds(30);
+  private static final Duration JOB_SERVICE_STARTUP_TIMEOUT = Duration.ofSeconds(30);
 
   private final String driverCmd;
-  private FlinkJobServerDriver driver;
-  private Thread driverThread;
+  private FlinkJobServerDriver jobServer;
+  private Thread jobServerThread;
   private DetachedJobInvokerFactory jobInvokerFactory;
-  private int jobPort = 0; // any free port
+  private int jobPort = 0; // pick any free port
 
-  public LyftFlinkPipelineRunner(String driverCmd) {
+  public FlinkPortableClientEntryPoint(String driverCmd) {
+    Preconditions.checkState(
+        !driverCmd.contains(JOB_ENDPOINT_FLAG),
+        "Driver command must not contain " + JOB_ENDPOINT_FLAG);
     this.driverCmd = driverCmd;
   }
 
   /** Main method to be called within the Flink OptimizerPlanEnvironment. */
   public static void main(String[] args) throws Exception {
-    Preconditions.checkArgument(
-        ExecutionEnvironment.getExecutionEnvironment() instanceof OptimizerPlanEnvironment,
-        "Can only execute in OptimizerPlanEnvironment");
     LOG.info("entry points args: {}", Arrays.asList(args));
     EntryPointConfiguration configuration = parseArgs(args);
-    LyftFlinkPipelineRunner runner = new LyftFlinkPipelineRunner(configuration.driverCmd);
+    FlinkPortableClientEntryPoint runner =
+        new FlinkPortableClientEntryPoint(configuration.driverCmd);
     try {
       runner.startJobService();
       runner.runDriverProgram();
@@ -127,17 +126,16 @@ public class LyftFlinkPipelineRunner {
 
   private void startJobService() throws Exception {
     jobInvokerFactory = new DetachedJobInvokerFactory();
-    driver =
+    jobServer =
         FlinkJobServerDriver.fromConfig(
-            FlinkJobServerDriver.fromParams(
+            FlinkJobServerDriver.parseArgs(
                 new String[] {"--job-port=" + jobPort, "--artifact-port=0", "--expansion-port=0"}),
             jobInvokerFactory);
-    driverThread = new Thread(driver);
-    driverThread.start();
+    jobServerThread = new Thread(jobServer);
+    jobServerThread.start();
 
-    Duration timeout = Duration.ofSeconds(30);
-    Deadline deadline = Deadline.fromNow(timeout);
-    while (driver.getJobServerUrl() == null && deadline.hasTimeLeft()) {
+    Deadline deadline = Deadline.fromNow(JOB_SERVICE_STARTUP_TIMEOUT);
+    while (jobServer.getJobServerUrl() == null && deadline.hasTimeLeft()) {
       try {
         Thread.sleep(500);
       } catch (InterruptedException interruptEx) {
@@ -146,11 +144,11 @@ public class LyftFlinkPipelineRunner {
       }
     }
 
-    if (!driverThread.isAlive()) {
+    if (!jobServerThread.isAlive()) {
       throw new IllegalStateException("Job service thread is not alive");
     }
 
-    if (driver.getJobServerUrl() == null) {
+    if (jobServer.getJobServerUrl() == null) {
       String msg = String.format("Timeout of %s waiting for job service to start.", deadline);
       throw new TimeoutException(msg);
     }
@@ -162,7 +160,8 @@ public class LyftFlinkPipelineRunner {
     List<String> args =
         ImmutableList.of(
             "-c",
-            String.format("exec %s " + DRIVER_CMD_FLAGS, driverCmd, driver.getJobServerUrl()));
+            String.format(
+                "exec %s %s=%s", driverCmd, JOB_ENDPOINT_FLAG, jobServer.getJobServerUrl()));
     String processId = "client1";
 
     try {
@@ -184,21 +183,21 @@ public class LyftFlinkPipelineRunner {
   }
 
   private void stopJobService() throws InterruptedException {
-    if (driver != null) {
-      driver.stop();
+    if (jobServer != null) {
+      jobServer.stop();
     }
-    if (driverThread != null) {
-      driverThread.interrupt();
-      driverThread.join();
+    if (jobServerThread != null) {
+      jobServerThread.interrupt();
+      jobServerThread.join();
     }
   }
 
   private class DetachedJobInvokerFactory implements FlinkJobServerDriver.JobInvokerFactory {
 
     private CountDownLatch latch = new CountDownLatch(1);
-    private PortablePipelineRunner actualPipelineRunner;
-    private RunnerApi.Pipeline pipeline;
-    private JobInfo jobInfo;
+    private volatile PortablePipelineRunner actualPipelineRunner;
+    private volatile RunnerApi.Pipeline pipeline;
+    private volatile JobInfo jobInfo;
 
     private PortablePipelineRunner handoverPipelineRunner =
         new PortablePipelineRunner() {
@@ -215,7 +214,7 @@ public class LyftFlinkPipelineRunner {
     @Override
     public JobInvoker create() {
       return new FlinkJobInvoker(
-          (FlinkJobServerDriver.FlinkServerConfiguration) driver.configuration) {
+          (FlinkJobServerDriver.FlinkServerConfiguration) jobServer.configuration) {
         @Override
         protected JobInvocation createJobInvocation(
             String invocationId,
@@ -238,12 +237,12 @@ public class LyftFlinkPipelineRunner {
     }
 
     private void executeDetachedJob() throws Exception {
-      Duration timeout = Duration.ofSeconds(30);
-      if (latch.await(timeout.getSeconds(), TimeUnit.SECONDS)) {
+      long timeoutSeconds = JOB_INVOCATION_TIMEOUT.getSeconds();
+      if (latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
         actualPipelineRunner.run(pipeline, jobInfo);
       } else {
         throw new TimeoutException(
-            String.format("Timeout of %s seconds waiting for job submission.", timeout));
+            String.format("Timeout of %s seconds waiting for job submission.", timeoutSeconds));
       }
     }
   }

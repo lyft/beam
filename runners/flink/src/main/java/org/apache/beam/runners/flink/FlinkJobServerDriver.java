@@ -60,7 +60,7 @@ public class FlinkJobServerDriver extends JobServerDriver {
     // TODO: Expose the fileSystem related options.
     // Register standard file systems.
     FileSystems.setDefaultPipelineOptions(PipelineOptionsFactory.create());
-    fromConfig(fromParams(args)).run();
+    fromConfig(parseArgs(args)).run();
   }
 
   private static void printUsage(CmdLineParser parser) {
@@ -70,7 +70,7 @@ public class FlinkJobServerDriver extends JobServerDriver {
     System.err.println();
   }
 
-  public static FlinkServerConfiguration fromParams(String[] args) {
+  public static FlinkServerConfiguration parseArgs(String[] args) {
     FlinkServerConfiguration configuration = new FlinkServerConfiguration();
     CmdLineParser parser = new CmdLineParser(configuration);
     try {
