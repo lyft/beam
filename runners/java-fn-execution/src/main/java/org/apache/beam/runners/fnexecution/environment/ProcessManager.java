@@ -95,6 +95,11 @@ public class ProcessManager {
     return startProcess(id, command, args, Collections.emptyMap());
   }
 
+  public RunningProcess startProcess(
+      String id, String command, List<String> args, Map<String, String> env) throws IOException {
+    return startProcess(id, command, args, env, null);
+  }
+
   /**
    * Forks a process with the given command, arguments, and additional environment variables.
    *
@@ -105,7 +110,8 @@ public class ProcessManager {
    * @return A RunningProcess which can be checked for liveness
    */
   public RunningProcess startProcess(
-      String id, String command, List<String> args, Map<String, String> env) throws IOException {
+      String id, String command, List<String> args, Map<String, String> env, File outputFile)
+      throws IOException {
     checkNotNull(id, "Process id must not be null");
     checkNotNull(command, "Command must not be null");
     checkNotNull(args, "Process args must not be null");
@@ -121,12 +127,16 @@ public class ProcessManager {
       pb.inheritIO();
     } else {
       pb.redirectErrorStream(true);
-      // Pipe stdout and stderr to /dev/null to avoid blocking the process due to filled PIPE buffer
-      if (System.getProperty("os.name", "").startsWith("Windows")) {
-        pb.redirectOutput(new File("nul"));
-      } else {
-        pb.redirectOutput(new File("/dev/null"));
+      if (outputFile == null) {
+        // Pipe stdout and stderr to /dev/null to avoid blocking the process due to filled PIPE
+        // buffer
+        if (System.getProperty("os.name", "").startsWith("Windows")) {
+          outputFile = new File("nul");
+        } else {
+          outputFile = new File("/dev/null");
+        }
       }
+      pb.redirectOutput(outputFile);
     }
 
     LOG.debug("Attempting to start process with command: {}", pb.command());

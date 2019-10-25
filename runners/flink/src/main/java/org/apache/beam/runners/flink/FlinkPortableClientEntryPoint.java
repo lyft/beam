@@ -17,6 +17,9 @@
  */
 package org.apache.beam.runners.flink;
 
+import java.io.File;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -160,13 +163,13 @@ public class FlinkPortableClientEntryPoint {
     List<String> args =
         ImmutableList.of(
             "-c",
-            String.format(
-                "exec %s %s=%s", driverCmd, JOB_ENDPOINT_FLAG, jobServer.getJobServerUrl()));
+            String.format("%s %s=%s", driverCmd, JOB_ENDPOINT_FLAG, jobServer.getJobServerUrl()));
     String processId = "client1";
+    File outputFile = File.createTempFile("beam-driver-program", ".log");
 
     try {
       final ProcessManager.RunningProcess driverProcess =
-          processManager.startProcess(processId, executable, args, System.getenv());
+          processManager.startProcess(processId, executable, args, System.getenv(), outputFile);
       driverProcess.isAliveOrThrow();
       LOG.info("Started driver program");
 
@@ -178,7 +181,12 @@ public class FlinkPortableClientEntryPoint {
       } catch (Exception processKillException) {
         e.addSuppressed(processKillException);
       }
-      throw e;
+      byte[] output = Files.readAllBytes(outputFile.toPath());
+      String msg =
+          String.format(
+              "Failed to start job with driver program: %s %s output: %s",
+              executable, args, new String(output, Charset.defaultCharset()));
+      throw new RuntimeException(msg, e);
     }
   }
 
