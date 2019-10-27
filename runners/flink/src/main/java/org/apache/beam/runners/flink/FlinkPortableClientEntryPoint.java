@@ -38,6 +38,7 @@ import org.apache.beam.vendor.grpc.v1p21p0.com.google.protobuf.util.JsonFormat;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.util.concurrent.ListeningExecutorService;
+import org.apache.commons.lang3.SerializationUtils;
 import org.apache.flink.api.common.time.Deadline;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
@@ -208,6 +209,7 @@ public class FlinkPortableClientEntryPoint {
     private volatile PortablePipelineRunner actualPipelineRunner;
     private volatile RunnerApi.Pipeline pipeline;
     private volatile JobInfo jobInfo;
+    private volatile JobInfo jobInfo2;
 
     private PortablePipelineRunner handoverPipelineRunner =
         new PortablePipelineRunner() {
@@ -215,6 +217,14 @@ public class FlinkPortableClientEntryPoint {
           public PortablePipelineResult run(RunnerApi.Pipeline pipeline, JobInfo jobInfo) {
             DetachedJobInvokerFactory.this.pipeline = pipeline;
             DetachedJobInvokerFactory.this.jobInfo = jobInfo;
+
+            DetachedJobInvokerFactory.this.jobInfo2 = SerializationUtils.clone(jobInfo);
+
+            String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
+            Files.write(
+                Paths.get("/tmp/pipelineOptions1.json"),
+                pipelineOptionsJson.getBytes(Charset.defaultCharset()));
+
             LOG.info("Pipeline execution handover for {}", jobInfo.jobId());
             latch.countDown();
             return new FlinkPortableRunnerResult.Detached();
@@ -252,10 +262,15 @@ public class FlinkPortableClientEntryPoint {
 
         String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
         Files.write(
-            Paths.get("/tmp/pipelineOptions.json"),
+            Paths.get("/tmp/pipelineOptions2.json"),
             pipelineOptionsJson.getBytes(Charset.defaultCharset()));
 
-        actualPipelineRunner.run(pipeline, jobInfo);
+        pipelineOptionsJson = JsonFormat.printer().print(jobInfo2.pipelineOptions());
+        Files.write(
+            Paths.get("/tmp/pipelineOptions3.json"),
+            pipelineOptionsJson.getBytes(Charset.defaultCharset()));
+
+        actualPipelineRunner.run(pipeline, jobInfo2);
       } else {
         throw new TimeoutException(
             String.format("Timeout of %s seconds waiting for job submission.", timeoutSeconds));
