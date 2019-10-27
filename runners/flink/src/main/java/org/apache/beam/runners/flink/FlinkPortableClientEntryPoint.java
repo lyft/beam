@@ -220,12 +220,17 @@ public class FlinkPortableClientEntryPoint {
 
             DetachedJobInvokerFactory.this.jobInfo2 = SerializationUtils.clone(jobInfo);
 
-            String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
-            Files.write(
-                Paths.get("/tmp/pipelineOptions1.json"),
-                pipelineOptionsJson.getBytes(Charset.defaultCharset()));
+            try {
+              String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
+              Files.write(
+                  Paths.get("/tmp/pipelineOptions1.json"),
+                  pipelineOptionsJson.getBytes(Charset.defaultCharset()));
 
-            LOG.info("Pipeline execution handover for {}", jobInfo.jobId());
+              LOG.info("Pipeline execution handover for {}", jobInfo.jobId());
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+
             latch.countDown();
             return new FlinkPortableRunnerResult.Detached();
           }
