@@ -20,6 +20,7 @@ package org.apache.beam.runners.flink;
 import java.io.File;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -33,6 +34,7 @@ import org.apache.beam.runners.fnexecution.jobsubmission.JobInvoker;
 import org.apache.beam.runners.fnexecution.jobsubmission.PortablePipelineResult;
 import org.apache.beam.runners.fnexecution.jobsubmission.PortablePipelineRunner;
 import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
+import org.apache.beam.vendor.grpc.v1p21p0.com.google.protobuf.util.JsonFormat;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.util.concurrent.ListeningExecutorService;
@@ -247,6 +249,12 @@ public class FlinkPortableClientEntryPoint {
     private void executeDetachedJob() throws Exception {
       long timeoutSeconds = JOB_INVOCATION_TIMEOUT.getSeconds();
       if (latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
+
+        String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
+        Files.write(
+            Paths.get("/tmp/pipelineOptions.json"),
+            pipelineOptionsJson.getBytes(Charset.defaultCharset()));
+
         actualPipelineRunner.run(pipeline, jobInfo);
       } else {
         throw new TimeoutException(
