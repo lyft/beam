@@ -20,6 +20,9 @@ package org.apache.beam.runners.flink;
 import static org.apache.beam.runners.core.construction.PipelineResources.detectClassPathResourcesToStage;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.UUID;
 import javax.annotation.Nullable;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
@@ -31,6 +34,7 @@ import org.apache.beam.runners.fnexecution.jobsubmission.PortablePipelineRunner;
 import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
 import org.apache.beam.sdk.options.PortablePipelineOptions;
 import org.apache.beam.vendor.grpc.v1p21p0.com.google.protobuf.Struct;
+import org.apache.beam.vendor.grpc.v1p21p0.com.google.protobuf.util.JsonFormat;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.util.concurrent.ListeningExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,6 +107,17 @@ public class FlinkJobInvoker extends JobInvoker {
             flinkOptions.getJobName(),
             retrievalToken,
             PipelineOptionsTranslation.toProto(flinkOptions));
+    try {
+      String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
+      Files.write(
+          Paths.get("/tmp/createJobInvocation.json"),
+          pipelineOptionsJson.getBytes(Charset.defaultCharset()));
+      LOG.warn("pipelineOptions: {} pipelineOptionsJson: {}", flinkOptions, pipelineOptionsJson);
+      System.out.println("### createJobInvocation pipelineOptions: " + pipelineOptionsJson);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+
     return new JobInvocation(jobInfo, executorService, pipeline, pipelineRunner);
   }
 }

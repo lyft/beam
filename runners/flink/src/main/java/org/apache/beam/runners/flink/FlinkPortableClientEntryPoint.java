@@ -232,6 +232,11 @@ public class FlinkPortableClientEntryPoint {
             }
 
             latch.countDown();
+            try {
+              Thread.sleep(2000);
+            } catch (Exception e) {
+              // ignore
+            }
             return new FlinkPortableRunnerResult.Detached();
           }
         };
