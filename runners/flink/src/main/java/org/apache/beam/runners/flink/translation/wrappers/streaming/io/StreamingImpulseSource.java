@@ -25,8 +25,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A streaming source that periodically produces a byte array. This is mostly useful for
- * debugging, or for triggering periodic behavior in a portable pipeline.
+ * A streaming source that periodically produces a byte array. This is mostly useful for debugging,
+ * or for triggering periodic behavior in a portable pipeline.
  *
  * @deprecated Legacy non-portable source which can be replaced by a DoFn with timers.
  */
@@ -59,7 +59,8 @@ public class StreamingImpulseSource extends RichParallelSourceFunction<WindowedV
 
     while (!cancelled.get() && (messageCount == 0 || count < subtaskCount)) {
       synchronized (ctx.getCheckpointLock()) {
-        ctx.collect(WindowedValue.valueInGlobalWindow(String.valueOf(count).getBytes(Charsets.UTF_8)));
+        ctx.collect(
+            WindowedValue.valueInGlobalWindow(String.valueOf(count).getBytes(Charsets.UTF_8)));
         count++;
       }
 
