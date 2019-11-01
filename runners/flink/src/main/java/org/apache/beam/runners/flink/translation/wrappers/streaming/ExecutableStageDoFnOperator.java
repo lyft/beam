@@ -57,6 +57,7 @@ import org.apache.beam.runners.core.TimerInternals;
 import org.apache.beam.runners.core.construction.Timer;
 import org.apache.beam.runners.core.construction.graph.ExecutableStage;
 import org.apache.beam.runners.core.construction.graph.UserStateReference;
+import org.apache.beam.runners.flink.FlinkPipelineOptions;
 import org.apache.beam.runners.flink.translation.functions.FlinkExecutableStageContextFactory;
 import org.apache.beam.runners.flink.translation.functions.FlinkStreamingSideInputHandlerFactory;
 import org.apache.beam.runners.flink.translation.types.CoderTypeSerializer;
@@ -94,6 +95,8 @@ import org.apache.beam.vendor.sdk.v2.sdk.extensions.protobuf.ByteStringCoder;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
+import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyedStateBackend;
 import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -239,6 +242,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
       if (keyedStateInternals == null) {
         throw new IllegalStateException("Input must be keyed when user state is used");
       }
+      FlinkPipelineOptions flinkOptions = serializedOptions.get().as(FlinkPipelineOptions.class);
       userStateRequestHandler =
           StateRequestHandlers.forBagUserStateHandlerFactory(
               stageBundleFactory.getProcessBundleDescriptor(),
@@ -246,6 +250,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
                   () -> UUID.randomUUID().toString(),
                   keyedStateInternals,
                   getKeyedStateBackend(),
+                  flinkOptions.getCheckpointingInterval() > 0,
                   stateBackendLock));
     } else {
       userStateRequestHandler = StateRequestHandler.unsupported();
@@ -263,6 +268,10 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
 
     private final StateInternals stateInternals;
     private final KeyedStateBackend<ByteBuffer> keyedStateBackend;
+    private final boolean checkpointingEnabled;
+    /** Same as above but upcasted, if available, to access key group meta info. */
+    @Nullable private final AbstractKeyedStateBackend<ByteBuffer> keyStateBackendWithKeyGroupInfo;
+    /** Lock to hold whenever accessing the state backend. */
     private final Lock stateBackendLock;
     /** Holds the valid cache token for user state for this operator. */
     private final ByteString cacheToken;
@@ -271,9 +280,19 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         IdGenerator cacheTokenGenerator,
         StateInternals stateInternals,
         KeyedStateBackend<ByteBuffer> keyedStateBackend,
+        boolean checkpointingEnabled,
         Lock stateBackendLock) {
       this.stateInternals = stateInternals;
       this.keyedStateBackend = keyedStateBackend;
+      this.checkpointingEnabled = checkpointingEnabled;
+      if (keyedStateBackend instanceof AbstractKeyedStateBackend) {
+        // This will always succeed, unless a custom state backend is used which does not extend
+        // AbstractKeyedStateBackend. This is unlikely but we should still consider this case.
+        this.keyStateBackendWithKeyGroupInfo =
+            (AbstractKeyedStateBackend<ByteBuffer>) keyedStateBackend;
+      } else {
+        this.keyStateBackendWithKeyGroupInfo = null;
+      }
       this.stateBackendLock = stateBackendLock;
       this.cacheToken = ByteString.copyFrom(cacheTokenGenerator.getId().getBytes(Charsets.UTF_8));
     }
@@ -368,6 +387,20 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
           // Key for state request is shipped encoded with NESTED context.
           ByteBuffer encodedKey = FlinkKeyUtils.fromEncodedKey(key);
           keyedStateBackend.setCurrentKey(encodedKey);
+          if ((checkpointingEnabled || LOG.isDebugEnabled())
+              && keyStateBackendWithKeyGroupInfo != null) {
+            int currentKeyGroupIndex = keyStateBackendWithKeyGroupInfo.getCurrentKeyGroupIndex();
+            KeyGroupRange keyGroupRange = keyStateBackendWithKeyGroupInfo.getKeyGroupRange();
+            Preconditions.checkState(
+                keyGroupRange.contains(currentKeyGroupIndex),
+                "The current key '%s' with key group index '%s' does not belong to the key group range '%s'. KeyCoder: %s. Ptransformid: %s Userstateid: %s",
+                Arrays.toString(key.toByteArray()),
+                currentKeyGroupIndex,
+                keyGroupRange,
+                keyCoder,
+                pTransformId,
+                userStateId);
+          }
         }
       };
     }
