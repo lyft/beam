@@ -94,6 +94,7 @@ import org.apache.beam.vendor.sdk.v2.sdk.extensions.protobuf.ByteStringCoder;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyedStateBackend;
 import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -368,6 +369,14 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
           // Key for state request is shipped encoded with NESTED context.
           ByteBuffer encodedKey = FlinkKeyUtils.fromEncodedKey(key);
           keyedStateBackend.setCurrentKey(encodedKey);
+          int currentKeyGroupIndex = keyedStateBackend.getCurrentKeyGroupIndex();
+          KeyGroupRange keyGroupRange = keyedStateBackend.getKeyGroupRange();
+          Preconditions.checkState(
+              keyGroupRange.contains(currentKeyGroupIndex),
+              "The current key '%s' with key group index '%s' does not belong to the key group range '%s'.",
+              key.toByteArray(),
+              currentKeyGroupIndex,
+              keyGroupRange);
         }
       };
     }
