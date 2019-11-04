@@ -260,7 +260,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     return StateRequestHandlers.delegateBasedUponType(handlerMap);
   }
 
-  static class BagUserStateFactory<K extends ByteString, V, W extends BoundedWindow>
+  class BagUserStateFactory<K extends ByteString, V, W extends BoundedWindow>
       implements StateRequestHandlers.BagUserStateHandlerFactory<K, V, W> {
 
     private final StateInternals stateInternals;
@@ -386,11 +386,11 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
             KeyGroupRange keyGroupRange = keyStateBackendWithKeyGroupInfo.getKeyGroupRange();
             Preconditions.checkState(
                 keyGroupRange.contains(currentKeyGroupIndex),
-                "The current key '%s' with key group index '%s' does not belong to the key group range '%s'. KeyCoder: %s. Ptransformid: %s Userstateid: %s",
+                "The current key '%s' with key group index '%s' does not belong to the key group range '%s'. Runner KeyCoder: %s. Ptransformid: %s Userstateid: %s",
                 Arrays.toString(key.toByteArray()),
                 currentKeyGroupIndex,
                 keyGroupRange,
-                keyCoder,
+                ExecutableStageDoFnOperator.this.keyCoder,
                 pTransformId,
                 userStateId);
           }
