@@ -14,6 +14,7 @@ class FlinkKafkaInput(PTransform):
   consumer_properties = {'bootstrap.servers': 'localhost:9092'}
   topic = None
   max_out_of_orderness_millis = None
+  start_from_timestamp_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -35,6 +36,7 @@ class FlinkKafkaInput(PTransform):
     return ("lyft:flinkKafkaInput", json.dumps({
       'topic': self.topic,
       'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
+      'start_from_timestamp_millis': self.start_from_timestamp_millis,
       'properties': self.consumer_properties}))
 
   @staticmethod
@@ -45,6 +47,7 @@ class FlinkKafkaInput(PTransform):
     payload = json.loads(spec_parameter)
     instance.topic = payload['topic']
     instance.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
+    instance.start_from_timestamp_millis = payload['start_from_timestamp_millis']
     instance.consumer_properties = payload['properties']
     return instance
 
@@ -73,6 +76,15 @@ class FlinkKafkaInput(PTransform):
     self.max_out_of_orderness_millis = max_out_of_orderness_millis
     return self
 
+  def with_start_from_timestamp_millis(self, start_from_timestamp_millis):
+    """
+    The timestamp to start consuming messages from.
+    When using the start timestamp, the pipeline needs to have checkpointing enabled,
+    so that on automatic recovery the consumer resumes from the checkpointed offset
+    and not the initial timestamp.
+    """
+    self.start_from_timestamp_millis = start_from_timestamp_millis
+    return self
 
 @beam.typehints.with_input_types(bytes)
 class FlinkKafkaSink(PTransform):
