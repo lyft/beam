@@ -121,8 +121,8 @@ public class LyftFlinkStreamingPortableTranslations {
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
 
     Map<?, ?> consumerProps = (Map) params.get("properties");
-    final Properties properties = new Properties();
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+    final Properties properties = new Properties();
     properties.putAll(consumerProps);
 
     logger.info("Kafka consumer for topic {} with properties {}", topic, properties);
@@ -130,7 +130,12 @@ public class LyftFlinkStreamingPortableTranslations {
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource =
         new FlinkKafkaConsumer011<>(topic, new ByteArrayWindowedValueSchema(), properties);
 
-    kafkaSource.setStartFromLatest();
+    if (params.containsKey("start_from_timestamp_millis")) {
+      kafkaSource.setStartFromTimestamp(
+          Long.parseLong(params.get("start_from_timestamp_millis").toString()));
+    } else {
+      kafkaSource.setStartFromLatest();
+    }
 
     if (params.containsKey("max_out_of_orderness_millis")) {
       Number maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
