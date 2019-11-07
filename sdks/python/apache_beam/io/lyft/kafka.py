@@ -29,7 +29,7 @@ class FlinkKafkaInput(PTransform):
 
   def to_runner_api_parameter(self, context):
     assert isinstance(self, FlinkKafkaInput), \
-      "expected instance of CustomKafkaInput, but got %s" % self.__class__
+      "expected instance of FlinkKafkaInput, but got %s" % self.__class__
     assert self.topic is not None, "topic not set"
     assert len(self.consumer_properties) > 0, "consumer properties not set"
 
