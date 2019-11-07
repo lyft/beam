@@ -130,7 +130,7 @@ public class LyftFlinkStreamingPortableTranslations {
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource =
         new FlinkKafkaConsumer011<>(topic, new ByteArrayWindowedValueSchema(), properties);
 
-    if (params.containsKey("start_from_timestamp_millis")) {
+    if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
       kafkaSource.setStartFromTimestamp(
           Long.parseLong(params.get("start_from_timestamp_millis").toString()));
     } else {
