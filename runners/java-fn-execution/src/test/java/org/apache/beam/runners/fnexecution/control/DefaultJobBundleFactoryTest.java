@@ -26,7 +26,10 @@ import static org.mockito.Mockito.when;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.beam.model.fnexecution.v1.BeamFnApi.InstructionResponse;
 import org.apache.beam.model.pipeline.v1.Endpoints.ApiServiceDescriptor;
 import org.apache.beam.model.pipeline.v1.RunnerApi.Coder;
@@ -362,7 +365,7 @@ public class DefaultJobBundleFactoryTest {
       StageBundleFactory bf1 = bundleFactory.forStage(getExecutableStage(environment));
       StageBundleFactory bf2 = bundleFactory.forStage(getExecutableStage(environment));
       // NOTE: We hang on to stage bundle references to ensure their underlying environments are not
-      // garbage collected. For additional safety, we print the factories to ensure the referernces
+      // garbage collected. For additional safety, we print the factories to ensure the references
       // are not optimized away.
       System.out.println("bundle factory 1:" + bf1);
       System.out.println("bundle factory 1:" + bf2);
@@ -392,6 +395,56 @@ public class DefaultJobBundleFactoryTest {
       verify(envFactory).createEnvironment(environment);
       verify(envFactory).createEnvironment(envFoo);
       verifyNoMoreInteractions(envFactory);
+    }
+  }
+
+  @Test
+  public void loadBalancesBundles() throws Exception {
+    PortablePipelineOptions portableOptions =
+        PipelineOptionsFactory.as(PortablePipelineOptions.class);
+    portableOptions.setSdkWorkerParallelism(2);
+    portableOptions.setLoadBalanceBundles(true);
+    Struct pipelineOptions = PipelineOptionsTranslation.toProto(portableOptions);
+
+    try (DefaultJobBundleFactory bundleFactory =
+        new DefaultJobBundleFactory(
+            JobInfo.create("testJob", "testJob", "token", pipelineOptions),
+            envFactoryProviderMap,
+            stageIdGenerator,
+            serverInfo)) {
+      OutputReceiverFactory orf = mock(OutputReceiverFactory.class);
+      StateRequestHandler srh = mock(StateRequestHandler.class);
+      when(srh.getCacheTokens()).thenReturn(Collections.emptyList());
+      StageBundleFactory sbf = bundleFactory.forStage(getExecutableStage(environment));
+      RemoteBundle b1 = sbf.getBundle(orf, srh, BundleProgressHandler.ignored());
+      verify(envFactory, Mockito.times(1)).createEnvironment(environment);
+      final RemoteBundle b2 = sbf.getBundle(orf, srh, BundleProgressHandler.ignored());
+      verify(envFactory, Mockito.times(2)).createEnvironment(environment);
+
+      long tms = System.currentTimeMillis();
+      AtomicBoolean closed = new AtomicBoolean();
+      // close to free up environment for another bundle
+      TimerTask closeBundleTask =
+          new TimerTask() {
+            @Override
+            public void run() {
+              try {
+                b2.close();
+                closed.set(true);
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            }
+          };
+      new Timer().schedule(closeBundleTask, 100);
+
+      RemoteBundle b3 = sbf.getBundle(orf, srh, BundleProgressHandler.ignored());
+      // ensure we waited for close
+      Assert.assertTrue(System.currentTimeMillis() - tms >= 100 && closed.get());
+
+      verify(envFactory, Mockito.times(2)).createEnvironment(environment);
+      b3.close();
+      b1.close();
     }
   }
 
