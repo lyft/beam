@@ -62,22 +62,27 @@ public class FlinkMetricContainer {
   private final Map<String, FlinkGauge> flinkGaugeCache;
   private final MetricsAccumulator metricsAccumulator;
 
-  public FlinkMetricContainer(RuntimeContext runtimeContext) {
+  public FlinkMetricContainer(RuntimeContext runtimeContext, boolean accumulatorDisabled) {
     this.runtimeContext = runtimeContext;
     this.flinkCounterCache = new HashMap<>();
     this.flinkDistributionGaugeCache = new HashMap<>();
     this.flinkGaugeCache = new HashMap<>();
 
-    Accumulator<MetricsContainerStepMap, MetricsContainerStepMap> metricsAccumulator =
-        runtimeContext.getAccumulator(ACCUMULATOR_NAME);
-    if (metricsAccumulator == null) {
+    Accumulator<MetricsContainerStepMap, MetricsContainerStepMap> metricsAccumulator;
+    if (accumulatorDisabled) {
+      // Do not register the accumulator with Flink
       metricsAccumulator = new MetricsAccumulator();
-      try {
-        runtimeContext.addAccumulator(ACCUMULATOR_NAME, metricsAccumulator);
-      } catch (UnsupportedOperationException e) {
-        // Not supported in all environments, e.g. tests
-      } catch (Exception e) {
-        LOG.error("Failed to create metrics accumulator.", e);
+    } else {
+      metricsAccumulator = runtimeContext.getAccumulator(ACCUMULATOR_NAME);
+      if (metricsAccumulator == null) {
+        metricsAccumulator = new MetricsAccumulator();
+        try {
+          runtimeContext.addAccumulator(ACCUMULATOR_NAME, metricsAccumulator);
+        } catch (UnsupportedOperationException e) {
+          // Not supported in all environments, e.g. tests
+        } catch (Exception e) {
+          LOG.error("Failed to create metrics accumulator.", e);
+        }
       }
     }
     this.metricsAccumulator = (MetricsAccumulator) metricsAccumulator;
