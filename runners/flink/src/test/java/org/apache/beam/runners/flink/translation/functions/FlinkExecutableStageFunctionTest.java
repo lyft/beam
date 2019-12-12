@@ -41,6 +41,10 @@ import org.apache.beam.runners.fnexecution.control.StageBundleFactory;
 import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
 import org.apache.beam.runners.fnexecution.state.StateRequestHandler;
 import org.apache.beam.sdk.fn.data.FnDataReceiver;
+<<<<<<< HEAD
+=======
+import org.apache.beam.sdk.options.PipelineOptions;
+>>>>>>> 4777023d85... [BEAM-8962] Add option to disable the metric container accumulator
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.join.RawUnionValue;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -257,15 +261,10 @@ public class FlinkExecutableStageFunctionTest {
     FlinkExecutableStageContextFactory contextFactory =
         Mockito.mock(FlinkExecutableStageContextFactory.class);
     when(contextFactory.get(any())).thenReturn(stageContext);
+    PipelineOptions options = PipelineOptionsFactory.create();
     FlinkExecutableStageFunction<Integer> function =
         new FlinkExecutableStageFunction<>(
-            "step",
-            PipelineOptionsFactory.create(),
-            stagePayload,
-            jobInfo,
-            outputMap,
-            contextFactory,
-            null);
+            "step", options, stagePayload, jobInfo, outputMap, contextFactory, null);
     function.setRuntimeContext(runtimeContext);
     Whitebox.setInternalState(function, "stateRequestHandler", stateRequestHandler);
     return function;
