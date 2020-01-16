@@ -362,6 +362,8 @@ public class SdkHarnessClient implements AutoCloseable {
     }
   }
 
+  private static final IdGenerator bundleIdGenerator = IdGenerators.incrementingLongs();
+
   private final IdGenerator idGenerator;
   private final InstructionRequestHandler fnApiControlClient;
   private final FnDataService fnApiDataService;
@@ -385,8 +387,9 @@ public class SdkHarnessClient implements AutoCloseable {
    */
   public static SdkHarnessClient usingFnApiClient(
       InstructionRequestHandler fnApiControlClient, FnDataService fnApiDataService) {
-    return new SdkHarnessClient(
-        fnApiControlClient, fnApiDataService, IdGenerators.incrementingLongs());
+    // Make sure to not create a new id generator here, otherwise multiple clients sharing the same
+    // GrpcStateService could generate overlapping ids.
+    return new SdkHarnessClient(fnApiControlClient, fnApiDataService, bundleIdGenerator);
   }
 
   public SdkHarnessClient withIdGenerator(IdGenerator idGenerator) {
