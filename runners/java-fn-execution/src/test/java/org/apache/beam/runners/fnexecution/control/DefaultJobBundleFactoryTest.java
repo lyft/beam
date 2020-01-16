@@ -359,6 +359,19 @@ public class DefaultJobBundleFactoryTest {
   }
 
   @Test
+  public void closesEnvironmentOnCleanupWithPendingRefs() throws Exception {
+    try (DefaultJobBundleFactory bundleFactory =
+        createDefaultJobBundleFactory(envFactoryProviderMap)) {
+      DefaultJobBundleFactory.SimpleStageBundleFactory stageBundleFactory =
+          (DefaultJobBundleFactory.SimpleStageBundleFactory)
+              bundleFactory.forStage(getExecutableStage(environment));
+      // The client is still being used, e.g. when the pipeline fails and is shut down
+      stageBundleFactory.currentClient.wrappedClient.ref();
+    }
+    verify(remoteEnvironment).close();
+  }
+
+  @Test
   public void cachesEnvironment() throws Exception {
     try (DefaultJobBundleFactory bundleFactory =
         createDefaultJobBundleFactory(envFactoryProviderMap)) {
