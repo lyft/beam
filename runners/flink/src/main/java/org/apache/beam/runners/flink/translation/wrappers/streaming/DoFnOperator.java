@@ -745,9 +745,15 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
   /** Check whether invoke finishBundle by timeout. */
   private void checkInvokeFinishBundleByTime() {
-    long now = getProcessingTimeService().getCurrentProcessingTime();
-    if (now - lastFinishBundleTime >= maxBundleTimeMills) {
-      invokeFinishBundle();
+    // Prevent this from being invoked when the task has been canceled because this is very likely
+    // to infer with the cleanup run on close() and dispose(). During regular processing there is
+    // no chance of this being run at the same time as the main processing thread due to Flink's
+    // checkpoint lock which has to be acquired by both the timer and the processing thread.
+    if (getContainingTask().isRunning()) {
+      long now = getProcessingTimeService().getCurrentProcessingTime();
+      if (now - lastFinishBundleTime >= maxBundleTimeMills) {
+        invokeFinishBundle();
+      }
     }
   }
 
