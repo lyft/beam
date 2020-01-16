@@ -43,6 +43,7 @@ import org.apache.beam.sdk.fn.data.FnDataReceiver;
 import org.apache.beam.sdk.fn.data.InboundDataClient;
 import org.apache.beam.sdk.fn.data.LogicalEndpoint;
 import org.apache.beam.sdk.util.MoreFutures;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -269,19 +270,6 @@ public class SdkHarnessClient implements AutoCloseable {
           exception.addSuppressed(e);
         }
       }
-      try {
-        if (exception == null) {
-          stateRegistration.deregister();
-        } else {
-          stateRegistration.abort();
-        }
-      } catch (Exception e) {
-        if (exception == null) {
-          exception = e;
-        } else {
-          exception.addSuppressed(e);
-        }
-      }
       for (InboundDataClient outputClient : outputClients.values()) {
         try {
           // If we failed processing this bundle, we should cancel all inbound data.
@@ -296,6 +284,23 @@ public class SdkHarnessClient implements AutoCloseable {
           } else {
             exception.addSuppressed(e);
           }
+        }
+      }
+      try {
+        // This will de-register the state handler for this bundle id and should be done when no
+        // more elements can be processed by the SDK Harness. Otherwise, we run into a race
+        // condition where we may get state requests from the SDK Harness which can't be processed
+        // anymore.
+        if (exception == null) {
+          stateRegistration.deregister();
+        } else {
+          stateRegistration.abort();
+        }
+      } catch (Exception e) {
+        if (exception == null) {
+          exception = e;
+        } else {
+          exception.addSuppressed(e);
         }
       }
       if (exception != null) {
