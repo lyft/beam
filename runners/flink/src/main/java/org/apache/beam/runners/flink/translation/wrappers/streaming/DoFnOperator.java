@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -197,7 +197,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   @Nullable transient FlinkMetricContainer flinkMetricContainer;
 
   /** Use an AtomicBoolean because we start/stop bundles by a timer thread (see below). */
-  private transient AtomicBoolean bundleStarted;
+  private transient AtomicReference<BundleState> bundleState;
   /** Number of processed elements in the current bundle. */
   private transient long elementCount;
   /** A timer that finishes the current bundle after a fixed amount of time. */
@@ -206,6 +206,13 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   private transient long lastFinishBundleTime;
   /** Callback to be executed after the current bundle was finished. */
   private transient Runnable bundleFinishedCallback;
+
+  enum BundleState {
+    STARTING,
+    STARTED,
+    FINISHING,
+    FINISHED
+  }
 
   /** Constructor for DoFnOperator. */
   public DoFnOperator(
@@ -445,7 +452,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       doFnRunner = new DoFnRunnerWithMetricsUpdate<>(stepName, doFnRunner, flinkMetricContainer);
     }
 
-    bundleStarted = new AtomicBoolean(false);
+    bundleState = new AtomicReference<>(BundleState.FINISHED);
     elementCount = 0L;
     lastFinishBundleTime = getProcessingTimeService().getCurrentProcessingTime();
 
@@ -720,9 +727,12 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
    * processWatermark.
    */
   private void checkInvokeStartBundle() {
-    if (bundleStarted.compareAndSet(false, true)) {
+    if (bundleState.compareAndSet(BundleState.FINISHED, BundleState.STARTING)) {
       outputManager.flushBuffer();
       pushbackDoFnRunner.startBundle();
+      Preconditions.checkState(
+          bundleState.compareAndSet(BundleState.STARTING, BundleState.STARTED),
+          "Bundle was expected to be in state STARTING.");
     }
   }
 
@@ -743,10 +753,13 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   }
 
   protected final void invokeFinishBundle() {
-    if (bundleStarted.compareAndSet(true, false)) {
+    if (bundleState.compareAndSet(BundleState.STARTED, BundleState.FINISHING)) {
       pushbackDoFnRunner.finishBundle();
       elementCount = 0L;
       lastFinishBundleTime = getProcessingTimeService().getCurrentProcessingTime();
+      Preconditions.checkState(
+          bundleState.compareAndSet(BundleState.FINISHING, BundleState.FINISHED),
+          "Bundle was expected to be in state FINISHING.");
       // callback only after current bundle was fully finalized
       // it could start a new bundle, for example resulting from timer processing
       if (bundleFinishedCallback != null) {
@@ -769,7 +782,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     try {
       outputManager.openBuffer();
       // Ensure that no new bundle gets started as part of finishing a bundle
-      while (bundleStarted.get()) {
+      while (bundleState.get() != BundleState.FINISHED) {
         invokeFinishBundle();
       }
       outputManager.closeBuffer();
