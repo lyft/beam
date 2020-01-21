@@ -210,6 +210,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   enum BundleState {
     STARTING,
     STARTED,
+    PROCESSING,
     FINISHING,
     FINISHED
   }
@@ -550,7 +551,9 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   public final void processElement(StreamRecord<WindowedValue<InputT>> streamRecord)
       throws Exception {
     checkInvokeStartBundle();
+    bundleState.set(BundleState.PROCESSING);
     doFnRunner.processElement(streamRecord.getValue());
+    bundleState.set(BundleState.STARTED);
     checkInvokeFinishBundleByCount();
   }
 
@@ -742,6 +745,8 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     if (elementCount >= maxBundleSize) {
       invokeFinishBundle();
     }
+    // In case we missed the bundle timeout during processing
+    checkInvokeFinishBundleByTime();
   }
 
   /** Check whether invoke finishBundle by timeout. */
