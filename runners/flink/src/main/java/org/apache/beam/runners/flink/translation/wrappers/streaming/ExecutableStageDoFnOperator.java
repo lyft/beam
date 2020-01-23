@@ -130,7 +130,9 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
   private transient StageBundleFactory stageBundleFactory;
   private transient ExecutableStage executableStage;
   private transient SdkHarnessDoFnRunner<InputT, OutputT> sdkHarnessRunner;
-  private transient long backupWatermarkHold = Long.MIN_VALUE;
+
+  /** Watermark held back due to async processing. Volatile due to multiple threads. */
+  private transient volatile long backupWatermarkHold = Long.MIN_VALUE;
 
   /** Constructor. */
   public ExecutableStageDoFnOperator(
@@ -590,8 +592,10 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
     private final BiConsumer<WindowedValue<InputT>, TimerInternals.TimerData> timerRegistration;
     private final Supplier<Object> keyForTimer;
 
-    private RemoteBundle remoteBundle;
-    private FnDataReceiver<WindowedValue<?>> mainInputReceiver;
+    /** Current active bundle. Volatile to ensure bundle threads see this consistent. */
+    private volatile RemoteBundle remoteBundle;
+    /** Current main input receiver. Volatile to ensure bundle threads see this consistent. */
+    private volatile FnDataReceiver<WindowedValue<?>> mainInputReceiver;
 
     public SdkHarnessDoFnRunner(
         String mainInput,
