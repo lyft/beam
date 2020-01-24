@@ -156,7 +156,8 @@ public class GrpcStateService extends BeamFnStateGrpc.BeamFnStateImplBase
           StateResponse.newBuilder()
               .setError(
                   String.format(
-                      "Unknown process bundle instruction id '%s'", request.getInstructionId())));
+                      "Unknown process bundle instruction id '%s'. Here are the other registered handlers: %s",
+                      request.getInstructionId(), requestHandlers.entrySet())));
       return result;
     }
 

@@ -591,7 +591,7 @@ class GrpcStateHandler(object):
         raise RuntimeError()
     response = req_future.get()
     if response.error:
-      raise RuntimeError(response.error)
+      raise RuntimeError(response.error + "\ndebug: " + request)
     else:
       return response
 
