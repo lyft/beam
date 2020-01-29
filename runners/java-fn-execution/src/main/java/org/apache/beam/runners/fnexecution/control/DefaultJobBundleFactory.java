@@ -20,6 +20,7 @@ package org.apache.beam.runners.fnexecution.control;
 import com.google.auto.value.AutoValue;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -243,14 +244,6 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     // Clear the cache. This closes all active environments.
     // note this may cause open calls to be cancelled by the peer
     for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
-      for (WrappedSdkHarnessClient client : environmentCache.asMap().values()) {
-        try {
-          client.close();
-        } catch (Exception e) {
-          // This shouldn't throw because the client catches errors, but just in case...
-          LOG.warn("Error closing client.", e);
-        }
-      }
       environmentCache.invalidateAll();
       environmentCache.cleanUp();
     }
@@ -278,11 +271,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     return outputReceivers;
   }
 
-  @VisibleForTesting
-  static class PreparedClient {
+  private static class PreparedClient {
     private BundleProcessor processor;
     private ExecutableProcessBundleDescriptor processBundleDescriptor;
-    @VisibleForTesting WrappedSdkHarnessClient wrappedClient;
+    private WrappedSdkHarnessClient wrappedClient;
   }
 
   private PreparedClient prepare(
@@ -314,13 +306,12 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
    * A {@link StageBundleFactory} for remotely processing bundles that supports environment
    * expiration.
    */
-  @VisibleForTesting
-  class SimpleStageBundleFactory implements StageBundleFactory {
+  private class SimpleStageBundleFactory implements StageBundleFactory {
 
     private final ExecutableStage executableStage;
     private final int environmentIndex;
-    private final HashMap<WrappedSdkHarnessClient, PreparedClient> preparedClients = new HashMap();
-    @VisibleForTesting PreparedClient currentClient;
+    private final Map<WrappedSdkHarnessClient, PreparedClient> preparedClients = new IdentityHashMap<>();
+    private volatile PreparedClient currentClient;
 
     private SimpleStageBundleFactory(ExecutableStage executableStage) {
       this.executableStage = executableStage;
@@ -455,12 +446,11 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     }
 
     public void close() {
-      // Invalidate bundle ref count to avoid cleaning up again
-      bundleRefCount.set(-1);
       // DO NOT ADD ANYTHING HERE WHICH MIGHT CAUSE THE BLOCK BELOW TO NOT BE EXECUTED.
       // If we exit prematurely (e.g. due to an exception), resources won't be cleaned up properly.
       // Please make an AutoCloseable and add it to the try statement below.
       try (
+          // Close the logging server first to prevent spaming the logs with error messages
           AutoCloseable loggingServer = serverInfo.getLoggingServer();
           AutoCloseable controlServer = serverInfo.getControlServer();
           AutoCloseable stateServer = serverInfo.getStateServer();
@@ -479,8 +469,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       // TODO: Wait for executor shutdown?
     }
 
-    @VisibleForTesting
-    int ref() {
+    private int ref() {
       return bundleRefCount.incrementAndGet();
     }
 
