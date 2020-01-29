@@ -450,14 +450,15 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       // If we exit prematurely (e.g. due to an exception), resources won't be cleaned up properly.
       // Please make an AutoCloseable and add it to the try statement below.
       try (
-          // Close the logging server first to prevent spaming the logs with error messages
-          AutoCloseable loggingServer = serverInfo.getLoggingServer();
-          AutoCloseable controlServer = serverInfo.getControlServer();
+          // These will be closed in the reverse creation order
+          AutoCloseable envCloser = environment;
+          AutoCloseable provisioningServer = serverInfo.getProvisioningServer();
+          AutoCloseable retrievalServer = serverInfo.getRetrievalServer();
           AutoCloseable stateServer = serverInfo.getStateServer();
           AutoCloseable dataServer = serverInfo.getDataServer();
-          AutoCloseable retrievalServer = serverInfo.getRetrievalServer();
-          AutoCloseable provisioningServer = serverInfo.getProvisioningServer();
-          AutoCloseable envCloser = environment
+          AutoCloseable controlServer = serverInfo.getControlServer();
+          // Close the logging server first to prevent spaming the logs with error messages
+          AutoCloseable loggingServer = serverInfo.getLoggingServer();
       ) {
         // Wrap resources in try-with-resources to ensure all are cleaned up.
         // This will close _all_ of these even in the presence of exceptions.
