@@ -21,6 +21,7 @@ import com.google.auto.value.AutoValue;
 import java.io.IOException;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -74,6 +75,7 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.RemovalNot
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -101,6 +103,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   private final LinkedBlockingDeque<LoadingCache<Environment, WrappedSdkHarnessClient>>
       availableCaches;
   private final boolean loadBalanceBundles;
+  /** Clients which were evicted due to environment expiration but still had pending references. */
+  private final Set<WrappedSdkHarnessClient> evictedActiveClients;
+
+  private boolean closed;
 
   public static DefaultJobBundleFactory create(JobInfo jobInfo) {
     PipelineOptions pipelineOptions =
@@ -141,6 +147,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             getMaxEnvironmentClients(jobInfo));
     this.availableCachesCount = new Semaphore(environmentCaches.size(), true);
     this.availableCaches = new LinkedBlockingDeque<>(environmentCaches);
+    this.evictedActiveClients = Sets.newIdentityHashSet();
   }
 
   @VisibleForTesting
@@ -159,23 +166,28 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         createEnvironmentCaches(serverFactory -> serverInfo, getMaxEnvironmentClients(jobInfo));
     this.availableCachesCount = new Semaphore(environmentCaches.size(), true);
     this.availableCaches = new LinkedBlockingDeque<>(environmentCaches);
+    this.evictedActiveClients = Sets.newIdentityHashSet();
   }
 
   private ImmutableList<LoadingCache<Environment, WrappedSdkHarnessClient>> createEnvironmentCaches(
       ThrowingFunction<ServerFactory, ServerInfo> serverInfoCreator, int count) {
-    CacheBuilder builder =
+    CacheBuilder<Environment, WrappedSdkHarnessClient> builder =
         CacheBuilder.newBuilder()
             .removalListener(
                 (RemovalNotification<Environment, WrappedSdkHarnessClient> notification) -> {
-                  int refCount = notification.getValue().unref();
-                  LOG.debug(
-                      "Removed environment {} with {} remaining bundle references.",
-                      notification.getKey(),
-                      refCount);
+                  WrappedSdkHarnessClient client = notification.getValue();
+                  int refCount = client.unref();
+                  if (refCount > 0) {
+                    LOG.warn(
+                        "Expiring environment {} with {} remaining bundle references. Taking note to clean it up during shutdown if the references are not removed by then.",
+                        notification.getKey(),
+                        refCount);
+                    evictedActiveClients.add(client);
+                  }
                 });
 
     if (environmentExpirationMillis > 0) {
-      builder = builder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
+      builder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
     }
 
     ImmutableList.Builder<LoadingCache<Environment, WrappedSdkHarnessClient>> caches =
@@ -239,14 +251,57 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   }
 
   @Override
-  public void close() throws Exception {
-    // Clear the cache. This closes all active environments.
-    // note this may cause open calls to be cancelled by the peer
-    for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
-      environmentCache.invalidateAll();
-      environmentCache.cleanUp();
+  public synchronized void close() throws Exception {
+    if (closed) {
+      return;
     }
-    executor.shutdown();
+    // The following code is written defensively to guard against any exceptions occurring
+    // during shutdown. It is not visually appealing but unless it can be written more
+    // defensively, there is no reason to change it.
+    Exception exception = null;
+    for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
+      try {
+        // Clear the cache. This closes all active environments.
+        // note this may cause open calls to be cancelled by the peer
+        environmentCache.invalidateAll();
+        environmentCache.cleanUp();
+      } catch (Exception e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    }
+    // Cleanup any left-over environments which were not properly dereferenced by the Runner, e.g.
+    // when the bundle was not closed properly. This ensures we do not leak resources.
+    for (WrappedSdkHarnessClient client : evictedActiveClients) {
+      try {
+        //noinspection StatementWithEmptyBody
+        while (client.unref() > 0) {
+          // Remove any pending references from the client to force closing the environment
+        }
+      } catch (Exception e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    }
+    try {
+      executor.shutdown();
+    } catch (Exception e) {
+      if (exception != null) {
+        exception.addSuppressed(e);
+      } else {
+        exception = e;
+      }
+    }
+    closed = true;
+    if (exception != null) {
+      throw exception;
+    }
   }
 
   private static ImmutableMap.Builder<String, RemoteOutputReceiver<?>> getOutputReceivers(
@@ -337,20 +392,18 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         availableCachesCount.acquire();
         currentCache = availableCaches.take();
         client = currentCache.getUnchecked(executableStage.getEnvironment());
-        client.ref();
 
         currentClient = preparedClients.get(client);
         if (currentClient == null) {
           // we are using this client for the first time
           preparedClients.put(client, currentClient = prepare(client, executableStage));
           // cleanup any expired clients
-          preparedClients.keySet().removeIf(c -> c.bundleRefCount.get() == 0);
+          preparedClients.keySet().removeIf(c -> c.bundleRefCount.get() <= 0);
         }
 
       } else {
         currentCache = environmentCaches.get(environmentIndex);
         client = currentCache.getUnchecked(executableStage.getEnvironment());
-        client.ref();
 
         if (currentClient.wrappedClient != client) {
           // reset after environment expired
@@ -359,6 +412,11 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
           preparedClients.put(client, currentClient);
         }
       }
+
+      // Ensure client is referenced for this bundle, unref in close()
+      client.ref();
+      // Cleanup list of clients which were active during eviction but now do not hold references
+      evictedActiveClients.removeIf(c -> c.bundleRefCount.get() <= 0);
 
       final RemoteBundle bundle =
           currentClient.processor.newBundle(
@@ -385,7 +443,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             client.unref();
             if (loadBalanceBundles) {
               availableCaches.offer(currentCache);
-            availableCachesCount.release();
+              availableCachesCount.release();
             }
           }
         }
@@ -416,6 +474,8 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     private final ServerInfo serverInfo;
     private final AtomicInteger bundleRefCount = new AtomicInteger();
 
+    private boolean closed;
+
     static WrappedSdkHarnessClient wrapping(RemoteEnvironment environment, ServerInfo serverInfo) {
       SdkHarnessClient client =
           SdkHarnessClient.usingFnApiClient(
@@ -439,7 +499,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       return serverInfo;
     }
 
-    public void close() {
+    public synchronized void close() {
+      if (closed) {
+        return;
+      }
       // DO NOT ADD ANYTHING HERE WHICH MIGHT CAUSE THE BLOCK BELOW TO NOT BE EXECUTED.
       // If we exit prematurely (e.g. due to an exception), resources won't be cleaned up properly.
       // Please make an AutoCloseable and add it to the try statement below.
@@ -456,6 +519,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         // This will close _all_ of these even in the presence of exceptions.
         // The first exception encountered will be the base exception,
         // the next one will be added via Throwable#addSuppressed.
+        closed = true;
       } catch (Exception e) {
         LOG.warn("Error cleaning up servers {}", environment.getEnvironment(), e);
       }
@@ -468,7 +532,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
 
     private int unref() {
       int count = bundleRefCount.decrementAndGet();
-      if (count == 0) {
+      if (count <= 0) {
         // Close environment after it was removed from cache and all bundles finished.
         LOG.info("Closing environment {}", environment.getEnvironment());
         close();
