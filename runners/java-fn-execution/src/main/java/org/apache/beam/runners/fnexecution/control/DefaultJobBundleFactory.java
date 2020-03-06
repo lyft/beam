@@ -102,6 +102,8 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       availableCaches;
   private final boolean loadBalanceBundles;
 
+  private volatile boolean closed;
+
   public static DefaultJobBundleFactory create(JobInfo jobInfo) {
     PipelineOptions pipelineOptions =
         PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions());
@@ -239,14 +241,47 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   }
 
   @Override
-  public void close() throws Exception {
-    // Clear the cache. This closes all active environments.
-    // note this may cause open calls to be cancelled by the peer
-    for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
-      environmentCache.invalidateAll();
-      environmentCache.cleanUp();
+  public synchronized void close() throws Exception {
+    if (closed) {
+      return;
     }
-    executor.shutdown();
+    Exception exception = null;
+    try {
+      // Clear the cache. This closes all active environments.
+      // note this may cause open calls to be cancelled by the peer
+      for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache :
+          environmentCaches) {
+        try {
+          environmentCache.invalidateAll();
+          environmentCache.cleanUp();
+        } catch (Exception e) {
+          if (exception != null) {
+            exception.addSuppressed(e);
+          } else {
+            exception = e;
+          }
+        }
+      }
+      try {
+        executor.shutdown();
+      } catch (Exception e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    } catch (Exception e) {
+      if (exception != null) {
+        exception.addSuppressed(e);
+      } else {
+        exception = e;
+      }
+    }
+    closed = true;
+    if (exception != null) {
+      throw exception;
+    }
   }
 
   private static ImmutableMap.Builder<String, RemoteOutputReceiver<?>> getOutputReceivers(
@@ -385,7 +420,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             client.unref();
             if (loadBalanceBundles) {
               availableCaches.offer(currentCache);
-            availableCachesCount.release();
+              availableCachesCount.release();
             }
           }
         }

@@ -67,9 +67,29 @@ public class ProcessEnvironment implements RemoteEnvironment {
   public void close() throws Exception {
     synchronized (lock) {
       if (!isClosed) {
-        instructionHandler.close();
-        processManager.stopProcess(workerId);
+        Exception exception = null;
+        try {
+          processManager.stopProcess(workerId);
+        } catch (Exception e) {
+          if (exception != null) {
+            exception.addSuppressed(e);
+          } else {
+            exception = e;
+          }
+        }
+        try {
+          instructionHandler.close();
+        } catch (Exception e) {
+          if (exception != null) {
+            exception.addSuppressed(e);
+          } else {
+            exception = e;
+          }
+        }
         isClosed = true;
+        if (exception != null) {
+          throw exception;
+        }
       }
     }
   }
