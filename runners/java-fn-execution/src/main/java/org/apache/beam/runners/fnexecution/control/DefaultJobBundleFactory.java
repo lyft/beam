@@ -102,6 +102,8 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       availableCaches;
   private final boolean loadBalanceBundles;
 
+  private volatile boolean closed;
+
   public static DefaultJobBundleFactory create(JobInfo jobInfo) {
     PipelineOptions pipelineOptions =
         PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions());
@@ -167,11 +169,20 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         CacheBuilder.newBuilder()
             .removalListener(
                 (RemovalNotification<Environment, WrappedSdkHarnessClient> notification) -> {
-                  int refCount = notification.getValue().unref();
-                  LOG.debug(
-                      "Removed environment {} with {} remaining bundle references.",
-                      notification.getKey(),
-                      refCount);
+                  WrappedSdkHarnessClient client = notification.getValue();
+                  int refCount = client.unref();
+                  // Double-check to trigger closing of all environments in case the "refing" does
+                  // not clean them up during operator shutdown. This is necessary in some
+                  // situations, e.g when the bundle cannot be closed and thus the ref cannot be
+                  // released. All environment types ensure they can only be closed once.
+                  if (refCount > 0) {
+                    LOG.warn(
+                        "Clearing remaining {} bundle references from environment {} to ensure it shuts down.",
+                        refCount,
+                        notification.getKey());
+                    //noinspection StatementWithEmptyBody
+                    while (client.unref() > 0) {}
+                  }
                 });
 
     if (environmentExpirationMillis > 0) {
@@ -239,14 +250,47 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   }
 
   @Override
-  public void close() throws Exception {
-    // Clear the cache. This closes all active environments.
-    // note this may cause open calls to be cancelled by the peer
-    for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
-      environmentCache.invalidateAll();
-      environmentCache.cleanUp();
+  public synchronized void close() throws Exception {
+    if (closed) {
+      return;
     }
-    executor.shutdown();
+    Exception exception = null;
+    try {
+      for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache :
+          environmentCaches) {
+        try {
+          // Clear the cache. This closes all active environments.
+          // note this may cause open calls to be cancelled by the peer
+          environmentCache.invalidateAll();
+          environmentCache.cleanUp();
+        } catch (Exception e) {
+          if (exception != null) {
+            exception.addSuppressed(e);
+          } else {
+            exception = e;
+          }
+        }
+      }
+      try {
+        executor.shutdown();
+      } catch (Exception e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    } catch (Exception e) {
+      if (exception != null) {
+        exception.addSuppressed(e);
+      } else {
+        exception = e;
+      }
+    }
+    closed = true;
+    if (exception != null) {
+      throw exception;
+    }
   }
 
   private static ImmutableMap.Builder<String, RemoteOutputReceiver<?>> getOutputReceivers(
@@ -385,7 +429,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             client.unref();
             if (loadBalanceBundles) {
               availableCaches.offer(currentCache);
-            availableCachesCount.release();
+              availableCachesCount.release();
             }
           }
         }
@@ -416,6 +460,8 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     private final ServerInfo serverInfo;
     private final AtomicInteger bundleRefCount = new AtomicInteger();
 
+    private boolean closed;
+
     static WrappedSdkHarnessClient wrapping(RemoteEnvironment environment, ServerInfo serverInfo) {
       SdkHarnessClient client =
           SdkHarnessClient.usingFnApiClient(
@@ -439,7 +485,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
       return serverInfo;
     }
 
-    public void close() {
+    public synchronized void close() {
+      if (closed) {
+        return;
+      }
       // DO NOT ADD ANYTHING HERE WHICH MIGHT CAUSE THE BLOCK BELOW TO NOT BE EXECUTED.
       // If we exit prematurely (e.g. due to an exception), resources won't be cleaned up properly.
       // Please make an AutoCloseable and add it to the try statement below.
@@ -456,6 +505,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         // This will close _all_ of these even in the presence of exceptions.
         // The first exception encountered will be the base exception,
         // the next one will be added via Throwable#addSuppressed.
+        closed = true;
       } catch (Exception e) {
         LOG.warn("Error cleaning up servers {}", environment.getEnvironment(), e);
       }
