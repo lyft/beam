@@ -217,17 +217,18 @@ public class ProcessManager {
     public void run() {
       synchronized (ALL_PROCESS_MANAGERS) {
         ALL_PROCESS_MANAGERS.forEach(ProcessManager::stopAllProcesses);
-        for (ProcessManager pm : ALL_PROCESS_MANAGERS) {
-          if (pm.processes.values().stream().anyMatch(Process::isAlive)) {
-            try {
-              // Graceful shutdown period
-              Thread.sleep(200);
-              break;
-            } catch (InterruptedException ignored) {
-            }
+        // If any processes are still alive, wait for 200 ms.
+        try {
+          if (ALL_PROCESS_MANAGERS.stream()
+              .anyMatch(pm -> pm.processes.values().stream().anyMatch(Process::isAlive))) {
+            // Graceful shutdown period after asking processes to quit
+            Thread.sleep(200);
           }
+        } catch (InterruptedException ignored) {
+          // Ignore interruptions here to proceed with killing processes
+        } finally {
+          ALL_PROCESS_MANAGERS.forEach(ProcessManager::killAllProcesses);
         }
-        ALL_PROCESS_MANAGERS.forEach(ProcessManager::killAllProcesses);
       }
     }
   }

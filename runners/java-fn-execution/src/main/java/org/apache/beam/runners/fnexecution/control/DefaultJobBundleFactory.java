@@ -21,6 +21,7 @@ import com.google.auto.value.AutoValue;
 import java.io.IOException;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -74,6 +75,7 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.cache.RemovalNot
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -101,8 +103,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
   private final LinkedBlockingDeque<LoadingCache<Environment, WrappedSdkHarnessClient>>
       availableCaches;
   private final boolean loadBalanceBundles;
+  /** Clients which were evicted due to environment expiration but still had pending references. */
+  private final Set<WrappedSdkHarnessClient> evictedActiveClients;
 
-  private volatile boolean closed;
+  private boolean closed;
 
   public static DefaultJobBundleFactory create(JobInfo jobInfo) {
     PipelineOptions pipelineOptions =
@@ -143,6 +147,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
             getMaxEnvironmentClients(jobInfo));
     this.availableCachesCount = new Semaphore(environmentCaches.size(), true);
     this.availableCaches = new LinkedBlockingDeque<>(environmentCaches);
+    this.evictedActiveClients = Sets.newIdentityHashSet();
   }
 
   @VisibleForTesting
@@ -161,32 +166,28 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         createEnvironmentCaches(serverFactory -> serverInfo, getMaxEnvironmentClients(jobInfo));
     this.availableCachesCount = new Semaphore(environmentCaches.size(), true);
     this.availableCaches = new LinkedBlockingDeque<>(environmentCaches);
+    this.evictedActiveClients = Sets.newIdentityHashSet();
   }
 
   private ImmutableList<LoadingCache<Environment, WrappedSdkHarnessClient>> createEnvironmentCaches(
       ThrowingFunction<ServerFactory, ServerInfo> serverInfoCreator, int count) {
-    CacheBuilder builder =
+    CacheBuilder<Environment, WrappedSdkHarnessClient> builder =
         CacheBuilder.newBuilder()
             .removalListener(
                 (RemovalNotification<Environment, WrappedSdkHarnessClient> notification) -> {
                   WrappedSdkHarnessClient client = notification.getValue();
                   int refCount = client.unref();
-                  // Double-check to trigger closing of all environments in case the "refing" does
-                  // not clean them up during operator shutdown. This is necessary in some
-                  // situations, e.g when the bundle cannot be closed and thus the ref cannot be
-                  // released. All environment types ensure they can only be closed once.
                   if (refCount > 0) {
                     LOG.warn(
-                        "Clearing remaining {} bundle references from environment {} to ensure it shuts down.",
-                        refCount,
-                        notification.getKey());
-                    //noinspection StatementWithEmptyBody
-                    while (client.unref() > 0) {}
+                        "Expiring environment {} with {} remaining bundle references. Taking note to clean it up during shutdown if the references are not removed by then.",
+                        notification.getKey(),
+                        refCount);
+                    evictedActiveClients.add(client);
                   }
                 });
 
     if (environmentExpirationMillis > 0) {
-      builder = builder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
+      builder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
     }
 
     ImmutableList.Builder<LoadingCache<Environment, WrappedSdkHarnessClient>> caches =
@@ -254,25 +255,16 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     if (closed) {
       return;
     }
+    // The following code is written defensively to guard against any exceptions occurring
+    // during shutdown. It is not visually appealing but unless it can be written more
+    // defensively, there is no reason to change it.
     Exception exception = null;
-    try {
-      for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache :
-          environmentCaches) {
-        try {
-          // Clear the cache. This closes all active environments.
-          // note this may cause open calls to be cancelled by the peer
-          environmentCache.invalidateAll();
-          environmentCache.cleanUp();
-        } catch (Exception e) {
-          if (exception != null) {
-            exception.addSuppressed(e);
-          } else {
-            exception = e;
-          }
-        }
-      }
+    for (LoadingCache<Environment, WrappedSdkHarnessClient> environmentCache : environmentCaches) {
       try {
-        executor.shutdown();
+        // Clear the cache. This closes all active environments.
+        // note this may cause open calls to be cancelled by the peer
+        environmentCache.invalidateAll();
+        environmentCache.cleanUp();
       } catch (Exception e) {
         if (exception != null) {
           exception.addSuppressed(e);
@@ -280,6 +272,25 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
           exception = e;
         }
       }
+    }
+    // Cleanup any left-over environments which were not properly dereferenced by the Runner, e.g.
+    // when the bundle was not closed properly. This ensures we do not leak resources.
+    for (WrappedSdkHarnessClient client : evictedActiveClients) {
+      try {
+        //noinspection StatementWithEmptyBody
+        while (client.unref() > 0) {
+          // Remove any pending references from the client to force closing the environment
+        }
+      } catch (Exception e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    }
+    try {
+      executor.shutdown();
     } catch (Exception e) {
       if (exception != null) {
         exception.addSuppressed(e);
@@ -381,20 +392,18 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
         availableCachesCount.acquire();
         currentCache = availableCaches.take();
         client = currentCache.getUnchecked(executableStage.getEnvironment());
-        client.ref();
 
         currentClient = preparedClients.get(client);
         if (currentClient == null) {
           // we are using this client for the first time
           preparedClients.put(client, currentClient = prepare(client, executableStage));
           // cleanup any expired clients
-          preparedClients.keySet().removeIf(c -> c.bundleRefCount.get() == 0);
+          preparedClients.keySet().removeIf(c -> c.bundleRefCount.get() <= 0);
         }
 
       } else {
         currentCache = environmentCaches.get(environmentIndex);
         client = currentCache.getUnchecked(executableStage.getEnvironment());
-        client.ref();
 
         if (currentClient.wrappedClient != client) {
           // reset after environment expired
@@ -403,6 +412,11 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
           preparedClients.put(client, currentClient);
         }
       }
+
+      // Ensure client is referenced for this bundle, unref in close()
+      client.ref();
+      // Cleanup list of clients which were active during eviction but now do not hold references
+      evictedActiveClients.removeIf(c -> c.bundleRefCount.get() <= 0);
 
       final RemoteBundle bundle =
           currentClient.processor.newBundle(
@@ -518,7 +532,7 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
 
     private int unref() {
       int count = bundleRefCount.decrementAndGet();
-      if (count == 0) {
+      if (count <= 0) {
         // Close environment after it was removed from cache and all bundles finished.
         LOG.info("Closing environment {}", environment.getEnvironment());
         close();
