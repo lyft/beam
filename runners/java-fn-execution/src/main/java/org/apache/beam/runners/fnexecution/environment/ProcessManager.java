@@ -147,10 +147,6 @@ public class ProcessManager {
       if (!ALL_PROCESS_MANAGERS.contains(this)) {
         ALL_PROCESS_MANAGERS.add(this);
       }
-      if (shutdownHook == null) {
-        shutdownHook = ShutdownHook.create();
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
-      }
     }
     if (oldProcess != null) {
       stopProcess(id, oldProcess);
@@ -172,10 +168,6 @@ public class ProcessManager {
       synchronized (ALL_PROCESS_MANAGERS) {
         if (processes.isEmpty()) {
           ALL_PROCESS_MANAGERS.remove(this);
-        }
-        if (ALL_PROCESS_MANAGERS.isEmpty() && shutdownHook != null) {
-          Runtime.getRuntime().removeShutdownHook(shutdownHook);
-          shutdownHook = null;
         }
       }
     }
