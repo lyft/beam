@@ -95,7 +95,6 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
 
   private final String factoryId = factoryIdGenerator.getId();
   private final ImmutableList<EnvironmentCacheAndLock> environmentCaches;
-  private final ImmutableList<Lock> environmentCacheLocks;
   private final AtomicInteger stageBundleFactoryCount = new AtomicInteger();
   private final Map<String, EnvironmentFactory.Provider> environmentFactoryProviderMap;
   private final ExecutorService executor;
@@ -143,7 +142,6 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     this.stageIdGenerator = () -> factoryId + "-" + stageIdSuffixGenerator.getId();
     this.environmentExpirationMillis = getEnvironmentExpirationMillis(jobInfo);
     this.loadBalanceBundles = shouldLoadBalanceBundles(jobInfo);
-    this.environmentCacheLocks = createEnvironmentCacheLocks(getMaxEnvironmentClients(jobInfo));
     this.environmentCaches =
         createEnvironmentCaches(
             serverFactory -> createServerInfo(jobInfo, serverFactory),
@@ -165,28 +163,11 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
     this.stageIdGenerator = stageIdGenerator;
     this.environmentExpirationMillis = getEnvironmentExpirationMillis(jobInfo);
     this.loadBalanceBundles = shouldLoadBalanceBundles(jobInfo);
-    this.environmentCacheLocks = createEnvironmentCacheLocks(getMaxEnvironmentClients(jobInfo));
     this.environmentCaches =
         createEnvironmentCaches(serverFactory -> serverInfo, getMaxEnvironmentClients(jobInfo));
     this.availableCachesCount = new Semaphore(environmentCaches.size(), true);
     this.availableCaches = new LinkedBlockingDeque<>(environmentCaches);
     this.evictedActiveClients = Sets.newConcurrentHashSet();
-  }
-
-  private ImmutableList<Lock> createEnvironmentCacheLocks(int count) {
-    ImmutableList.Builder<Lock> locksForCaches = ImmutableList.builder();
-    for (int i = 0; i < count; i++) {
-      final Lock refLock;
-      if (environmentExpirationMillis > 0) {
-        // The lock ensures there is no race condition between expiring an environment and a client
-        // still attempting to use it, hence referencing it.
-        refLock = new ReentrantLock(true);
-      } else {
-        refLock = NoopLock.get();
-      }
-      locksForCaches.add(refLock);
-    }
-    return locksForCaches.build();
   }
 
   private static class EnvironmentCacheAndLock {
