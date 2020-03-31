@@ -46,8 +46,6 @@ MESSAGES_TO_PUBLISH = ["message a", "message b b", "message c"]
 
 SLEEP_TIME_SECS = 1
 
-_LOGGER = logging.getLogger()
-
 
 class ExerciseStreamingMetricsPipelineTest(unittest.TestCase):
 
@@ -81,10 +79,10 @@ class ExerciseStreamingMetricsPipelineTest(unittest.TestCase):
 
   def _inject_words(self, topic, messages):
     """Inject messages as test data to PubSub."""
-    _LOGGER.debug('Injecting messages to topic %s', topic.name)
+    logging.debug('Injecting messages to topic %s', topic.name)
     for msg in messages:
       self.pub_client.publish(self.input_topic.name, msg.encode('utf-8'))
-    _LOGGER.debug('Done. Injecting messages to topic %s', topic.name)
+    logging.debug('Done. Injecting messages to topic %s', topic.name)
 
   def tearDown(self):
     """Delete all created topics and subs."""

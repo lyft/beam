@@ -63,8 +63,6 @@ TERMINAL_STATES = [
 
 ENV_TYPE_ALIASES = {'LOOPBACK': 'EXTERNAL'}
 
-_LOGGER = logging.getLogger()
-
 
 class PortableRunner(runner.PipelineRunner):
   """
@@ -141,6 +139,7 @@ class PortableRunner(runner.PipelineRunner):
               'use_loopback_process_worker', False)
       portable_options.environment_config, server = (
           worker_pool_main.BeamFnExternalWorkerPoolServicer.start(
+              sdk_worker_main._get_worker_count(options),
               state_cache_size=sdk_worker_main._get_state_cache_size(options),
               use_process=use_loopback_process_worker))
       cleanup_callbacks = [functools.partial(server.stop, 1)]
@@ -247,7 +246,7 @@ class PortableRunner(runner.PipelineRunner):
           # only in this case is duplicate not treated as error
           if 'conflicting option string' not in str(e):
             raise
-          _LOGGER.debug("Runner option '%s' was already added" % option.name)
+          logging.debug("Runner option '%s' was already added" % option.name)
 
     all_options = options.get_all_options(add_extra_args_fn=add_runner_options)
     # TODO: Define URNs for options.
@@ -259,7 +258,7 @@ class PortableRunner(runner.PipelineRunner):
     prepare_request = beam_job_api_pb2.PrepareJobRequest(
         job_name='job', pipeline=proto_pipeline,
         pipeline_options=job_utils.dict_to_struct(p_options))
-    _LOGGER.debug('PrepareJobRequest: %s', prepare_request)
+    logging.debug('PrepareJobRequest: %s', prepare_request)
     prepare_response = job_service.Prepare(
         prepare_request,
         timeout=portable_options.job_server_timeout)
@@ -414,7 +413,7 @@ class PipelineResult(runner.PipelineResult):
               "%s",
               message.message_response.message_text)
         else:
-          _LOGGER.info(
+          logging.info(
               "Job state changed to %s",
               self._runner_api_state_to_pipeline_state(
                   message.state_response.state))

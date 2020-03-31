@@ -36,8 +36,6 @@ from apache_beam.utils import proto_utils
 
 # This module is experimental. No backwards-compatibility guarantees.
 
-_LOGGER = logging.getLogger()
-
 
 KNOWN_COMPOSITES = frozenset([
     common_urns.primitives.GROUP_BY_KEY.urn,
@@ -487,10 +485,10 @@ def create_and_optimize_stages(pipeline_proto,
 
   # Apply each phase in order.
   for phase in phases:
-    _LOGGER.info('%s %s %s', '=' * 20, phase, '=' * 20)
+    logging.info('%s %s %s', '=' * 20, phase, '=' * 20)
     stages = list(phase(stages, pipeline_context))
-    _LOGGER.debug('%s %s' % (len(stages), [len(s.transforms) for s in stages]))
-    _LOGGER.debug('Stages: %s', [str(s) for s in stages])
+    logging.debug('%s %s' % (len(stages), [len(s.transforms) for s in stages]))
+    logging.debug('Stages: %s', [str(s) for s in stages])
 
   # Return the (possibly mutated) context and ordered set of stages.
   return pipeline_context, stages

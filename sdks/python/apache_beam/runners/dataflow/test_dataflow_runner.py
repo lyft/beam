@@ -36,8 +36,6 @@ __all__ = ['TestDataflowRunner']
 # pool.
 WAIT_IN_STATE_TIMEOUT = 10 * 60
 
-_LOGGER = logging.getLogger()
-
 
 class TestDataflowRunner(DataflowRunner):
   def run_pipeline(self, pipeline, options):
@@ -62,7 +60,7 @@ class TestDataflowRunner(DataflowRunner):
       self.wait_until_in_state(PipelineState.RUNNING)
 
       if is_streaming and not wait_duration:
-        _LOGGER.warning('Waiting indefinitely for streaming job.')
+        logging.warning('Waiting indefinitely for streaming job.')
       self.result.wait_until_finish(duration=wait_duration)
 
       if on_success_matcher:

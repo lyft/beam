@@ -35,36 +35,36 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent import futures
 
 import grpc
 
 from apache_beam.portability.api import beam_fn_api_pb2
 from apache_beam.portability.api import beam_fn_api_pb2_grpc
 from apache_beam.runners.worker import sdk_worker
-from apache_beam.utils.thread_pool_executor import UnboundedThreadPoolExecutor
-
-_LOGGER = logging.getLogger()
 
 
 class BeamFnExternalWorkerPoolServicer(
     beam_fn_api_pb2_grpc.BeamFnExternalWorkerPoolServicer):
 
-  def __init__(self,
+  def __init__(self, worker_threads,
                use_process=False,
                container_executable=None,
                state_cache_size=0):
+    self._worker_threads = worker_threads
     self._use_process = use_process
     self._container_executable = container_executable
     self._state_cache_size = state_cache_size
     self._worker_processes = {}
 
   @classmethod
-  def start(cls, use_process=False, port=0,
+  def start(cls, worker_threads=1, use_process=False, port=0,
             state_cache_size=0, container_executable=None):
-    worker_server = grpc.server(UnboundedThreadPoolExecutor())
+    worker_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     worker_address = 'localhost:%s' % worker_server.add_insecure_port(
         '[::]:%s' % port)
-    worker_pool = cls(use_process=use_process,
+    worker_pool = cls(worker_threads,
+                      use_process=use_process,
                       container_executable=container_executable,
                       state_cache_size=state_cache_size)
     beam_fn_api_pb2_grpc.add_BeamFnExternalWorkerPoolServicer_to_server(
@@ -88,11 +88,13 @@ class BeamFnExternalWorkerPoolServicer(
                    'import SdkHarness; '
                    'SdkHarness('
                    '"%s",'
+                   'worker_count=%d,'
                    'worker_id="%s",'
                    'state_cache_size=%d'
                    ')'
                    '.run()' % (
                        start_worker_request.control_endpoint.url,
+                       self._worker_threads,
                        start_worker_request.worker_id,
                        self._state_cache_size)]
         if self._container_executable:
@@ -111,13 +113,14 @@ class BeamFnExternalWorkerPoolServicer(
                      % start_worker_request.control_endpoint.url,
                     ]
 
-        _LOGGER.warning("Starting worker with command %s" % command)
+        logging.warning("Starting worker with command %s" % command)
         worker_process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                           close_fds=True)
         self._worker_processes[start_worker_request.worker_id] = worker_process
       else:
         worker = sdk_worker.SdkHarness(
             start_worker_request.control_endpoint.url,
+            worker_count=self._worker_threads,
             worker_id=start_worker_request.worker_id,
             state_cache_size=self._state_cache_size)
         worker_thread = threading.Thread(
@@ -142,7 +145,7 @@ class BeamFnExternalWorkerPoolServicer(
         except OSError:
           # ignore already terminated process
           return
-      _LOGGER.info("Stopping worker %s" % stop_worker_request.worker_id)
+      logging.info("Stopping worker %s" % stop_worker_request.worker_id)
       # communicate is necessary to avoid zombie process
       # time box communicate (it has no timeout parameter in Py2)
       threading.Timer(1, kill_worker_process).start()
@@ -154,6 +157,11 @@ def main(argv=None):
   """Entry point for worker pool service for external environments."""
 
   parser = argparse.ArgumentParser()
+  parser.add_argument('--threads_per_worker',
+                      type=int,
+                      default=argparse.SUPPRESS,
+                      dest='worker_threads',
+                      help='Number of threads per SDK worker.')
   parser.add_argument('--container_executable',
                       type=str,
                       default=None,
@@ -170,7 +178,7 @@ def main(argv=None):
   address, server = (BeamFnExternalWorkerPoolServicer.start(use_process=True,
                                                             **vars(args)))
   logging.getLogger().setLevel(logging.INFO)
-  _LOGGER.info('Started worker pool servicer at port: %s with executable: %s',
+  logging.info('Started worker pool servicer at port: %s with executable: %s',
                address, args.container_executable)
   try:
     while True:

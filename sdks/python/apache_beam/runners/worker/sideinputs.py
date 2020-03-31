@@ -53,9 +53,6 @@ READER_THREAD_IS_DONE_SENTINEL = object()
 _globally_windowed = window.GlobalWindows.windowed_value(None).with_value
 
 
-_LOGGER = logging.getLogger()
-
-
 class PrefetchingSourceSetIterable(object):
   """Value iterator that reads concurrently from a set of sources."""
 
@@ -139,7 +136,7 @@ class PrefetchingSourceSetIterable(object):
         except queue.Empty:
           return
     except Exception as e:  # pylint: disable=broad-except
-      _LOGGER.error('Encountered exception in PrefetchingSourceSetIterable '
+      logging.error('Encountered exception in PrefetchingSourceSetIterable '
                     'reader thread: %s', traceback.format_exc())
       self.reader_exceptions.put(e)
       self.has_errored = True

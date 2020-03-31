@@ -19,7 +19,6 @@
 
 from __future__ import absolute_import
 
-import contextlib
 import threading
 from collections import namedtuple
 
@@ -48,25 +47,6 @@ def get_current_tracker():
     return _STATE_SAMPLERS.tracker
   except AttributeError:
     return None
-
-
-_INSTRUCTION_IDS = threading.local()
-
-
-def get_current_instruction_id():
-  try:
-    return _INSTRUCTION_IDS.instruction_id
-  except AttributeError:
-    return None
-
-
-@contextlib.contextmanager
-def instruction_id(id):
-  try:
-    _INSTRUCTION_IDS.instruction_id = id
-    yield
-  finally:
-    _INSTRUCTION_IDS.instruction_id = None
 
 
 def for_test():

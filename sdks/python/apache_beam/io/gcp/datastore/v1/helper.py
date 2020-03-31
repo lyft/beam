@@ -54,7 +54,7 @@ except ImportError:
 # pylint: enable=ungrouped-imports
 
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 def key_comparator(k1, k2):

@@ -39,9 +39,6 @@ from apache_beam.runners.utils import is_interactive
 _interactive_beam_env = None
 
 
-_LOGGER = logging.getLogger()
-
-
 def current_env(cache_manager=None):
   """Gets current Interactive Beam environment."""
   global _interactive_beam_env
@@ -89,7 +86,7 @@ class InteractiveEnvironment(object):
     # Do a warning level logging if current python version is below 3.6.
     if sys.version_info < (3, 6):
       self._is_py_version_ready = False
-      _LOGGER.warning('Interactive Beam requires Python 3.5.3+.')
+      logging.warning('Interactive Beam requires Python 3.6+.')
     else:
       self._is_py_version_ready = True
     # Check if [interactive] dependencies are installed.
@@ -101,18 +98,18 @@ class InteractiveEnvironment(object):
       self._is_interactive_ready = True
     except ImportError:
       self._is_interactive_ready = False
-      _LOGGER.warning('Dependencies required for Interactive Beam PCollection '
+      logging.warning('Dependencies required for Interactive Beam PCollection '
                       'visualization are not available, please use: `pip '
                       'install apache-beam[interactive]` to install necessary '
                       'dependencies to enable all data visualization features.')
 
     self._is_in_ipython, self._is_in_notebook = is_interactive()
     if not self._is_in_ipython:
-      _LOGGER.warning('You cannot use Interactive Beam features when you are '
+      logging.warning('You cannot use Interactive Beam features when you are '
                       'not in an interactive environment such as a Jupyter '
                       'notebook or ipython terminal.')
     if self._is_in_ipython and not self._is_in_notebook:
-      _LOGGER.warning('You have limited Interactive Beam features since your '
+      logging.warning('You have limited Interactive Beam features since your '
                       'ipython kernel is not connected any notebook frontend.')
 
   @property

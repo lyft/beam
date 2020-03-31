@@ -31,8 +31,6 @@ from apache_beam.runners.worker import statesampler
 from apache_beam.utils.counters import CounterFactory
 from apache_beam.utils.counters import CounterName
 
-_LOGGER = logging.getLogger()
-
 
 class StateSamplerTest(unittest.TestCase):
 
@@ -93,7 +91,7 @@ class StateSamplerTest(unittest.TestCase):
       expected_value = expected_counter_values[counter.name]
       actual_value = counter.value()
       deviation = float(abs(actual_value - expected_value)) / expected_value
-      _LOGGER.info('Sampling deviation from expectation: %f', deviation)
+      logging.info('Sampling deviation from expectation: %f', deviation)
       self.assertGreater(actual_value, expected_value * (1.0 - margin_of_error))
       self.assertLess(actual_value, expected_value * (1.0 + margin_of_error))
 
@@ -123,11 +121,15 @@ class StateSamplerTest(unittest.TestCase):
     state_transition_count = sampler.get_info().transition_count
     overhead_us = 1000000.0 * elapsed_time / state_transition_count
 
-    _LOGGER.info('Overhead per transition: %fus', overhead_us)
+    # TODO: This test is flaky when it is run under load. A better solution
+    # would be to change the test structure to not depend on specific timings.
+    overhead_us = 2 * overhead_us
+
+    logging.info('Overhead per transition: %fus', overhead_us)
     # Conservative upper bound on overhead in microseconds (we expect this to
     # take 0.17us when compiled in opt mode or 0.48 us when compiled with in
     # debug mode).
-    self.assertLess(overhead_us, 20.0)
+    self.assertLess(overhead_us, 10.0)
 
 
 if __name__ == '__main__':

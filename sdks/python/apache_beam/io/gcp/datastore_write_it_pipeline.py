@@ -57,7 +57,7 @@ except ImportError:
 # pylint: enable=ungrouped-imports
 
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 def new_pipeline_with_job_name(pipeline_options, job_name, suffix):
