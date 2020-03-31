@@ -33,6 +33,7 @@ import threading
 import time
 import uuid
 from builtins import object
+from concurrent import futures
 
 import grpc
 
@@ -77,7 +78,6 @@ from apache_beam.transforms.window import GlobalWindows
 from apache_beam.utils import profiler
 from apache_beam.utils import proto_utils
 from apache_beam.utils import windowed_value
-from apache_beam.utils.thread_pool_executor import UnboundedThreadPoolExecutor
 
 # This module is experimental. No backwards-compatibility guarantees.
 
@@ -1234,10 +1234,12 @@ class GrpcServer(object):
 
   _DEFAULT_SHUTDOWN_TIMEOUT_SECS = 5
 
-  def __init__(self, state, provision_info):
+  def __init__(self, state, provision_info, max_workers):
     self.state = state
     self.provision_info = provision_info
-    self.control_server = grpc.server(UnboundedThreadPoolExecutor())
+    self.max_workers = max_workers
+    self.control_server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=self.max_workers))
     self.control_port = self.control_server.add_insecure_port('[::]:0')
     self.control_address = 'localhost:%s' % self.control_port
 
@@ -1247,12 +1249,12 @@ class GrpcServer(object):
     no_max_message_sizes = [("grpc.max_receive_message_length", -1),
                             ("grpc.max_send_message_length", -1)]
     self.data_server = grpc.server(
-        UnboundedThreadPoolExecutor(),
+        futures.ThreadPoolExecutor(max_workers=self.max_workers),
         options=no_max_message_sizes)
     self.data_port = self.data_server.add_insecure_port('[::]:0')
 
     self.state_server = grpc.server(
-        UnboundedThreadPoolExecutor(),
+        futures.ThreadPoolExecutor(max_workers=self.max_workers),
         options=no_max_message_sizes)
     self.state_port = self.state_server.add_insecure_port('[::]:0')
 
@@ -1288,7 +1290,7 @@ class GrpcServer(object):
         self.state_server)
 
     self.logging_server = grpc.server(
-        UnboundedThreadPoolExecutor(),
+        futures.ThreadPoolExecutor(max_workers=2),
         options=no_max_message_sizes)
     self.logging_port = self.logging_server.add_insecure_port('[::]:0')
     beam_fn_api_pb2_grpc.add_BeamFnLoggingServicer_to_server(
@@ -1519,12 +1521,24 @@ class WorkerHandlerManager(object):
       # Any environment will do, pick one arbitrarily.
       environment_id = next(iter(self._environments.keys()))
     environment = self._environments[environment_id]
+    max_total_workers = num_workers * len(self._environments)
 
     # assume all environments except EMBEDDED_PYTHON use gRPC.
     if environment.urn == python_urns.EMBEDDED_PYTHON:
       pass # no need for a gRPC server
     elif self._grpc_server is None:
-      self._grpc_server = GrpcServer(self._state, self._job_provision_info)
+      self._grpc_server = GrpcServer(self._state, self._job_provision_info,
+                                     max_total_workers)
+    elif max_total_workers > self._grpc_server.max_workers:
+      # each gRPC server is running with fixed number of threads (
+      # max_total_workers), which is defined by the first call to
+      # get_worker_handlers(). Assumption here is a worker has a connection to a
+      # gRPC server. In case a stage tries to add more workers
+      # than the max_total_workers, some workers cannot connect to gRPC and
+      # pipeline will hang, hence raise an error here.
+      raise RuntimeError('gRPC servers are running with %s threads, we cannot '
+                         'attach %s workers.' % (self._grpc_server.max_workers,
+                                                 max_total_workers))
 
     worker_handler_list = self._cached_handlers[environment_id]
     if len(worker_handler_list) < num_workers:
@@ -1800,7 +1814,7 @@ class ParallelBundleManager(BundleManager):
 
     merged_result = None
     split_result_list = []
-    with UnboundedThreadPoolExecutor() as executor:
+    with futures.ThreadPoolExecutor(max_workers=self._num_workers) as executor:
       for result, split_result in executor.map(lambda part: BundleManager(
           self._worker_handler_list, self._get_buffer,
           self._get_input_coder_impl, self._bundle_descriptor,

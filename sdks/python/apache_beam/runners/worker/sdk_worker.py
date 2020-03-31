@@ -31,6 +31,7 @@ import time
 import traceback
 from builtins import object
 from builtins import range
+from concurrent import futures
 
 import grpc
 from future.utils import raise_
@@ -44,7 +45,6 @@ from apache_beam.runners.worker import data_plane
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
 from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.runners.worker.worker_id_interceptor import WorkerIdInterceptor
-from apache_beam.utils.thread_pool_executor import UnboundedThreadPoolExecutor
 
 # This SDK harness will (by default), log a "lull" in processing if it sees no
 # transitions in over 5 minutes.
@@ -97,9 +97,15 @@ class SdkHarness(object):
     # one worker for progress/split request.
     self.progress_worker = SdkWorker(self._bundle_processor_cache,
                                      profiler_factory=self._profiler_factory)
-    self._progress_thread_pool = UnboundedThreadPoolExecutor()
+    # one thread is enough for getting the progress report.
+    # Assumption:
+    # Progress report generation should not do IO or wait on other resources.
+    #  Without wait, having multiple threads will not improve performance and
+    #  will only add complexity.
+    self._progress_thread_pool = futures.ThreadPoolExecutor(max_workers=1)
     # finalize and process share one thread pool.
-    self._process_thread_pool = UnboundedThreadPoolExecutor()
+    self._process_thread_pool = futures.ThreadPoolExecutor(
+        max_workers=self._worker_count)
     self._responses = queue.Queue()
     self._process_bundle_queue = queue.Queue()
     self._unscheduled_process_bundle = {}
@@ -196,7 +202,7 @@ class SdkHarness(object):
     self._unscheduled_process_bundle[request.instruction_id] = time.time()
     self._process_thread_pool.submit(task)
     logging.debug(
-        "Currently using %s threads." % len(self._process_thread_pool._workers))
+        "Currently using %s threads." % len(self._process_thread_pool._threads))
 
   def _request_process_bundle_split(self, request):
     self._request_process_bundle_action(request)
