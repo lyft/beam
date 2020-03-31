@@ -91,8 +91,6 @@ ENCODED_IMPULSE_VALUE = beam.coders.WindowedValueCoder(
 # The cache is disabled in production for other runners.
 STATE_CACHE_SIZE = 100
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class ControlConnection(object):
 
@@ -192,9 +190,9 @@ class BeamFnControlServicer(beam_fn_api_pb2_grpc.BeamFnControlServicer):
 
   def done(self):
     self._state = self.DONE_STATE
-    _LOGGER.debug('Runner: Requests sent by runner: %s',
+    logging.debug('Runner: Requests sent by runner: %s',
                   [(str(req), cnt) for req, cnt in self._req_sent.items()])
-    _LOGGER.debug('Runner: Requests multiplexing info: %s',
+    logging.debug('Runner: Requests multiplexing info: %s',
                   [(str(req), worker) for req, worker
                    in self._req_worker_mapping.items()])
 
@@ -412,7 +410,7 @@ class FnApiRunner(runner.PipelineRunner):
       with profiler:
         yield
       if not self._bundle_repeat:
-        _LOGGER.warning(
+        logging.warning(
             'The --direct_runner_bundle_repeat option is not set; '
             'a significant portion of the profile may be one-time overhead.')
       path = profiler.profile_output
@@ -690,7 +688,7 @@ class FnApiRunner(runner.PipelineRunner):
         pipeline_components, iterable_state_write=iterable_state_write)
     data_api_service_descriptor = worker_handler.data_api_service_descriptor()
 
-    _LOGGER.info('Running %s', stage.name)
+    logging.info('Running %s', stage.name)
     data_input, data_side_input, data_output = self._extract_endpoints(
         stage, pipeline_components, data_api_service_descriptor, pcoll_buffers)
 
@@ -1297,10 +1295,10 @@ class GrpcServer(object):
         BasicLoggingService(),
         self.logging_server)
 
-    _LOGGER.info('starting control server on port %s', self.control_port)
-    _LOGGER.info('starting data server on port %s', self.data_port)
-    _LOGGER.info('starting state server on port %s', self.state_port)
-    _LOGGER.info('starting logging server on port %s', self.logging_port)
+    logging.info('starting control server on port %s', self.control_port)
+    logging.info('starting data server on port %s', self.data_port)
+    logging.info('starting state server on port %s', self.state_port)
+    logging.info('starting logging server on port %s', self.logging_port)
     self.logging_server.start()
     self.state_server.start()
     self.data_server.start()
@@ -1461,7 +1459,7 @@ class DockerSdkWorkerHandler(GrpcWorkerHandler):
       try:
         subprocess.check_call(['docker', 'pull', self._container_image])
       except Exception:
-        _LOGGER.info('Unable to pull image %s' % self._container_image)
+        logging.info('Unable to pull image %s' % self._container_image)
       self._container_id = subprocess.check_output(
           ['docker',
            'run',
@@ -1482,10 +1480,10 @@ class DockerSdkWorkerHandler(GrpcWorkerHandler):
             '-f',
             '{{.State.Status}}',
             self._container_id]).strip()
-        _LOGGER.info('Waiting for docker to start up.Current status is %s' %
+        logging.info('Waiting for docker to start up.Current status is %s' %
                      status)
         if status == b'running':
-          _LOGGER.info('Docker container is running. container_id = %s, '
+          logging.info('Docker container is running. container_id = %s, '
                        'worker_id = %s', self._container_id, self.worker_id)
           break
         elif status in (b'dead', b'exited'):
@@ -1532,7 +1530,7 @@ class WorkerHandlerManager(object):
         worker_handler = WorkerHandler.create(
             environment, self._state, self._job_provision_info,
             self._grpc_server)
-        _LOGGER.info("Created Worker handler %s for environment %s",
+        logging.info("Created Worker handler %s for environment %s",
                      worker_handler, environment)
         self._cached_handlers[environment_id].append(worker_handler)
         worker_handler.start_worker()
@@ -1544,7 +1542,7 @@ class WorkerHandlerManager(object):
         try:
           worker_handler.close()
         except Exception:
-          _LOGGER.error("Error closing worker_handler %s" % worker_handler,
+          logging.error("Error closing worker_handler %s" % worker_handler,
                         exc_info=True)
     self._cached_handlers = {}
     if self._grpc_server is not None:
@@ -1763,7 +1761,7 @@ class BundleManager(object):
             self._get_buffer(
                 expected_outputs[output.transform_id]).append(output.data)
 
-      _LOGGER.debug('Wait for the bundle %s to finish.' % process_bundle_id)
+      logging.debug('Wait for the bundle %s to finish.' % process_bundle_id)
       result = result_future.get()
 
     if result.error:
@@ -1859,7 +1857,7 @@ class ProgressRequester(threading.Thread):
         if self._callback:
           self._callback(self._latest_progress)
       except Exception as exn:
-        _LOGGER.error("Bad progress: %s", exn)
+        logging.error("Bad progress: %s", exn)
       time.sleep(self._frequency)
 
   def stop(self):

@@ -53,8 +53,6 @@ _RUNNER_MAP['pythonrpcdirectrunner'] = (
     'apache_beam.runners.experimental'
     '.python_rpc_direct.python_rpc_direct_runner.PythonRPCDirectRunner')
 
-_LOGGER = logging.getLogger(__name__)
-
 
 def create_runner(runner_name):
   """For internal use only; no backwards-compatibility guarantees.
@@ -160,7 +158,7 @@ class PipelineRunner(object):
         try:
           self.runner.run_transform(transform_node, options)
         except:
-          _LOGGER.error('Error while visiting %s', transform_node.full_label)
+          logging.error('Error while visiting %s', transform_node.full_label)
           raise
 
     pipeline.visit(RunVisitor(self))
@@ -392,6 +390,6 @@ class PipelineResult(object):
   # pylint: disable=unused-argument
   def aggregated_values(self, aggregator_or_name):
     """Return a dict of step names to values of the Aggregator."""
-    _LOGGER.warning('%s does not implement aggregated_values',
+    logging.warning('%s does not implement aggregated_values',
                     self.__class__.__name__)
     return {}

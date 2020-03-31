@@ -67,8 +67,6 @@ from apache_beam.utils import retry
 _LEGACY_ENVIRONMENT_MAJOR_VERSION = '7'
 _FNAPI_ENVIRONMENT_MAJOR_VERSION = '7'
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class Step(object):
   """Wrapper for a dataflow Step protobuf."""
@@ -384,7 +382,7 @@ class Job(object):
           'Missing required configuration parameters: %s' % missing)
 
     if not self.google_cloud_options.staging_location:
-      _LOGGER.info('Defaulting to the temp_location as staging_location: %s',
+      logging.info('Defaulting to the temp_location as staging_location: %s',
                    self.google_cloud_options.temp_location)
       (self.google_cloud_options
        .staging_location) = self.google_cloud_options.temp_location
@@ -501,7 +499,7 @@ class DataflowApplicationClient(object):
     """Stages a file at a GCS or local path with stream-supplied contents."""
     if not gcs_or_local_path.startswith('gs://'):
       local_path = FileSystems.join(gcs_or_local_path, file_name)
-      _LOGGER.info('Staging file locally to %s', local_path)
+      logging.info('Staging file locally to %s', local_path)
       with open(local_path, 'wb') as f:
         f.write(stream.read())
       return
@@ -511,7 +509,7 @@ class DataflowApplicationClient(object):
     request = storage.StorageObjectsInsertRequest(
         bucket=bucket, name=name)
     start_time = time.time()
-    _LOGGER.info('Starting GCS upload to %s...', gcs_location)
+    logging.info('Starting GCS upload to %s...', gcs_location)
     upload = storage.Upload(stream, mime_type)
     try:
       response = self._storage_client.objects.Insert(request, upload=upload)
@@ -526,7 +524,7 @@ class DataflowApplicationClient(object):
                        'access to the specified path.') %
                       (gcs_or_local_path, reportable_errors[e.status_code]))
       raise
-    _LOGGER.info('Completed GCS upload to %s in %s seconds.', gcs_location,
+    logging.info('Completed GCS upload to %s in %s seconds.', gcs_location,
                  int(time.time() - start_time))
     return response
 
@@ -550,7 +548,7 @@ class DataflowApplicationClient(object):
     if not template_location:
       return self.submit_job_description(job)
 
-    _LOGGER.info('A template was just created at location %s',
+    logging.info('A template was just created at location %s',
                  template_location)
     return None
 
@@ -570,7 +568,7 @@ class DataflowApplicationClient(object):
                                       shared_names.STAGED_PIPELINE_FILENAME),
         packages=resources, options=job.options,
         environment_version=self.environment_version).proto
-    _LOGGER.debug('JOB: %s', job)
+    logging.debug('JOB: %s', job)
 
   @retry.with_exponential_backoff(num_retries=3, initial_delay_secs=3)
   def get_job_metrics(self, job_id):
@@ -581,7 +579,7 @@ class DataflowApplicationClient(object):
     try:
       response = self._client.projects_locations_jobs.GetMetrics(request)
     except exceptions.BadStatusCodeError as e:
-      _LOGGER.error('HTTP status %d. Unable to query metrics',
+      logging.error('HTTP status %d. Unable to query metrics',
                     e.response.status)
       raise
     return response
@@ -597,16 +595,16 @@ class DataflowApplicationClient(object):
     try:
       response = self._client.projects_locations_jobs.Create(request)
     except exceptions.BadStatusCodeError as e:
-      _LOGGER.error('HTTP status %d trying to create job'
+      logging.error('HTTP status %d trying to create job'
                     ' at dataflow service endpoint %s',
                     e.response.status,
                     self.google_cloud_options.dataflow_endpoint)
-      _LOGGER.fatal('details of server error: %s', e)
+      logging.fatal('details of server error: %s', e)
       raise
-    _LOGGER.info('Create job: %s', response)
+    logging.info('Create job: %s', response)
     # The response is a Job proto with the id for the new job.
-    _LOGGER.info('Created job with id: [%s]', response.id)
-    _LOGGER.info(
+    logging.info('Created job with id: [%s]', response.id)
+    logging.info(
         'To access the Dataflow monitoring console, please navigate to '
         'https://console.cloud.google.com/dataflow/jobsDetail'
         '/locations/%s/jobs/%s?project=%s',

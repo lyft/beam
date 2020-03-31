@@ -65,8 +65,6 @@ from apache_beam.utils import counters
 from apache_beam.utils.timestamp import MIN_TIMESTAMP
 from apache_beam.utils.timestamp import Timestamp
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class TransformEvaluatorRegistry(object):
   """For internal use only; no backwards-compatibility guarantees.
@@ -620,7 +618,7 @@ class _ParDoEvaluator(_TransformEvaluator):
 
   def process_timer(self, timer_firing):
     if timer_firing.name not in self.user_timer_map:
-      _LOGGER.warning('Unknown timer fired: %s', timer_firing)
+      logging.warning('Unknown timer fired: %s', timer_firing)
     timer_spec = self.user_timer_map[timer_firing.name]
     self.runner.process_user_timer(
         timer_spec, self.key_coder.decode(timer_firing.encoded_key),
