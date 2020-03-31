@@ -42,7 +42,7 @@ __all__ = ['ReadFromText', 'ReadFromTextWithFilename', 'ReadAllFromText',
            'WriteToText']
 
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 class _TextSource(filebasedsource.FileBasedSource):

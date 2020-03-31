@@ -72,7 +72,7 @@ SCHEMA = [
     }
 ]
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 def parse_step(step_name):

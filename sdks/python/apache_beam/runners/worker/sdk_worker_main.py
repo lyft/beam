@@ -42,7 +42,7 @@ from apache_beam.utils import profiler
 
 # This module is experimental. No backwards-compatibility guarantees.
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 class StatusServer(object):

@@ -36,7 +36,7 @@ from apache_beam.utils import proto_utils
 
 # This module is experimental. No backwards-compatibility guarantees.
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 KNOWN_COMPOSITES = frozenset([

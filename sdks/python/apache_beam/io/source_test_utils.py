@@ -68,7 +68,7 @@ __all__ = ['read_from_source',
            'assert_split_at_fraction_succeeds_and_consistent']
 
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 class ExpectedSplitOutcome(object):

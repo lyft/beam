@@ -46,7 +46,7 @@ except ImportError:
   pass
 
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 WAIT_UNTIL_FINISH_DURATION_MS = 15 * 60 * 1000
 

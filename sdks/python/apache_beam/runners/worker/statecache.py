@@ -24,7 +24,7 @@ import threading
 
 from apache_beam.metrics import monitoring_infos
 
-_LOGGER = logging.getLogger()
+_LOGGER = logging.getLogger(__name__)
 
 
 class Metrics(object):
