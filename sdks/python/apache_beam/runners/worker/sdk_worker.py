@@ -145,12 +145,16 @@ class SdkHarness(object):
     self._responses.put(response)
 
   def _request_register(self, request):
-    # registration request is handled synchronously
-    self._execute(
-        lambda: self.create_worker().do_instruction(request), request)
+    self._request_execute(request)
 
   def _request_process_bundle(self, request):
-    self._request_execute(request)
+
+    def task():
+      self._execute(
+          lambda: self.create_worker().do_instruction(request), request)
+    self._worker_thread_pool.submit(task)
+    _LOGGER.debug(
+        "Currently using %s threads." % len(self._worker_thread_pool._workers))
 
   def _request_process_bundle_split(self, request):
     self._request_process_bundle_action(request)
@@ -186,8 +190,6 @@ class SdkHarness(object):
           lambda: self.create_worker().do_instruction(request), request)
 
     self._worker_thread_pool.submit(task)
-    _LOGGER.debug(
-        "Currently using %s threads." % len(self._worker_thread_pool._workers))
 
   def create_worker(self):
     return SdkWorker(
