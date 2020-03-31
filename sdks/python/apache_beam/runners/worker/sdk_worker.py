@@ -29,7 +29,6 @@ import sys
 import threading
 import traceback
 from builtins import object
-from concurrent import futures
 
 import grpc
 from future.utils import raise_
@@ -92,10 +91,6 @@ class SdkHarness(object):
         state_handler_factory=self._state_handler_factory,
         data_channel_factory=self._data_channel_factory,
         fns=self._fns)
-
-    # TODO(BEAM-8998) use common UnboundedThreadPoolExecutor to process bundle
-    #  progress once dataflow runner's excessive progress polling is removed.
-    self._report_progress_executor = futures.ThreadPoolExecutor(max_workers=1)
     self._worker_thread_pool = UnboundedThreadPoolExecutor()
     self._responses = queue.Queue()
     _LOGGER.info('Initializing SDKHarness with unbounded number of workers.')
@@ -181,7 +176,7 @@ class SdkHarness(object):
                 'Unknown process bundle instruction {}').format(
                     instruction_id)), request)
 
-    self._report_progress_executor.submit(task)
+    self._worker_thread_pool.submit(task)
 
   def _request_finalize_bundle(self, request):
     self._request_execute(request)
