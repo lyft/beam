@@ -121,7 +121,7 @@ class _Worker(threading.Thread):
 
 
 class UnboundedThreadPoolExecutor(_base.Executor):
-  def __init__(self, permitted_thread_age_in_seconds=30):
+  def __init__(self, permitted_thread_age_in_seconds=3600):
     self._permitted_thread_age_in_seconds = permitted_thread_age_in_seconds
     self._idle_worker_queue = queue.Queue()
     self._workers = weakref.WeakSet()
