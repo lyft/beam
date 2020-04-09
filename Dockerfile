@@ -11,6 +11,7 @@ RUN : \
     && /code/venvs/venv2/bin/pip install "pip==9.0.0" "setuptools==39.0.1" "cython==0.28.1" "wheel" \
     && /code/venvs/venv3/bin/pip install "pip==9.0.3" "setuptools==39.0.1" "cython==0.28.1" "wheel"
 ENV PATH=/code/venvs/venv2/bin:/code/venvs/venv3/bin:$PATH
+
 # add source to a different directory, the code root and the setup.py root
 # are at different locations than lyft conventions expect
 WORKDIR /src/beam
