@@ -480,7 +480,7 @@ public class ExecutableStageDoFnOperatorTest {
   }
 
   @Test
-  public void testEnsureStateCleanupWithKeyedInputStateCleaner() {
+  public void testEnsureStateCleanupWithKeyedInputStateCleaner() throws Exception {
     GlobalWindow.Coder windowCoder = GlobalWindow.Coder.INSTANCE;
     InMemoryStateInternals<String> stateInternals = InMemoryStateInternals.forKey("key");
     List<String> userStateNames = ImmutableList.of("state1", "state2");
@@ -502,7 +502,7 @@ public class ExecutableStageDoFnOperatorTest {
     // Test that state is cleaned up correctly
     ExecutableStageDoFnOperator.StateCleaner stateCleaner =
         new ExecutableStageDoFnOperator.StateCleaner(
-            userStateNames, windowCoder, () -> key.getValue());
+            userStateNames, windowCoder, () -> key.getValue(), ts -> false, null);
     for (BagState<String> bagState : bagStates) {
       assertThat(Iterables.size(bagState.read()), is(1));
     }
