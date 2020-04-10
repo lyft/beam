@@ -22,5 +22,7 @@ builder:
       - name: docker_build
       - name: s2i
         params:
-          builder: 'lyft/s2ijava:java8.8f5d82dbe9d9c61abb77811cc7f9d7fdbfcc0aff'
+          builder: 'lyft/s2ijava:java8.e774281c1906c7f8882cfeb5886cadf04dba44c2'
           sub_image: flink-jobserver
+          buildargs:
+            - "BUILD_COMMAND=./gradlew :runners:flink:1.8:job-server:publish -PisRelease -PnoSigning -PdistMgmtSnapshotsUrl=https://jarjarflinks.jfrog.io/jarjarflinks/libs-snapshots -PdistMgmtServerId=lyft-releases --no-parallel --no-daemon"
