@@ -61,13 +61,16 @@ class Repositories {
         def serverId = "lyft-releases"
         def repo = new XmlSlurper().parse(settingsXml).'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
         if (repo) {
+          def GroovyShell shell = new GroovyShell(new Binding([env:System.getenv()]))
           maven {
-            url repo.url.text()
+            url shell.evaluate('"' + repo.url.text() +'"')
             def m2SettingCreds = new XmlSlurper().parse(settingsXml).servers.server.find { server -> serverId.equals(server.id.text()) }
             if (m2SettingCreds) {
+              project.logger.error("###m2SettingCreds: " + m2SettingCreds)
+              project.logger.error("###dynamic: " + shell.evaluate('"' + m2SettingCreds.password.text() +'"'))
               credentials {
-                username m2SettingCreds.username.text()
-                password m2SettingCreds.password.text()
+                username shell.evaluate('"' + m2SettingCreds.username.text() +'"')
+                password shell.evaluate('"' + m2SettingCreds.password.text() +'"')
               }
             }
           }
