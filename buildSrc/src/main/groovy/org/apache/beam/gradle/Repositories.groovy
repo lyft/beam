@@ -67,7 +67,7 @@ class Repositories {
             def m2SettingCreds = new XmlSlurper().parse(settingsXml).servers.server.find { server -> serverId.equals(server.id.text()) }
             if (m2SettingCreds) {
               project.logger.error("###m2SettingCreds: " + m2SettingCreds)
-              project.logger.error("###dynamic: " + shell.evaluate('"' + m2SettingCreds.password.text() +'"'))
+              project.logger.error("###dynamic: " + shell.evaluate('"' + m2SettingCreds.username.text() +'"') + " " + shell.evaluate('"' + m2SettingCreds.password.text() +'"'))
               credentials {
                 username shell.evaluate('"' + m2SettingCreds.username.text() +'"')
                 password shell.evaluate('"' + m2SettingCreds.password.text() +'"')

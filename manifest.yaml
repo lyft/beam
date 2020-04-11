@@ -25,4 +25,4 @@ builder:
           builder: 'lyft/s2ijava:java8.e774281c1906c7f8882cfeb5886cadf04dba44c2'
           sub_image: flink-jobserver
           buildargs:
-            - "BUILD_COMMAND=./gradlew :runners:flink:1.8:job-server:publish -PisRelease -PnoSigning -PdistMgmtSnapshotsUrl=https://jarjarflinks.jfrog.io/jarjarflinks/libs-release -PdistMgmtServerId=lyft-releases --no-parallel --no-daemon"
+            - "BUILD_COMMAND=./gradlew :runners:flink:1.8:job-server:publish -PisRelease -PnoSigning -PdistMgmtSnapshotsUrl=https://jarjarflinks.jfrog.io/jarjarflinks/libs-release -PdistMgmtServerId=lyft-releases --no-parallel --no-daemon --debug"
