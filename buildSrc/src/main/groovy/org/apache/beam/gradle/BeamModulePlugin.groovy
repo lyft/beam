@@ -585,9 +585,10 @@ class BeamModulePlugin implements Plugin<Project> {
                   ? 'apache.releases.https' : 'apache.snapshots.https')
           def m2SettingCreds = new XmlSlurper().parse(settingsXml).servers.server.find { server -> serverId.equals(server.id.text()) }
           if (m2SettingCreds) {
+            def GroovyShell shell = new GroovyShell(new Binding([env:System.getenv()]))
             credentials {
-              username m2SettingCreds.username.text()
-              password m2SettingCreds.password.text()
+              username shell.evaluate('"' + m2SettingCreds.username.text() +'"')
+              password shell.evaluate('"' + m2SettingCreds.password.text() +'"')
             }
           }
         }
