@@ -26,7 +26,6 @@ import threading
 import time
 import traceback
 from builtins import object
-from concurrent import futures
 
 import grpc
 from google.protobuf import text_format
@@ -42,6 +41,14 @@ from apache_beam.portability.api import endpoints_pb2
 from apache_beam.runners.portability import abstract_job_service
 from apache_beam.runners.portability import artifact_service
 from apache_beam.runners.portability import fn_api_runner
+from apache_beam.utils.thread_pool_executor import UnboundedThreadPoolExecutor
+
+_LOGGER = logging.getLogger()
+
+
+def _iter_queue(q):
+  while True:
+    yield q.get(block=True)
 
 
 class LocalJobServicer(abstract_job_service.AbstractJobServiceServicer):
@@ -92,7 +99,7 @@ class LocalJobServicer(abstract_job_service.AbstractJobServiceServicer):
         self._artifact_staging_endpoint)
 
   def start_grpc_server(self, port=0):
-    self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=3))
+    self._server = grpc.server(UnboundedThreadPoolExecutor())
     port = self._server.add_insecure_port('localhost:%d' % port)
     beam_job_api_pb2_grpc.add_JobServiceServicer_to_server(self, self._server)
     beam_artifact_api_pb2_grpc.add_ArtifactStagingServiceServicer_to_server(
@@ -100,7 +107,7 @@ class LocalJobServicer(abstract_job_service.AbstractJobServiceServicer):
     self._artifact_staging_endpoint = endpoints_pb2.ApiServiceDescriptor(
         url='localhost:%d' % port)
     self._server.start()
-    logging.info('Grpc server started on port %s', port)
+    _LOGGER.info('Grpc server started on port %s', port)
     return port
 
   def stop(self, timeout=1):
@@ -139,7 +146,7 @@ class SubprocessSdkWorker(object):
     self._worker_id = worker_id
 
   def run(self):
-    logging_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    logging_server = grpc.server(UnboundedThreadPoolExecutor())
     logging_port = logging_server.add_insecure_port('[::]:0')
     logging_server.start()
     logging_servicer = BeamFnLoggingServicer()
@@ -192,26 +199,18 @@ class BeamJob(abstract_job_service.AbstractBeamJob):
         job_id, provision_info.provision_info.job_name, pipeline, options)
     self._provision_info = provision_info
     self._artifact_staging_endpoint = artifact_staging_endpoint
-    self._state = None
     self._state_queues = []
     self._log_queues = []
-    self.state = beam_job_api_pb2.JobState.STOPPED
     self.daemon = True
     self.result = None
 
-  @property
-  def state(self):
-    return self._state
-
-  @state.setter
-  def state(self, new_state):
-    # Inform consumers of the new state.
-    for queue in self._state_queues:
-      queue.put(new_state)
-    self._state = new_state
-
-  def get_state(self):
-    return self.state
+  def set_state(self, new_state):
+    """Set the latest state as an int enum and notify consumers"""
+    timestamp = super(BeamJob, self).set_state(new_state)
+    if timestamp is not None:
+      # Inform consumers of the new state.
+      for queue in self._state_queues:
+        queue.put((new_state, timestamp))
 
   def prepare(self):
     pass
@@ -220,42 +219,40 @@ class BeamJob(abstract_job_service.AbstractBeamJob):
     return self._artifact_staging_endpoint
 
   def run(self):
-    self.state = beam_job_api_pb2.JobState.STARTING
+    self.set_state(beam_job_api_pb2.JobState.STARTING)
     self._run_thread = threading.Thread(target=self._run_job)
     self._run_thread.start()
 
   def _run_job(self):
-    self.state = beam_job_api_pb2.JobState.RUNNING
+    self.set_state(beam_job_api_pb2.JobState.RUNNING)
     with JobLogHandler(self._log_queues):
       try:
         result = fn_api_runner.FnApiRunner(
             provision_info=self._provision_info).run_via_runner_api(
                 self._pipeline_proto)
-        logging.info('Successfully completed job.')
-        self.state = beam_job_api_pb2.JobState.DONE
+        _LOGGER.info('Successfully completed job.')
+        self.set_state(beam_job_api_pb2.JobState.DONE)
         self.result = result
       except:  # pylint: disable=bare-except
-        logging.exception('Error running pipeline.')
-        logging.exception(traceback)
-        self.state = beam_job_api_pb2.JobState.FAILED
+        _LOGGER.exception('Error running pipeline.')
+        _LOGGER.exception(traceback)
+        self.set_state(beam_job_api_pb2.JobState.FAILED)
         raise
 
   def cancel(self):
     if not self.is_terminal_state(self.state):
-      self.state = beam_job_api_pb2.JobState.CANCELLING
+      self.set_state(beam_job_api_pb2.JobState.CANCELLING)
       # TODO(robertwb): Actually cancel...
-      self.state = beam_job_api_pb2.JobState.CANCELLED
+      self.set_state(beam_job_api_pb2.JobState.CANCELLED)
 
   def get_state_stream(self):
     # Register for any new state changes.
     state_queue = queue.Queue()
     self._state_queues.append(state_queue)
 
-    yield self.state
-    while True:
-      current_state = state_queue.get(block=True)
-      yield current_state
-      if self.is_terminal_state(current_state):
+    for state, timestamp in self.with_state_history(_iter_queue(state_queue)):
+      yield state, timestamp
+      if self.is_terminal_state(state):
         break
 
   def get_message_stream(self):
@@ -264,13 +261,15 @@ class BeamJob(abstract_job_service.AbstractBeamJob):
     self._log_queues.append(log_queue)
     self._state_queues.append(log_queue)
 
-    current_state = self.state
-    yield current_state
-    while not self.is_terminal_state(current_state):
-      msg = log_queue.get(block=True)
-      yield msg
-      if isinstance(msg, int):
-        current_state = msg
+    for msg in self.with_state_history(_iter_queue(log_queue)):
+      if isinstance(msg, tuple):
+        assert len(msg) == 2 and isinstance(msg[0], int)
+        current_state = msg[0]
+        yield msg
+        if self.is_terminal_state(current_state):
+          break
+      else:
+        yield msg
 
 
 class BeamFnLoggingServicer(beam_fn_api_pb2_grpc.BeamFnLoggingServicer):
@@ -278,7 +277,7 @@ class BeamFnLoggingServicer(beam_fn_api_pb2_grpc.BeamFnLoggingServicer):
   def Logging(self, log_bundles, context=None):
     for log_bundle in log_bundles:
       for log_entry in log_bundle.log_entries:
-        logging.info('Worker: %s', str(log_entry).replace('\n', ' '))
+        _LOGGER.info('Worker: %s', str(log_entry).replace('\n', ' '))
     return iter([])
 
 

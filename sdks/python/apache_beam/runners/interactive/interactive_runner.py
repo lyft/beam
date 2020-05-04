@@ -38,6 +38,9 @@ from apache_beam.runners.interactive.display import pipeline_graph
 SAMPLE_SIZE = 8
 
 
+_LOGGER = logging.getLogger()
+
+
 class InteractiveRunner(runners.PipelineRunner):
   """An interactive runner for Beam Python pipelines.
 
@@ -95,11 +98,11 @@ class InteractiveRunner(runners.PipelineRunner):
 
     enter = getattr(self._underlying_runner, '__enter__', None)
     if enter is not None:
-      logging.info('Starting session.')
+      _LOGGER.info('Starting session.')
       self._in_session = True
       enter()
     else:
-      logging.error('Keep alive not supported.')
+      _LOGGER.error('Keep alive not supported.')
 
   def end_session(self):
     """End the session that keeps backend managers and workers alive.
@@ -110,7 +113,7 @@ class InteractiveRunner(runners.PipelineRunner):
     exit = getattr(self._underlying_runner, '__exit__', None)
     if exit is not None:
       self._in_session = False
-      logging.info('Ending session.')
+      _LOGGER.info('Ending session.')
       exit(None, None, None)
 
   def cleanup(self):
