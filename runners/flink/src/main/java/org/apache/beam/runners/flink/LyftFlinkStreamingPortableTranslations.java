@@ -136,8 +136,10 @@ public class LyftFlinkStreamingPortableTranslations {
       consumerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
     }
 
-    final String bootstrapServer = bootstrapServers.split(":")[0];
-    final int port = Integer.parseInt(bootstrapServers.split(":")[1]);
+    final String splits[] = bootstrapServers.split(":", 2);
+    Preconditions.checkState(splits.length == 2, "'bootstrap.servers' should be server:port");
+    final String bootstrapServer = splits[0];
+    final int port = Integer.parseInt(splits[1]);
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource = consumerBuilder.build(topic, groupId,
             bootstrapServer, port, new ByteArrayWindowedValueSchema());
 
@@ -226,8 +228,10 @@ public class LyftFlinkStreamingPortableTranslations {
       Preconditions.checkNotNull(bootstrapServers = (String) params.get("bootstrap.servers"),
               "'bootstrap.servers' needs to be set");
 
-      final String bootstrapServer = bootstrapServers.split(":")[0];
-      final int port = Integer.parseInt(bootstrapServers.split(":")[1]);
+      final String splits[] = bootstrapServers.split(":", 2);
+      Preconditions.checkState(splits.length == 2, "'bootstrap.servers' should be server:port");
+      final String bootstrapServer = splits[0];
+      final int port = Integer.parseInt(splits[1]);
 
       Map<?, ?> consumerProps = (Map) params.get("properties");
       Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
