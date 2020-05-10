@@ -18,4 +18,4 @@
 """Apache Beam SDK version information and utilities."""
 
 
-__version__ = 'release-2.18.0-lyft-strmcmp-835'
+__version__ = '2.18.0-lyft-strmcmp-835'
