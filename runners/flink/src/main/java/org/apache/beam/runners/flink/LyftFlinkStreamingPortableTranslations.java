@@ -124,12 +124,12 @@ public class LyftFlinkStreamingPortableTranslations {
     final String bootstrapServers;
 
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
-    Preconditions.checkNotNull(groupId = (String) params.get("group.id"), "'group.id' needs to be set");
-    Preconditions.checkNotNull(bootstrapServers = (String) params.get("bootstrap.servers"),
-            "'bootstrap.servers' needs to be set");
-
     Map<?, ?> consumerProps = (Map) params.get("properties");
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+
+    Preconditions.checkNotNull(groupId = (String) consumerProps.remove("group.id"), "'group.id' needs to be set");
+    Preconditions.checkNotNull(bootstrapServers = (String) consumerProps.remove("bootstrap.servers"),
+            "'bootstrap.servers' needs to be set");
 
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder = new LyftKafkaConsumerBuilder<>();
     for (Map.Entry<?, ?> entry : consumerProps.entrySet()) {
@@ -225,7 +225,11 @@ public class LyftFlinkStreamingPortableTranslations {
           mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
 
       Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
-      Preconditions.checkNotNull(bootstrapServers = (String) params.get("bootstrap.servers"),
+
+      Map<?, ?> producerProps = (Map) params.get("properties");
+      Preconditions.checkNotNull(producerProps, "'properties' need to be set");
+
+      Preconditions.checkNotNull(bootstrapServers = (String) producerProps.remove("bootstrap.servers"),
               "'bootstrap.servers' needs to be set");
 
       final String splits[] = bootstrapServers.split(":", 2);
@@ -233,15 +237,12 @@ public class LyftFlinkStreamingPortableTranslations {
       final String bootstrapServer = splits[0];
       final int port = Integer.parseInt(splits[1]);
 
-      Map<?, ?> consumerProps = (Map) params.get("properties");
-      Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
-
-      for (Map.Entry<?, ?> entry : consumerProps.entrySet()) {
+      for (Map.Entry<?, ?> entry : producerProps.entrySet()) {
         producerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
       }
 
       producer = producerBuilder.build(topic, bootstrapServer, port, new ByteArrayWindowedValueSerializer());
-      logger.info("Kafka producer for topic {} with properties {}", topic, consumerProps);
+      logger.info("Kafka producer for topic {} with properties {}", topic, producerProps);
     } catch (IOException e) {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
