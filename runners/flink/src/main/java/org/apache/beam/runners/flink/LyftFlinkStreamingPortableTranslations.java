@@ -122,6 +122,8 @@ public class LyftFlinkStreamingPortableTranslations {
     final String topic;
     final String groupId;
     final String bootstrapServers;
+    final String userName;
+    final String password;
 
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
     Map<?, ?> consumerProps = (Map) params.get("properties");
@@ -131,7 +133,13 @@ public class LyftFlinkStreamingPortableTranslations {
     Preconditions.checkNotNull(bootstrapServers = (String) consumerProps.remove("bootstrap.servers"),
             "'bootstrap.servers' needs to be set");
 
+    userName = (String) params.get("username");
+    password = (String) params.get("password");
+
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder = new LyftKafkaConsumerBuilder<>();
+    consumerBuilder.withUsername(userName);
+    consumerBuilder.withPassword(password);
+
     for (Map.Entry<?, ?> entry : consumerProps.entrySet()) {
       consumerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
     }
@@ -213,6 +221,8 @@ public class LyftFlinkStreamingPortableTranslations {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
     final String topic;
     final String bootstrapServers;
+    final String userName;
+    final String password;
 
     ObjectMapper mapper = new ObjectMapper();
     FlinkKafkaProducer011<WindowedValue<byte[]>> producer;
@@ -233,6 +243,11 @@ public class LyftFlinkStreamingPortableTranslations {
       Preconditions.checkState(splits.length == 2, "'bootstrap.servers' should be server:port");
       final String bootstrapServer = splits[0];
       final int port = Integer.parseInt(splits[1]);
+      userName = (String)params.get("username");
+      password = (String)params.get("password");
+
+      producerBuilder.withPassword(userName);
+      producerBuilder.withPassword(password);
 
       for (Map.Entry<?, ?> entry : producerProps.entrySet()) {
         producerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
