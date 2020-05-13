@@ -86,6 +86,7 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
+  private static final int DEFAULT_KAFKA_BROKER_PORT = 9093;
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -122,19 +123,19 @@ public class LyftFlinkStreamingPortableTranslations {
     final String topic;
     final String groupId;
     final String bootstrapServers;
-    final String userName;
-    final String password;
 
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
     Map<?, ?> consumerProps = (Map) params.get("properties");
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
-
     Preconditions.checkNotNull(groupId = (String) consumerProps.remove("group.id"), "'group.id' needs to be set");
     Preconditions.checkNotNull(bootstrapServers = (String) consumerProps.remove("bootstrap.servers"),
             "'bootstrap.servers' needs to be set");
 
-    userName = (String) params.get("username");
-    password = (String) params.get("password");
+    final String splits[] = bootstrapServers.split(":", 2);
+    final String bootstrapServer = splits[0];
+    int port = splits.length == 2 ? Integer.parseInt(splits[1]) : DEFAULT_KAFKA_BROKER_PORT;
+    final String userName = (String) params.get("username");
+    final String password = (String) params.get("password");
 
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder = new LyftKafkaConsumerBuilder<>();
     consumerBuilder.withUsername(userName);
@@ -144,10 +145,6 @@ public class LyftFlinkStreamingPortableTranslations {
       consumerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
     }
 
-    final String splits[] = bootstrapServers.split(":", 2);
-    Preconditions.checkState(splits.length == 2, "'bootstrap.servers' should be server:port");
-    final String bootstrapServer = splits[0];
-    final int port = Integer.parseInt(splits[1]);
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource = consumerBuilder.build(topic, groupId,
             bootstrapServer, port, new ByteArrayWindowedValueSchema());
 
@@ -221,8 +218,6 @@ public class LyftFlinkStreamingPortableTranslations {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
     final String topic;
     final String bootstrapServers;
-    final String userName;
-    final String password;
 
     ObjectMapper mapper = new ObjectMapper();
     FlinkKafkaProducer011<WindowedValue<byte[]>> producer;
@@ -240,13 +235,12 @@ public class LyftFlinkStreamingPortableTranslations {
               "'bootstrap.servers' needs to be set");
 
       final String splits[] = bootstrapServers.split(":", 2);
-      Preconditions.checkState(splits.length == 2, "'bootstrap.servers' should be server:port");
       final String bootstrapServer = splits[0];
-      final int port = Integer.parseInt(splits[1]);
-      userName = (String)params.get("username");
-      password = (String)params.get("password");
+      int port = splits.length == 2 ? Integer.parseInt(splits[1]) : DEFAULT_KAFKA_BROKER_PORT;
+      final String userName = (String)params.get("username");
+      final String password = (String)params.get("password");
 
-      producerBuilder.withPassword(userName);
+      producerBuilder.withUsername(userName);
       producerBuilder.withPassword(password);
 
       for (Map.Entry<?, ?> entry : producerProps.entrySet()) {
