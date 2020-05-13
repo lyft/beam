@@ -18,4 +18,4 @@
 """Apache Beam SDK version information and utilities."""
 
 
-__version__ = '2.18.0-lyft-STRMCMP-947'
+__version__ = '2.18.0+lyft20200512strmcmp947'

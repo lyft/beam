@@ -297,7 +297,7 @@ class BeamModulePlugin implements Plugin<Project> {
 
     // Automatically use the official release version if we are performing a release
     // otherwise append '-SNAPSHOT'
-    project.version = '2.18.0-lyft-STRMCMP-947'
+    project.version = '2.18.0-lyft20200512strmcmp947'
     if (!isRelease(project)) {
       project.version += '-SNAPSHOT'
     }
