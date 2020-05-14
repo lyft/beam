@@ -173,6 +173,7 @@ dependencies {
   //LYFT CUSTOM
   compile "org.apache.flink:flink-connector-kafka-0.11_2.11:1.8-lyft20190924"
   compile "com.lyft:streamingplatform-kinesis:1.4-SNAPSHOT"
+  compile "com.lyft:streamingplatform-kafka:1.4-SNAPSHOT"
 }
 
 class ValidatesRunnerConfig {
