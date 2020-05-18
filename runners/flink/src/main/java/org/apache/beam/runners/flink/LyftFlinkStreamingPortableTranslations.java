@@ -106,7 +106,8 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
   }
 
-  private void translateKafkaInput(
+  @VisibleForTesting
+  void translateKafkaInput(
       String id,
       RunnerApi.Pipeline pipeline,
       FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
@@ -127,6 +128,9 @@ public class LyftFlinkStreamingPortableTranslations {
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
     Map<?, ?> consumerProps = (Map) params.get("properties");
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+
+    logger.info("Configuring kafka consumer for topic {} with properties {}", topic, consumerProps);
+
     Preconditions.checkNotNull(groupId = (String) consumerProps.remove("group.id"), "'group.id' needs to be set");
     Preconditions.checkNotNull(bootstrapServers = (String) consumerProps.remove("bootstrap.servers"),
             "'bootstrap.servers' needs to be set");
@@ -138,8 +142,13 @@ public class LyftFlinkStreamingPortableTranslations {
     final String password = (String) params.get("password");
 
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder = new LyftKafkaConsumerBuilder<>();
-    consumerBuilder.withUsername(userName);
-    consumerBuilder.withPassword(password);
+    if (userName != null) {
+      consumerBuilder.withUsername(userName);
+    }
+
+    if (password != null) {
+      consumerBuilder.withPassword(password);
+    }
 
     for (Map.Entry<?, ?> entry : consumerProps.entrySet()) {
       consumerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
@@ -147,8 +156,6 @@ public class LyftFlinkStreamingPortableTranslations {
 
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource = consumerBuilder.build(topic, groupId,
             bootstrapServer, port, new ByteArrayWindowedValueSchema());
-
-    logger.info("Kafka consumer for topic {} with properties {}", topic, consumerProps);
 
     if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
       kafkaSource.setStartFromTimestamp(
@@ -213,7 +220,8 @@ public class LyftFlinkStreamingPortableTranslations {
   }
 
   // TODO: translation assumes byte[] values, does not support keys and headers
-  private void translateKafkaSink(
+  @VisibleForTesting
+  void translateKafkaSink(
       String id, RunnerApi.Pipeline pipeline, StreamingTranslationContext context) {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
     final String topic;
@@ -230,6 +238,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
       Map<?, ?> producerProps = (Map) params.get("properties");
       Preconditions.checkNotNull(producerProps, "'properties' need to be set");
+      logger.info("Configuring kafka producer for topic {} with properties {}", topic, producerProps);
 
       Preconditions.checkNotNull(bootstrapServers = (String) producerProps.remove("bootstrap.servers"),
               "'bootstrap.servers' needs to be set");
@@ -240,15 +249,20 @@ public class LyftFlinkStreamingPortableTranslations {
       final String userName = (String)params.get("username");
       final String password = (String)params.get("password");
 
-      producerBuilder.withUsername(userName);
-      producerBuilder.withPassword(password);
+      if (userName != null) {
+        producerBuilder.withUsername(userName);
+      }
+
+      if (password != null) {
+        producerBuilder.withPassword(password);
+      }
 
       for (Map.Entry<?, ?> entry : producerProps.entrySet()) {
         producerBuilder.withKafkaProperty(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
       }
 
       producer = producerBuilder.build(topic, bootstrapServer, port, new ByteArrayWindowedValueSerializer());
-      logger.info("Kafka producer for topic {} with properties {}", topic, producerProps);
+
     } catch (IOException e) {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
