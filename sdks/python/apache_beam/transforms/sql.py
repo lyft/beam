@@ -69,6 +69,4 @@ class SqlTransform(ExternalTransform):
   def __init__(self, query):
     super(SqlTransform, self).__init__(
         self.URN,
-        NamedTupleBasedPayloadBuilder(SqlTransformSchema(query=query)),
-        BeamJarExpansionService(
-            ':sdks:java:extensions:sql:expansion-service:shadowJar'))
+        NamedTupleBasedPayloadBuilder(SqlTransformSchema(query=query)))
