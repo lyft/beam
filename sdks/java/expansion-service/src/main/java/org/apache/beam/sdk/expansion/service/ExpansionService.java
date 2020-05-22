@@ -298,12 +298,14 @@ public class ExpansionService extends ExpansionServiceGrpc.ExpansionServiceImplB
   private Map<String, TransformProvider> registeredTransforms = loadRegisteredTransforms();
 
   private Map<String, TransformProvider> loadRegisteredTransforms() {
-    ImmutableMap.Builder<String, TransformProvider> registeredTransforms = ImmutableMap.builder();
+    ImmutableMap.Builder<String, TransformProvider> registeredTransformsBuilder = ImmutableMap.builder();
     for (ExpansionServiceRegistrar registrar :
         ServiceLoader.load(ExpansionServiceRegistrar.class)) {
-      registeredTransforms.putAll(registrar.knownTransforms());
+      registeredTransformsBuilder.putAll(registrar.knownTransforms());
     }
-    return registeredTransforms.build();
+    ImmutableMap<String, TransformProvider> registeredTransforms = registeredTransformsBuilder.build();
+    LOG.info("Registering external transforms: {}", registeredTransforms.keySet());
+    return registeredTransforms;
   }
 
   @VisibleForTesting
@@ -348,7 +350,7 @@ public class ExpansionService extends ExpansionServiceGrpc.ExpansionServiceImplB
     // Needed to find which transform was new...
     SdkComponents sdkComponents =
         rehydratedComponents.getSdkComponents(null).withNewIdPrefix(request.getNamespace());
-    sdkComponents.registerEnvironment(Environments.JAVA_SDK_HARNESS_ENVIRONMENT);
+    sdkComponents.registerEnvironment(Environments.createEmbeddedEnvironment(""));
     Map<String, String> outputMap =
         outputs.entrySet().stream()
             .collect(
