@@ -49,6 +49,11 @@ from apache_beam.transforms import userstate
 
 _LOGGER = logging.getLogger(__name__)
 
+import typing
+from apache_beam.transforms.sql import SqlTransform
+Row = typing.NamedTuple("Row", [("col1", int), ("col2", str)])
+beam.coders.registry.register_coder(Row, beam.coders.RowCoder)
+
 if __name__ == '__main__':
   # Run as
   #
@@ -242,6 +247,15 @@ if __name__ == '__main__':
               'common.serialization.'
               'ByteArraySerializer',
               expansion_service=get_expansion_service()))
+
+    def test_sql(self):
+      with self.create_pipeline() as p:
+        output = (p
+         | beam.Create([Row(x, str(x)) for x in range(5)])
+         | SqlTransform("Select col1, col2 || '*' || col2 as col2, POWER(col1, 2) as col3 from PCOLLECTION")
+         )
+        assert_that(output, equal_to([(x, '{x}*{x}'.format(x=x), x*x) for x in range(5)]))
+
 
     def test_flattened_side_input(self):
       # Blocked on support for transcoding

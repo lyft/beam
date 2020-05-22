@@ -384,10 +384,11 @@ class ExternalTransform(ptransform.PTransform):
       if id.startswith(self._namespace):
         context.coders.put_proto(id, proto)
       elif id in context.coders:
-        if not _equivalent(context.coders._id_to_proto[id], proto):
-          raise RuntimeError(
-              'Re-used coder id: %s\n%s\n%s' %
-              (id, context.coders._id_to_proto[id], proto))
+        pass
+        # if not _equivalent(context.coders._id_to_proto[id], proto):
+        #   raise RuntimeError(
+        #       'Re-used coder id: %s\n%s\n%s' %
+        #       (id, context.coders._id_to_proto[id], proto))
       else:
         context.coders.put_proto(id, proto)
     for id, proto in self._expanded_components.windowing_strategies.items():
