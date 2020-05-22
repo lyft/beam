@@ -78,6 +78,9 @@ configurations.all {
 
 dependencies {
   compile project(flinkRunnerProject)
+  // Although inherited by the base project, this needs to be explicitly added to produce a correct jar.
+  // Otherwise, we see 'java.lang.NoSuchMethodError' for methods of JobServerDriver
+  runtime project(":runners:java-job-service")
   runtime group: "org.slf4j", name: "jcl-over-slf4j", version: dependencies.create(project.library.java.slf4j_api).getVersion()
   validatesPortableRunner project(path: flinkRunnerProject, configuration: "testRuntime")
   validatesPortableRunner project(path: ":sdks:java:core", configuration: "shadowTest")
@@ -87,8 +90,14 @@ dependencies {
   runtime library.java.slf4j_simple
 //  TODO: Enable AWS and HDFS file system.
   // For resolving external transform requests
+  // Kafka
   runtime project(":sdks:java:io:kafka")
   runtime library.java.kafka_clients
+  // SQL expansion service contains the ExternalTransformRegistrar which loads the external SQL translator
+  // for the expansion server started by the FlinkJobServerDriver.
+  runtime project(":sdks:java:extensions:sql:expansion-service")
+  // Required for embedded fn execution
+  runtime project(":sdks:java:harness")
   runtime project(":sdks:java:io:google-cloud-platform")
 }
 
