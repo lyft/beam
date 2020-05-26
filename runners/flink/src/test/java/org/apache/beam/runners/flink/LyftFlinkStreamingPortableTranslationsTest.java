@@ -17,9 +17,9 @@
  */
 package org.apache.beam.runners.flink;
 
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +42,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer011;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011;
 import org.junit.Assert;
@@ -51,13 +52,19 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-/** Tests for {@link LyftFlinkStreamingPortableTranslations} */
+/** Tests for {@link LyftFlinkStreamingPortableTranslations}. */
 public class LyftFlinkStreamingPortableTranslationsTest {
 
   @Mock
   private FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext streamingContext;
 
   @Mock private StreamExecutionEnvironment streamingEnvironment;
+
+  @Mock private DataStream dataStream;
+
+  @Mock private SingleOutputStreamOperator outputStreamOperator;
+
+  @Mock private DataStreamSink streamSink;
 
   @Before
   public void before() {
@@ -158,89 +165,36 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
-  public void testRequiredPropertiesForKafkaInput() throws JsonProcessingException {
+  public void testKafkaInputWithDevKafkaBroker() throws JsonProcessingException {
 
-    LyftFlinkStreamingPortableTranslations portableTranslations =
-        new LyftFlinkStreamingPortableTranslations();
     String id = "1";
     String topicName = "kinesis_to_kafka";
+    String bootstrapServer = "localhost:9093";
 
-    Properties kafkaConsumerProps = new Properties();
-    kafkaConsumerProps.put("group.id", "testing");
-    kafkaConsumerProps.put("bootstrap.servers", "test-hdd.lyft.com");
-
-    ImmutableMap<String, Object> payload =
-        ImmutableMap.<String, Object>builder()
-            .put("topic", topicName)
-            .put("properties", kafkaConsumerProps)
-            .put("username", "read_kinesis_to_kafka")
-            .put("password", "abcde1234")
-            .build();
-
-    byte[] payloadBytes = new ObjectMapper().writeValueAsBytes(payload);
-    RunnerApi.Pipeline pipeline = createPipeline(id, payloadBytes);
-
-    portableTranslations.translateKafkaInput(id, pipeline, streamingContext);
-
-    ArgumentCaptor<FlinkKafkaConsumer011> kafkaSourceCaptor =
-        ArgumentCaptor.forClass(FlinkKafkaConsumer011.class);
-    ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
-    verify(streamingEnvironment)
-        .addSource(kafkaSourceCaptor.capture(), kafkaSourceNameCaptor.capture());
-    Assert.assertEquals(
-        WindowedValue.class, kafkaSourceCaptor.getValue().getProducedType().getTypeClass());
-    Assert.assertTrue(kafkaSourceNameCaptor.getValue().contains(topicName));
-  }
-
-  @Test(expected = NullPointerException.class)
-  public void testMissingRequiredCredentialsForKafkaInput() throws JsonProcessingException {
-
-    LyftFlinkStreamingPortableTranslations portableTranslations =
-        new LyftFlinkStreamingPortableTranslations();
-    String id = "1";
-    String topicName = "kinesis_to_kafka";
-
-    Properties kafkaConsumerProps = new Properties();
-    kafkaConsumerProps.put("group.id", "testing");
-    kafkaConsumerProps.put("bootstrap.servers", "test-hdd.lyft.com");
-
-    ImmutableMap<String, Object> payload =
-        ImmutableMap.<String, Object>builder()
-            .put("topic", topicName)
-            .put("properties", kafkaConsumerProps)
-            .build();
-
-    byte[] payloadBytes = new ObjectMapper().writeValueAsBytes(payload);
-    RunnerApi.Pipeline pipeline = createPipeline(id, payloadBytes);
-
-    portableTranslations.translateKafkaInput(id, pipeline, streamingContext);
-    Assert.fail("Should fail due to empty username and password! ");
+    byte[] payload = createPayload(topicName, bootstrapServer, true, false);
+    runAndAssertKafkaInput(id, topicName, payload);
   }
 
   @Test
-  public void testKafkaInputForLocalEnvironment() throws JsonProcessingException {
+  public void testKafkaInputWithNonDevKafkaBroker() throws JsonProcessingException {
 
-    LyftFlinkStreamingPortableTranslations portableTranslations =
-        new LyftFlinkStreamingPortableTranslations();
     String id = "1";
     String topicName = "kinesis_to_kafka";
+    String bootstrapServer = "staging-hdd.lyft.net";
 
-    Properties kafkaConsumerProps = new Properties();
-    kafkaConsumerProps.put("group.id", "testing");
-    kafkaConsumerProps.put("bootstrap.servers", "kafka-server.devbox.lyft.net");
+    byte[] payload = createPayload(topicName, bootstrapServer, true, true);
+    runAndAssertKafkaInput(id, topicName, payload);
+  }
 
-    ImmutableMap<String, Object> payload =
-        ImmutableMap.<String, Object>builder()
-            .put("topic", topicName)
-            .put("properties", kafkaConsumerProps)
-            .build();
-    byte[] payloadBytes = new ObjectMapper().writeValueAsBytes(payload);
-    RunnerApi.Pipeline pipeline = createPipeline(id, payloadBytes);
+  private void runAndAssertKafkaInput(String id, String topicName, byte[] payload) {
 
-    // test
-    portableTranslations.translateKafkaInput(id, pipeline, streamingContext);
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
 
-    // verify
+    // run
+    new LyftFlinkStreamingPortableTranslations()
+        .translateKafkaInput(id, pipeline, streamingContext);
+
+    // assert
     ArgumentCaptor<FlinkKafkaConsumer011> kafkaSourceCaptor =
         ArgumentCaptor.forClass(FlinkKafkaConsumer011.class);
     ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
@@ -252,87 +206,102 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
-  public void testRequiredPropertiesForKafkaSink() throws JsonProcessingException {
+  public void shouldFailForMissingGroupIdToKafkaInput() throws JsonProcessingException {
 
     LyftFlinkStreamingPortableTranslations portableTranslations =
         new LyftFlinkStreamingPortableTranslations();
     String id = "1";
     String topicName = "kinesis_to_kafka";
+    String bootstrapServer = "test-hdd.lyft.com";
 
-    Properties kakfaProducerProps = new Properties();
-    kakfaProducerProps.put("bootstrap.servers", "test-hdd.lyft.com");
+    byte[] payload = createPayload(topicName, bootstrapServer, false, false);
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
 
-    ImmutableMap<String, Object> payload =
-        ImmutableMap.<String, Object>builder()
-            .put("topic", topicName)
-            .put("properties", kakfaProducerProps)
-            .put("username", "read_kinesis_to_kafka")
-            .put("password", "abcde1234")
-            .build();
+    NullPointerException npe =
+        assertThrows(
+            NullPointerException.class,
+            () -> portableTranslations.translateKafkaInput(id, pipeline, streamingContext));
+    Assert.assertTrue(npe.getMessage().contains("group.id is a required property"));
+  }
 
-    byte[] payloadBytes = new ObjectMapper().writeValueAsBytes(payload);
-    RunnerApi.Pipeline pipeline = createPipeline(id, payloadBytes);
+  @Test
+  public void testKafkaSinkForNonDevBroker() throws JsonProcessingException {
 
-    DataStream mockDataStream = mock(DataStream.class);
-    SingleOutputStreamOperator mockStreamOperator = mock(SingleOutputStreamOperator.class);
-    DataStreamSink mockStreamSink = mock(DataStreamSink.class);
+    String id = "1";
+    String topicName = "kinesis_to_kafka";
+    String bootstrapServer = "test-hdd.lyft.com";
+    byte[] payload = createPayload(topicName, bootstrapServer, false, true);
 
-    when(mockStreamOperator.addSink(any())).thenReturn(mockStreamSink);
-    when(mockDataStream.transform(anyString(), any(), any())).thenReturn(mockStreamOperator);
-    when(streamingContext.getDataStreamOrThrow("fake_pcollection_id")).thenReturn(mockDataStream);
+    runAndAssertKafkaSink(id, topicName, payload);
+  }
 
+  @Test
+  public void testKafkaSinkForDevBroker() throws JsonProcessingException {
+
+    String id = "1";
+    String topicName = "kinesis_to_kafka";
+    String bootstrapServer = "kafka-server.devbox.lyft.net";
+    byte[] payload = createPayload(topicName, bootstrapServer, false, false);
+
+    runAndAssertKafkaSink(id, topicName, payload);
+  }
+
+  private void runAndAssertKafkaSink(String id, String topicName, byte[] payload) {
+
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+        new LyftFlinkStreamingPortableTranslations();
+    when(outputStreamOperator.addSink(any())).thenReturn(streamSink);
+    when(dataStream.transform(anyString(), any(), any(OneInputStreamOperator.class)))
+        .thenReturn(outputStreamOperator);
+    when(streamingContext.getDataStreamOrThrow("fake_pcollection_id")).thenReturn(dataStream);
+
+    // run
     portableTranslations.translateKafkaSink(id, pipeline, streamingContext);
 
+    // assert
     verify(streamingContext).getDataStreamOrThrow("fake_pcollection_id");
-    verify(mockDataStream).transform(anyString(), any(), any());
+    verify(dataStream).transform(anyString(), any(), any(OneInputStreamOperator.class));
     ArgumentCaptor<FlinkKafkaProducer011> kafkaSinkCaptor =
         ArgumentCaptor.forClass(FlinkKafkaProducer011.class);
     ArgumentCaptor<String> kafkaSinkNameCaptor = ArgumentCaptor.forClass(String.class);
-    verify(mockStreamSink).name(kafkaSinkNameCaptor.capture());
-    verify(mockStreamOperator).addSink(kafkaSinkCaptor.capture());
+    verify(streamSink).name(kafkaSinkNameCaptor.capture());
+    verify(outputStreamOperator).addSink(kafkaSinkCaptor.capture());
 
     Assert.assertTrue(kafkaSinkNameCaptor.getValue().contains(topicName));
     Assert.assertEquals(FlinkKafkaProducer011.class, kafkaSinkCaptor.getValue().getClass());
   }
 
-  @Test
-  public void testKafkaSinkForLocalEnvironment() throws JsonProcessingException {
+  /**
+   * utility method to create payload for tests.
+   *
+   * @param topicName name of the topic
+   * @param bootstrapServers bootstrap server
+   * @param withGroupId if {@code true}, include group.id to properties
+   * @param withCredentials if {@code true}, include username/password to properties.
+   * @return byte[]
+   * @throws JsonProcessingException
+   */
+  private byte[] createPayload(
+      String topicName, String bootstrapServers, boolean withGroupId, boolean withCredentials)
+      throws JsonProcessingException {
 
-    LyftFlinkStreamingPortableTranslations portableTranslations =
-        new LyftFlinkStreamingPortableTranslations();
-    String id = "1";
-    String topicName = "kinesis_to_kafka";
+    Properties properties = new Properties();
+    properties.put("bootstrap.servers", bootstrapServers);
+    if (withGroupId) {
+      properties.put("group.id", String.format("%s_%s", topicName, System.currentTimeMillis()));
+    }
 
-    Properties kakfaProducerProps = new Properties();
-    kakfaProducerProps.put("bootstrap.servers", "kafka-server.devbox.lyft.net");
-
-    ImmutableMap<String, Object> payload =
+    ImmutableMap.Builder<String, Object> builder =
         ImmutableMap.<String, Object>builder()
             .put("topic", topicName)
-            .put("properties", kakfaProducerProps)
-            .build();
+            .put("properties", properties);
 
-    byte[] payloadBytes = new ObjectMapper().writeValueAsBytes(payload);
-    RunnerApi.Pipeline pipeline = createPipeline(id, payloadBytes);
+    if (withCredentials) {
+      builder.put("username", "kinesis_to_kafka").put("password", "abcde1234");
+    }
 
-    DataStream mockDataStream = mock(DataStream.class);
-    SingleOutputStreamOperator mockStreamOperator = mock(SingleOutputStreamOperator.class);
-    DataStreamSink mockStreamSink = mock(DataStreamSink.class);
-
-    when(mockStreamOperator.addSink(any())).thenReturn(mockStreamSink);
-    when(mockDataStream.transform(anyString(), any(), any())).thenReturn(mockStreamOperator);
-    when(streamingContext.getDataStreamOrThrow("fake_pcollection_id")).thenReturn(mockDataStream);
-
-    portableTranslations.translateKafkaSink(id, pipeline, streamingContext);
-
-    ArgumentCaptor<FlinkKafkaProducer011> kafkaSinkCaptor =
-        ArgumentCaptor.forClass(FlinkKafkaProducer011.class);
-    ArgumentCaptor<String> kafkaSinkNameCaptor = ArgumentCaptor.forClass(String.class);
-    verify(mockStreamSink).name(kafkaSinkNameCaptor.capture());
-    verify(mockStreamOperator).addSink(kafkaSinkCaptor.capture());
-
-    Assert.assertTrue(kafkaSinkNameCaptor.getValue().contains(topicName));
-    Assert.assertEquals(FlinkKafkaProducer011.class, kafkaSinkCaptor.getValue().getClass());
+    return new ObjectMapper().writeValueAsBytes(builder.build());
   }
 
   /**

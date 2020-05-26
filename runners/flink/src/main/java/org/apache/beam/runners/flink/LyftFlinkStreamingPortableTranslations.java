@@ -78,7 +78,7 @@ import org.slf4j.LoggerFactory;
 
 public class LyftFlinkStreamingPortableTranslations {
 
-  private static final Logger logger =
+  private static final Logger LOG =
       LoggerFactory.getLogger(LyftFlinkStreamingPortableTranslations.class.getName());
 
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
@@ -86,7 +86,6 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
-  private static final int DEFAULT_KAFKA_BROKER_PORT = 9093;
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -122,45 +121,26 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     final String topic;
-    final String groupId;
-    final String bootstrapServers;
-
     Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
-    Map<?, ?> consumerProps = (Map) params.get("properties");
+    Map<String, String> consumerProps = (Map) params.get("properties");
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+    LOG.info("Configuring kafka consumer for topic {} with properties {}", topic, consumerProps);
 
-    logger.info("Configuring kafka consumer for topic {} with properties {}", topic, consumerProps);
-
-    Preconditions.checkNotNull(
-        groupId = (String) consumerProps.remove("group.id"), "'group.id' needs to be set");
-    Preconditions.checkNotNull(
-        bootstrapServers = (String) consumerProps.remove("bootstrap.servers"),
-        "'bootstrap.servers' needs to be set");
-
-    final String splits[] = bootstrapServers.split(":", 2);
-    final String bootstrapServer = splits[0];
-    int port = splits.length == 2 ? Integer.parseInt(splits[1]) : DEFAULT_KAFKA_BROKER_PORT;
     final String userName = (String) params.get("username");
     final String password = (String) params.get("password");
 
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder =
         new LyftKafkaConsumerBuilder<>();
-    if (userName != null) {
-      consumerBuilder.withUsername(userName);
-    }
 
-    if (password != null) {
-      consumerBuilder.withPassword(password);
-    }
+    consumerBuilder.withUsername(userName);
+    consumerBuilder.withPassword(password);
 
-    for (Map.Entry<?, ?> entry : consumerProps.entrySet()) {
-      consumerBuilder.withKafkaProperty(
-          String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-    }
+    Properties properties = new Properties();
+    properties.putAll(consumerProps);
+    consumerBuilder.withKafkaProperties(properties);
 
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource =
-        consumerBuilder.build(
-            topic, groupId, bootstrapServer, port, new ByteArrayWindowedValueSchema());
+        consumerBuilder.build(topic, new ByteArrayWindowedValueSchema());
 
     if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
       kafkaSource.setStartFromTimestamp(
@@ -229,54 +209,36 @@ public class LyftFlinkStreamingPortableTranslations {
   void translateKafkaSink(
       String id, RunnerApi.Pipeline pipeline, StreamingTranslationContext context) {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
-    final String topic;
-    final String bootstrapServers;
 
-    ObjectMapper mapper = new ObjectMapper();
-    FlinkKafkaProducer011<WindowedValue<byte[]>> producer;
-    LyftKafkaProducerBuilder<WindowedValue<byte[]>> producerBuilder =
-        new LyftKafkaProducerBuilder<>();
+    final Map<String, Object> params;
     try {
-      Map<String, Object> params =
-          mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
-
-      Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
-
-      Map<?, ?> producerProps = (Map) params.get("properties");
-      Preconditions.checkNotNull(producerProps, "'properties' need to be set");
-      logger.info(
-          "Configuring kafka producer for topic {} with properties {}", topic, producerProps);
-
-      Preconditions.checkNotNull(
-          bootstrapServers = (String) producerProps.remove("bootstrap.servers"),
-          "'bootstrap.servers' needs to be set");
-
-      final String splits[] = bootstrapServers.split(":", 2);
-      final String bootstrapServer = splits[0];
-      int port = splits.length == 2 ? Integer.parseInt(splits[1]) : DEFAULT_KAFKA_BROKER_PORT;
-      final String userName = (String) params.get("username");
-      final String password = (String) params.get("password");
-
-      if (userName != null) {
-        producerBuilder.withUsername(userName);
-      }
-
-      if (password != null) {
-        producerBuilder.withPassword(password);
-      }
-
-      for (Map.Entry<?, ?> entry : producerProps.entrySet()) {
-        producerBuilder.withKafkaProperty(
-            String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-      }
-
-      producer =
-          producerBuilder.build(
-              topic, bootstrapServer, port, new ByteArrayWindowedValueSerializer());
-
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
     } catch (IOException e) {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
+
+    final String topic;
+    Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
+    Map<String, String> producerProps = (Map) params.get("properties");
+    Preconditions.checkNotNull(producerProps, "'properties' need to be set");
+    LOG.info("Configuring kafka producer for topic {} with properties {}", topic, producerProps);
+
+    final String userName = (String) params.get("username");
+    final String password = (String) params.get("password");
+
+    LyftKafkaProducerBuilder<WindowedValue<byte[]>> producerBuilder =
+        new LyftKafkaProducerBuilder<>();
+
+    producerBuilder.withUsername(userName);
+    producerBuilder.withPassword(password);
+
+    Properties properties = new Properties();
+    properties.putAll(producerProps);
+    producerBuilder.withKafkaProperties(properties);
+
+    FlinkKafkaProducer011<WindowedValue<byte[]>> producer =
+        producerBuilder.build(topic, new ByteArrayWindowedValueSerializer());
 
     String inputCollectionId = Iterables.getOnlyElement(pTransform.getInputsMap().values());
     DataStream<WindowedValue<byte[]>> inputDataStream =
@@ -375,7 +337,7 @@ public class LyftFlinkStreamingPortableTranslations {
           throw new IllegalArgumentException("Unknown encoding '" + encoding + "'");
       }
 
-      logger.info(
+      LOG.info(
           "Kinesis consumer for stream {} with properties {} and encoding {}",
           stream,
           properties,
