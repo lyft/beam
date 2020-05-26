@@ -253,7 +253,7 @@ if __name__ == '__main__':
         output = (p
          | beam.Create([Row(x, str(x)) for x in range(5)])
          | SqlTransform("Select col1, col2 || '*' || col2 as col2, POWER(col1, 2) as col3 from PCOLLECTION")
-         )
+        )
         assert_that(output, equal_to([(x, '{x}*{x}'.format(x=x), x*x) for x in range(5)]))
 
 
