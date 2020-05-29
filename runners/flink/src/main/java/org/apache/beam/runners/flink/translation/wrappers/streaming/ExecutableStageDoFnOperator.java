@@ -862,17 +862,6 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         requiresTimeSortedInput(payload, true)) {
 
       @Override
-      public void processElement(WindowedValue<InputT> input) {
-        try (Locker locker = Locker.locked(stateBackendLock)) {
-          @SuppressWarnings({"unchecked", "rawtypes"})
-          final ByteBuffer key =
-              FlinkKeyUtils.encodeKey(((KV) input.getValue()).getKey(), (Coder) keyCoder);
-          getKeyedStateBackend().setCurrentKey(key);
-          super.processElement(input);
-        }
-      }
-
-      @Override
       public void finishBundle() {
         // Before cleaning up state, first finish bundle for all underlying DoFnRunners
         super.finishBundle();
