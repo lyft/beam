@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from builtins import object
+from concurrent import futures
 from typing import Callable
 from typing import DefaultDict
 from typing import Dict
@@ -437,7 +438,7 @@ class GrpcServer(object):
     # type: (...) -> None
     self.state = state
     self.provision_info = provision_info
-    self.control_server = grpc.server(UnboundedThreadPoolExecutor())
+    self.control_server = grpc.server(futures.ThreadPoolExecutor(max_workers=12))
     self.control_port = self.control_server.add_insecure_port('[::]:0')
     self.control_address = 'localhost:%s' % self.control_port
 
@@ -446,12 +447,13 @@ class GrpcServer(object):
     # is controlled in a layer above.
     no_max_message_sizes = [("grpc.max_receive_message_length", -1),
                             ("grpc.max_send_message_length", -1)]
-    self.data_server = grpc.server(
-        UnboundedThreadPoolExecutor(), options=no_max_message_sizes)
+    self.data_server = grpc.server(futures.ThreadPoolExecutor(max_workers=12),
+        options=no_max_message_sizes)
     self.data_port = self.data_server.add_insecure_port('[::]:0')
 
     self.state_server = grpc.server(
-        UnboundedThreadPoolExecutor(), options=no_max_message_sizes)
+        futures.ThreadPoolExecutor(max_workers=12),
+        options=no_max_message_sizes)
     self.state_port = self.state_server.add_insecure_port('[::]:0')
 
     self.control_handler = BeamFnControlServicer(worker_manager)
@@ -489,7 +491,8 @@ class GrpcServer(object):
         GrpcStateServicer(state), self.state_server)
 
     self.logging_server = grpc.server(
-        UnboundedThreadPoolExecutor(), options=no_max_message_sizes)
+        futures.ThreadPoolExecutor(max_workers=12),
+        options=no_max_message_sizes)
     self.logging_port = self.logging_server.add_insecure_port('[::]:0')
     beam_fn_api_pb2_grpc.add_BeamFnLoggingServicer_to_server(
         BasicLoggingService(), self.logging_server)
