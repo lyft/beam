@@ -25,7 +25,7 @@ class GrpcVendoring_1_26_0 {
 
   static def guava_version = "26.0-jre"
   static def protobuf_version = "3.11.0"
-  static def grpc_version = "1.26.0"
+  static def grpc_version = "1.21.0"
   static def gson_version = "2.8.6"
   static def netty_version = "4.1.42.Final"
   static def google_auth_version = "0.18.0"
