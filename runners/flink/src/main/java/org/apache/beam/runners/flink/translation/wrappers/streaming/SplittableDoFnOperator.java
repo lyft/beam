@@ -53,8 +53,6 @@ import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Flink operator for executing splittable {@link DoFn DoFns}. Specifically, for executing the
@@ -62,8 +60,6 @@ import org.slf4j.LoggerFactory;
  */
 public class SplittableDoFnOperator<InputT, OutputT, RestrictionT>
     extends DoFnOperator<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> {
-
-  private static final Logger LOG = LoggerFactory.getLogger(SplittableDoFnOperator.class);
 
   private transient ScheduledExecutorService executorService;
 

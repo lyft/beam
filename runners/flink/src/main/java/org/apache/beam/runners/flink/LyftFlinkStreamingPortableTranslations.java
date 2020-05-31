@@ -76,7 +76,7 @@ import org.slf4j.LoggerFactory;
 
 public class LyftFlinkStreamingPortableTranslations {
 
-  private static final Logger logger =
+  private static final Logger LOG =
       LoggerFactory.getLogger(LyftFlinkStreamingPortableTranslations.class.getName());
 
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
@@ -125,7 +125,7 @@ public class LyftFlinkStreamingPortableTranslations {
     final Properties properties = new Properties();
     properties.putAll(consumerProps);
 
-    logger.info("Kafka consumer for topic {} with properties {}", topic, properties);
+    LOG.info("Kafka consumer for topic {} with properties {}", topic, properties);
 
     FlinkKafkaConsumer011<WindowedValue<byte[]>> kafkaSource =
         new FlinkKafkaConsumer011<>(topic, new ByteArrayWindowedValueSchema(), properties);
@@ -212,7 +212,7 @@ public class LyftFlinkStreamingPortableTranslations {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
 
-    logger.info("Kafka producer for topic {} with properties {}", topic, properties);
+    LOG.info("Kafka producer for topic {} with properties {}", topic, properties);
 
     String inputCollectionId = Iterables.getOnlyElement(pTransform.getInputsMap().values());
     DataStream<WindowedValue<byte[]>> inputDataStream =
@@ -313,7 +313,7 @@ public class LyftFlinkStreamingPortableTranslations {
           throw new IllegalArgumentException("Unknown encoding '" + encoding + "'");
       }
 
-      logger.info(
+      LOG.info(
           "Kinesis consumer for stream {} with properties {} and encoding {}",
           stream,
           properties,

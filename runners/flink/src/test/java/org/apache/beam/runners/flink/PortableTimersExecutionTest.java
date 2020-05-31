@@ -17,14 +17,13 @@
  */
 package org.apache.beam.runners.flink;
 
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertThat;
 
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.beam.model.jobmanagement.v1.JobApi.JobState.Enum;
@@ -34,6 +33,7 @@ import org.apache.beam.runners.core.construction.PipelineTranslation;
 import org.apache.beam.runners.fnexecution.jobsubmission.JobInvocation;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.PortablePipelineOptions;
 import org.apache.beam.sdk.state.StateSpec;
@@ -66,9 +66,6 @@ import org.slf4j.LoggerFactory;
 /**
  * Tests the state and timer integration of {@link
  * org.apache.beam.runners.flink.translation.wrappers.streaming.ExecutableStageDoFnOperator}.
- *
- * <p>The test sets the same timers multiple times per key. This tests that only the latest version
- * of a given timer is run.
  */
 @RunWith(Parameterized.class)
 public class PortableTimersExecutionTest implements Serializable {
@@ -103,13 +100,12 @@ public class PortableTimersExecutionTest implements Serializable {
 
   @Test(timeout = 120_000)
   public void testTimerExecution() throws Exception {
-    FlinkPipelineOptions options =
-        PipelineOptionsFactory.fromArgs("--experiments=beam_fn_api").as(FlinkPipelineOptions.class);
+    PipelineOptions options = PipelineOptionsFactory.fromArgs("--experiments=beam_fn_api").create();
     options.setRunner(CrashingRunner.class);
-    options.setFlinkMaster("[local]");
-    options.setStreaming(isStreaming);
-    options.setParallelism(2);
-    options.setShutdownSourcesOnFinalWatermark(true);
+    options.as(FlinkPipelineOptions.class).setFlinkMaster("[local]");
+    options.as(FlinkPipelineOptions.class).setStreaming(isStreaming);
+    options.as(FlinkPipelineOptions.class).setParallelism(2);
+    options.as(FlinkPipelineOptions.class).setShutdownSourcesOnFinalWatermark(true);
     options
         .as(PortablePipelineOptions.class)
         .setDefaultEnvironmentType(Environments.ENVIRONMENT_EMBEDDED);
@@ -120,7 +116,6 @@ public class PortableTimersExecutionTest implements Serializable {
     final int timerOutput = 4093;
     // Enough keys that we exercise interesting code paths
     int numKeys = 50;
-    int numDuplicateTimers = 15;
     List<KV<String, Integer>> input = new ArrayList<>();
     List<KV<String, Integer>> expectedOutput = new ArrayList<>();
 
@@ -128,7 +123,7 @@ public class PortableTimersExecutionTest implements Serializable {
       // Each key should have just one final output at GC time
       expectedOutput.add(KV.of(key.toString(), timerOutput));
 
-      for (int i = 0; i < numDuplicateTimers; ++i) {
+      for (int i = 0; i < 15; ++i) {
         // Each input should be output with the offset added
         input.add(KV.of(key.toString(), i));
         expectedOutput.add(KV.of(key.toString(), i + offset));
@@ -172,18 +167,13 @@ public class PortableTimersExecutionTest implements Serializable {
           @OnTimer(timerId)
           public void onTimer(
               @StateId(stateId) ValueState<String> state, OutputReceiver<KV<String, Integer>> r) {
-            String read = Objects.requireNonNull(state.read(), "State must not be null");
-            KV<String, Integer> of = KV.of(read, timerOutput);
-            r.output(of);
+            r.output(KV.of(state.read(), timerOutput));
           }
         };
 
     final Pipeline pipeline = Pipeline.create(options);
     PCollection<KV<String, Integer>> output =
-        pipeline
-            .apply("Impulse", Impulse.create())
-            .apply("Input", ParDo.of(inputFn))
-            .apply("Timers", ParDo.of(testFn));
+        pipeline.apply(Impulse.create()).apply(ParDo.of(inputFn)).apply(ParDo.of(testFn));
     PAssert.that(output).containsInAnyOrder(expectedOutput);
 
     RunnerApi.Pipeline pipelineProto = PipelineTranslation.toProto(pipeline);
@@ -195,8 +185,9 @@ public class PortableTimersExecutionTest implements Serializable {
                 "none",
                 flinkJobExecutor,
                 pipelineProto,
-                options,
-                new FlinkPipelineRunner(options, null, Collections.emptyList()));
+                options.as(FlinkPipelineOptions.class),
+                new FlinkPipelineRunner(
+                    options.as(FlinkPipelineOptions.class), null, Collections.emptyList()));
 
     jobInvocation.start();
     while (jobInvocation.getState() != Enum.DONE) {

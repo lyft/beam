@@ -34,7 +34,6 @@ import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.OperatorStateStore;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.streaming.api.watermark.Watermark;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -76,9 +75,8 @@ public class ImpulseSourceFunctionTest {
     source.run(sourceContext);
     // 2) Should use checkpoint lock
     verify(sourceContext).getCheckpointLock();
-    // 3) Should emit impulse element and the final watermark
+    // 3) Should emit impulse element
     verify(sourceContext).collect(argThat(elementMatcher));
-    verify(sourceContext).emitWatermark(Watermark.MAX_WATERMARK);
     verifyNoMoreInteractions(sourceContext);
     // 4) Should modify checkpoint state
     verify(mockListState).get();
@@ -95,13 +93,11 @@ public class ImpulseSourceFunctionTest {
 
     // 1) Should finish
     source.run(sourceContext);
-    // 2) Should keep checkpoint state
+    // 2) Should _not_ emit impulse element
+    verifyNoMoreInteractions(sourceContext);
+    // 3) Should keep checkpoint state
     verify(mockListState).get();
     verifyNoMoreInteractions(mockListState);
-    // 3) Should always emit the final watermark
-    verify(sourceContext).emitWatermark(Watermark.MAX_WATERMARK);
-    // 4) Should _not_ emit impulse element
-    verifyNoMoreInteractions(sourceContext);
   }
 
   @Test(timeout = 10_000)
@@ -132,7 +128,6 @@ public class ImpulseSourceFunctionTest {
       sourceThread.join();
     }
     verify(sourceContext).collect(argThat(elementMatcher));
-    verify(sourceContext).emitWatermark(Watermark.MAX_WATERMARK);
     verify(mockListState).add(true);
     verify(mockListState).get();
     verifyNoMoreInteractions(mockListState);
@@ -167,9 +162,7 @@ public class ImpulseSourceFunctionTest {
     sourceThread.interrupt();
     sourceThread.join();
 
-    // Should always emit the final watermark
-    verify(sourceContext).emitWatermark(Watermark.MAX_WATERMARK);
-    // no element should have been emitted because the impulse was emitted before restore
+    // nothing should have been emitted because the impulse was emitted before restore
     verifyNoMoreInteractions(sourceContext);
   }
 
