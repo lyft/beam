@@ -116,8 +116,6 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.util.OutputTag;
 import org.joda.time.Instant;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Flink operator for executing {@link DoFn DoFns}.
@@ -125,14 +123,10 @@ import org.slf4j.LoggerFactory;
  * @param <InputT> the input type of the {@link DoFn}
  * @param <OutputT> the output type of the {@link DoFn}
  */
-// We use Flink's lifecycle methods to initialize transient fields
-@SuppressFBWarnings("SE_TRANSIENT_FIELD_NOT_RESTORED")
 public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<WindowedValue<OutputT>>
     implements OneInputStreamOperator<WindowedValue<InputT>, WindowedValue<OutputT>>,
         TwoInputStreamOperator<WindowedValue<InputT>, RawUnionValue, WindowedValue<OutputT>>,
         Triggerable<ByteBuffer, TimerData> {
-
-  private static final Logger LOG = LoggerFactory.getLogger(DoFnOperator.class);
 
   protected DoFn<InputT, OutputT> doFn;
 
@@ -212,16 +206,14 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   private transient volatile long elementCount;
   /** Time that the last bundle was finished (to set the timer). */
   private transient volatile long lastFinishBundleTime;
-  /** Callback to be executed before the current bundle is started. */
-  private transient volatile Runnable preBundleCallback;
   /** Callback to be executed after the current bundle was finished. */
   private transient volatile Runnable bundleFinishedCallback;
 
   // Watermark state.
   // Volatile because these can be set in two mutually exclusive threads (see above).
-  private transient volatile long currentInputWatermark;
-  private transient volatile long currentSideInputWatermark;
-  private transient volatile long currentOutputWatermark;
+  protected transient volatile long currentInputWatermark;
+  protected transient volatile long currentSideInputWatermark;
+  protected transient volatile long currentOutputWatermark;
   private transient volatile long pushedBackWatermark;
 
   /** Constructor for DoFnOperator. */
@@ -361,9 +353,9 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       pushedBackElementsHandler = NonKeyedPushedBackElementsHandler.create(listState);
     }
 
-    currentInputWatermark = BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis();
-    currentSideInputWatermark = BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis();
-    currentOutputWatermark = BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis();
+    setCurrentInputWatermark(BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis());
+    setCurrentSideInputWatermark(BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis());
+    setCurrentOutputWatermark(BoundedWindow.TIMESTAMP_MIN_VALUE.getMillis());
 
     sideInputReader = NullSideInputReader.of(sideInputs);
 
@@ -379,9 +371,9 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       Stream<WindowedValue<InputT>> pushedBack = pushedBackElementsHandler.getElements();
       long min =
           pushedBack.map(v -> v.getTimestamp().getMillis()).reduce(Long.MAX_VALUE, Math::min);
-      pushedBackWatermark = min;
+      setPushedBackWatermark(min);
     } else {
-      pushedBackWatermark = Long.MAX_VALUE;
+      setPushedBackWatermark(Long.MAX_VALUE);
     }
 
     // StatefulPardo or WindowDoFn
@@ -557,20 +549,15 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     }
   }
 
-  public long getEffectiveInputWatermark() {
-    // hold back by the pushed back values waiting for side inputs
-    return Math.min(pushedBackWatermark, currentInputWatermark);
+  protected long getPushbackWatermarkHold() {
+    return pushedBackWatermark;
   }
 
-  public long getCurrentOutputWatermark() {
-    return currentOutputWatermark;
+  protected void setPushedBackWatermark(long watermark) {
+    pushedBackWatermark = watermark;
   }
 
-  protected final void setPreBundleCallback(Runnable callback) {
-    this.preBundleCallback = callback;
-  }
-
-  protected final void setBundleFinishedCallback(Runnable callback) {
+  protected void setBundleFinishedCallback(Runnable callback) {
     this.bundleFinishedCallback = callback;
   }
 
@@ -594,7 +581,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       min = Math.min(min, pushedBackValue.getTimestamp().getMillis());
       pushedBackElementsHandler.pushBack(pushedBackValue);
     }
-    pushedBackWatermark = min;
+    setPushedBackWatermark(min);
 
     checkInvokeFinishBundleByCount();
   }
@@ -648,7 +635,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       min = Math.min(min, pushedBackValue.getTimestamp().getMillis());
       pushedBackElementsHandler.pushBack(pushedBackValue);
     }
-    pushedBackWatermark = min;
+    setPushedBackWatermark(min);
 
     checkInvokeFinishBundleByCount();
 
@@ -657,12 +644,12 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
   }
 
   @Override
-  public final void processWatermark(Watermark mark) throws Exception {
+  public void processWatermark(Watermark mark) throws Exception {
     processWatermark1(mark);
   }
 
   @Override
-  public final void processWatermark1(Watermark mark) throws Exception {
+  public void processWatermark1(Watermark mark) throws Exception {
     // We do the check here because we are guaranteed to at least get the +Inf watermark on the
     // main input when the job finishes.
     if (currentSideInputWatermark >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
@@ -672,69 +659,45 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       emitAllPushedBackData();
     }
 
-    currentInputWatermark = mark.getTimestamp();
+    setCurrentInputWatermark(mark.getTimestamp());
 
-    long inputWatermarkHold = applyInputWatermarkHold(getEffectiveInputWatermark());
-    if (keyCoder != null) {
-      timeServiceManager.advanceWatermark(new Watermark(inputWatermarkHold));
-    }
-
-    long potentialOutputWatermark =
-        applyOutputWatermarkHold(
-            currentOutputWatermark, computeOutputWatermark(inputWatermarkHold));
-    maybeEmitWatermark(potentialOutputWatermark);
-  }
-
-  /**
-   * Allows to apply a hold to the input watermark. By default, just passes the input watermark
-   * through.
-   */
-  public long applyInputWatermarkHold(long inputWatermark) {
-    return inputWatermark;
-  }
-
-  /**
-   * Allows to apply a hold to the output watermark before it is send out. By default, just passes
-   * the potential output watermark through which will make it the new output watermark.
-   *
-   * @param currentOutputWatermark the current output watermark
-   * @param potentialOutputWatermark The potential new output watermark which can be adjusted, if
-   *     needed. The input watermark hold has already been applied.
-   * @return The new output watermark which will be emitted.
-   */
-  public long applyOutputWatermarkHold(long currentOutputWatermark, long potentialOutputWatermark) {
-    return potentialOutputWatermark;
-  }
-
-  private long computeOutputWatermark(long inputWatermarkHold) {
-    final long potentialOutputWatermark;
     if (keyCoder == null) {
-      potentialOutputWatermark = inputWatermarkHold;
+      long potentialOutputWatermark = Math.min(getPushbackWatermarkHold(), currentInputWatermark);
+      if (potentialOutputWatermark > currentOutputWatermark) {
+        setCurrentOutputWatermark(potentialOutputWatermark);
+        emitWatermark(currentOutputWatermark);
+      }
     } else {
-      long combinedWatermarkHold =
-          Math.min(keyedStateInternals.minWatermarkHoldMs(), inputWatermarkHold);
-      potentialOutputWatermark =
+      // hold back by the pushed back values waiting for side inputs
+      long pushedBackInputWatermark = Math.min(getPushbackWatermarkHold(), mark.getTimestamp());
+
+      timeServiceManager.advanceWatermark(new Watermark(pushedBackInputWatermark));
+
+      long watermarkHold = keyedStateInternals.minWatermarkHoldMs();
+      long combinedWatermarkHold = Math.min(watermarkHold, getPushbackWatermarkHold());
+      combinedWatermarkHold =
           Math.min(combinedWatermarkHold, timerInternals.getMinOutputTimestampMs());
+      long potentialOutputWatermark = Math.min(pushedBackInputWatermark, combinedWatermarkHold);
+
+      if (potentialOutputWatermark > currentOutputWatermark) {
+        setCurrentOutputWatermark(potentialOutputWatermark);
+        emitWatermark(currentOutputWatermark);
+      }
     }
-    return potentialOutputWatermark;
   }
 
-  private void maybeEmitWatermark(long watermark) {
-    if (watermark > currentOutputWatermark) {
-      // Must invoke finishBatch before emit the +Inf watermark otherwise there are some late
-      // events.
-      if (watermark >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
-        invokeFinishBundle();
-      }
-      LOG.debug("Emitting watermark {}", watermark);
-      currentOutputWatermark = watermark;
-      output.emitWatermark(new Watermark(watermark));
+  private void emitWatermark(long watermark) {
+    // Must invoke finishBatch before emit the +Inf watermark otherwise there are some late events.
+    if (watermark >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
+      invokeFinishBundle();
     }
+    output.emitWatermark(new Watermark(watermark));
   }
 
   @Override
-  public final void processWatermark2(Watermark mark) throws Exception {
-    currentSideInputWatermark = mark.getTimestamp();
+  public void processWatermark2(Watermark mark) throws Exception {
+
+    setCurrentSideInputWatermark(mark.getTimestamp());
     if (mark.getTimestamp() >= BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis()) {
       // this means we will never see any more side input
       emitAllPushedBackData();
@@ -763,7 +726,8 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     }
 
     pushedBackElementsHandler.clear();
-    pushedBackWatermark = Long.MAX_VALUE;
+
+    setPushedBackWatermark(Long.MAX_VALUE);
   }
 
   /**
@@ -778,11 +742,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
    */
   private void checkInvokeStartBundle() {
     if (!bundleStarted) {
-      LOG.debug("Starting bundle.");
       outputManager.flushBuffer();
-      if (preBundleCallback != null) {
-        preBundleCallback.run();
-      }
       pushbackDoFnRunner.startBundle();
       bundleStarted = true;
     }
@@ -812,17 +772,15 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
   protected final void invokeFinishBundle() {
     if (bundleStarted) {
-      LOG.debug("Finishing bundle.");
       pushbackDoFnRunner.finishBundle();
-      LOG.debug("Finished bundle. Element count: {}", elementCount);
       elementCount = 0L;
       lastFinishBundleTime = getProcessingTimeService().getCurrentProcessingTime();
       bundleStarted = false;
       // callback only after current bundle was fully finalized
       // it could start a new bundle, for example resulting from timer processing
       if (bundleFinishedCallback != null) {
-        LOG.debug("Invoking bundle finish callback.");
         bundleFinishedCallback.run();
+        bundleFinishedCallback = null;
       }
     }
   }
@@ -884,11 +842,6 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
   // allow overriding this in WindowDoFnOperator
   protected void fireTimer(TimerData timerData) {
-    LOG.debug(
-        "Firing timer: {} at {} with output time {}",
-        timerData.getTimerId(),
-        timerData.getTimestamp().getMillis(),
-        timerData.getOutputTimestamp().getMillis());
     StateNamespace namespace = timerData.getNamespace();
     // This is a user timer, so namespace must be WindowNamespace
     checkArgument(namespace instanceof WindowNamespace);
@@ -901,6 +854,18 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
         timerData.getTimestamp(),
         timerData.getOutputTimestamp(),
         timerData.getDomain());
+  }
+
+  private void setCurrentInputWatermark(long currentInputWatermark) {
+    this.currentInputWatermark = currentInputWatermark;
+  }
+
+  private void setCurrentSideInputWatermark(long currentInputWatermark) {
+    this.currentSideInputWatermark = currentInputWatermark;
+  }
+
+  private void setCurrentOutputWatermark(long currentOutputWatermark) {
+    this.currentOutputWatermark = currentOutputWatermark;
   }
 
   @SuppressWarnings("unchecked")
@@ -1294,11 +1259,6 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     @Override
     public void setTimer(TimerData timer) {
       try {
-        LOG.debug(
-            "Setting timer: {} at {} with output time {}",
-            timer.getTimerId(),
-            timer.getTimestamp().getMillis(),
-            timer.getOutputTimestamp().getMillis());
         String contextTimerId = getContextTimerId(timer.getTimerId(), timer.getNamespace());
         // Only one timer can exist at a time for a given timer id and context.
         // If a timer gets set twice in the same context, the second must
@@ -1407,7 +1367,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
     @Override
     public Instant currentInputWatermarkTime() {
-      return new Instant(getEffectiveInputWatermark());
+      return new Instant(Math.min(currentInputWatermark, getPushbackWatermarkHold()));
     }
 
     @Nullable
@@ -1416,44 +1376,30 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
       return new Instant(currentOutputWatermark);
     }
 
-    /**
-     * Check whether event time timers lower or equal to the given timestamp exist. Caution: This is
-     * scoped by the current key.
-     */
-    public boolean hasPendingEventTimeTimers(long maxTimestamp) throws Exception {
-      for (TimerData timer : pendingTimersById.values()) {
-        if (timer.getDomain() == TimeDomain.EVENT_TIME
-            && timer.getTimestamp().getMillis() <= maxTimestamp) {
-          return true;
-        }
-      }
-      return false;
-    }
-
     /** Unique contextual id of a timer. Used to look up any existing timers in a context. */
     private String getContextTimerId(String timerId, StateNamespace namespace) {
       return timerId + namespace.stringKey();
     }
-  }
 
-  /**
-   * In Beam, a timer with timestamp {@code T} is only illegible for firing when the time has moved
-   * past this time stamp, i.e. {@code T < current_time}. In the case of event time, current_time is
-   * the watermark, in the case of processing time it is the system time.
-   *
-   * <p>Flink's TimerService has different semantics because it only ensures {@code T <=
-   * current_time}.
-   *
-   * <p>To make up for this, we need to add one millisecond to Flink's internal timer timestamp.
-   * Note that we do not modify Beam's timestamp and we are not exposing Flink's timestamp.
-   *
-   * <p>See also https://jira.apache.org/jira/browse/BEAM-3863
-   */
-  static long adjustTimestampForFlink(long beamTimerTimestamp) {
-    if (beamTimerTimestamp == Long.MAX_VALUE) {
-      // We would overflow, do not adjust timestamp
-      return Long.MAX_VALUE;
+    /**
+     * In Beam, a timer with timestamp {@code T} is only illegible for firing when the time has
+     * moved past this time stamp, i.e. {@code T < current_time}. In the case of event time,
+     * current_time is the watermark, in the case of processing time it is the system time.
+     *
+     * <p>Flink's TimerService has different semantics because it only ensures {@code T <=
+     * current_time}.
+     *
+     * <p>To make up for this, we need to add one millisecond to Flink's internal timer timestamp.
+     * Note that we do not modify Beam's timestamp and we are not exposing Flink's timestamp.
+     *
+     * <p>See also https://jira.apache.org/jira/browse/BEAM-3863
+     */
+    private long adjustTimestampForFlink(long beamTimerTimestamp) {
+      if (beamTimerTimestamp == Long.MAX_VALUE) {
+        // We would overflow, do not adjust timestamp
+        return Long.MAX_VALUE;
+      }
+      return beamTimerTimestamp + 1;
     }
-    return beamTimerTimestamp + 1;
   }
 }
