@@ -149,6 +149,8 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
 
   /** The input watermark before the current bundle started. */
   private transient long inputWatermarkBeforeBundleStart;
+  /** The maximum processed input watermark. */
+  private transient long maxProcessedInputWatermark;
 
   /** Flag indicating whether the operator has been closed. */
   private transient boolean closed;
@@ -232,6 +234,8 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
           }
         };
 
+    inputWatermarkBeforeBundleStart = Long.MIN_VALUE;
+    maxProcessedInputWatermark = Long.MIN_VALUE;
     minEventTimeTimerTimestampInCurrentBundle = Long.MAX_VALUE;
     minEventTimeTimerTimestampInLastBundle = Long.MAX_VALUE;
     super.setPreBundleCallback(this::preBundleStartCallback);
@@ -574,7 +578,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
   }
 
   @Override
-  public long applyOutputWatermarkHold(long currentOutputWatermark, long potentialOutputWatermark) {
+  public long applyOutputWatermarkHold(long potentialOutputWatermark) {
     // Due to the asynchronous communication with the SDK harness,
     // a bundle might still be in progress and not all items have
     // yet been received from the SDK harness. If we just set this
@@ -606,8 +610,9 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         // but not past the potential output watermark which includes holds to the input watermark.
         return Math.min(minEventTimeTimerTimestampInLastBundle - 1, potentialOutputWatermark);
       } else {
-        // We don't have any information yet, use the current output watermark for now.
-        return currentOutputWatermark;
+        // Keep the stream element order; only advance the output watermark if we have fully processed
+        // the input watermark, i.e. we have run a full bundle for that watermark.
+        return maxProcessedInputWatermark;
       }
     } else {
       // No bundle was started when we advanced the input watermark.
@@ -622,6 +627,7 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
 
   @SuppressWarnings("FutureReturnValueIgnored")
   private void finishBundleCallback() {
+    maxProcessedInputWatermark = inputWatermarkBeforeBundleStart;
     minEventTimeTimerTimestampInLastBundle = minEventTimeTimerTimestampInCurrentBundle;
     minEventTimeTimerTimestampInCurrentBundle = Long.MAX_VALUE;
     try {
