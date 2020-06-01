@@ -189,8 +189,7 @@ class SdkHarness(object):
     # TODO(BEAM-8998) use common UnboundedThreadPoolExecutor to process bundle
     #  progress once dataflow runner's excessive progress polling is removed.
     self._report_progress_executor = futures.ThreadPoolExecutor(max_workers=1)
-    # self._worker_thread_pool = UnboundedThreadPoolExecutor()
-    self._worker_thread_pool = futures.ThreadPoolExecutor(max_workers=12)
+    self._worker_thread_pool = UnboundedThreadPoolExecutor()
     self._responses = queue.Queue(
     )  # type: queue.Queue[beam_fn_api_pb2.InstructionResponse]
     _LOGGER.info('Initializing SDKHarness with unbounded number of workers.')
@@ -303,6 +302,8 @@ class SdkHarness(object):
           lambda: self.create_worker().do_instruction(request), request)
 
     self._worker_thread_pool.submit(task)
+    _LOGGER.debug(
+        "Currently using %s threads." % len(self._worker_thread_pool._workers))
 
   def create_worker(self):
     return SdkWorker(
