@@ -32,4 +32,5 @@ dependencies {
   // export the shaded variant as the actual runtime dependency.
   compile project(path: ":model:pipeline", configuration: "unshaded")
   runtime project(path: ":model:pipeline", configuration: "shadow")
+  errorprone("com.google.errorprone:error_prone_core:2.3.3")
 }
