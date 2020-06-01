@@ -680,8 +680,7 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     }
 
     long potentialOutputWatermark =
-        applyOutputWatermarkHold(
-            currentOutputWatermark, computeOutputWatermark(inputWatermarkHold));
+        applyOutputWatermarkHold(computeOutputWatermark(inputWatermarkHold));
     maybeEmitWatermark(potentialOutputWatermark);
   }
 
@@ -697,12 +696,11 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
    * Allows to apply a hold to the output watermark before it is send out. By default, just passes
    * the potential output watermark through which will make it the new output watermark.
    *
-   * @param currentOutputWatermark the current output watermark
    * @param potentialOutputWatermark The potential new output watermark which can be adjusted, if
    *     needed. The input watermark hold has already been applied.
    * @return The new output watermark which will be emitted.
    */
-  public long applyOutputWatermarkHold(long currentOutputWatermark, long potentialOutputWatermark) {
+  public long applyOutputWatermarkHold(long potentialOutputWatermark) {
     return potentialOutputWatermark;
   }
 
