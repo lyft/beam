@@ -610,7 +610,8 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
         // but not past the potential output watermark which includes holds to the input watermark.
         return Math.min(minEventTimeTimerTimestampInLastBundle - 1, potentialOutputWatermark);
       } else {
-        // Keep the stream element order; only advance the output watermark if we have fully processed
+        // Keep the stream element order; only advance the output watermark if we have fully
+        // processed
         // the input watermark, i.e. we have run a full bundle for that watermark.
         return maxProcessedInputWatermark;
       }

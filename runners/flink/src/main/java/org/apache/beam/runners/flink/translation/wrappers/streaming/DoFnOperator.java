@@ -1182,11 +1182,12 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
 
     /** Gets the current minimum output timestamp across all registered timers. */
     long getMinOutputTimestampMs() {
-      if (outputTimestampQueue.isEmpty()) {
-        return Long.MAX_VALUE;
-      } else {
-        return outputTimestampQueue.peek();
-      }
+      return Long.MAX_VALUE;
+      //      if (outputTimestampQueue.isEmpty()) {
+      //        return Long.MAX_VALUE;
+      //      } else {
+      //        return outputTimestampQueue.peek();
+      //      }
     }
 
     /**
