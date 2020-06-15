@@ -26,6 +26,7 @@ from __future__ import print_function
 import abc
 import collections
 import contextlib
+import itertools
 import logging
 import queue
 import sys
@@ -914,7 +915,7 @@ class CachingStateHandler(object):
                    coder,  # type: coder_impl.CoderImpl
                    is_cached=False
                   ):
-    # type: (...) -> Iterator[Any]
+    # type: (...) -> Iterable[Any]
     cache_token = self._get_cache_token(state_key, is_cached)
     if not cache_token:
       # Cache disabled / no cache token. Can't do a lookup/store in the cache.
@@ -931,7 +932,7 @@ class CachingStateHandler(object):
       materialized = cached_value = (
           self._partially_cached_iterable(state_key, coder))
       self._state_cache.put(cache_state_key, cache_token, materialized)
-    return iter(cached_value)
+    return cached_value
 
   def extend(self,
              state_key,  # type: beam_fn_api_pb2.StateKey
@@ -940,15 +941,29 @@ class CachingStateHandler(object):
              is_cached=False
             ):
     # type: (...) -> _Future
+    # Make sure the input is a list of elements
+    elements = list(elements)
     cache_token = self._get_cache_token(state_key, is_cached)
     if cache_token:
       # Update the cache
       cache_key = self._convert_to_cache_key(state_key)
-      if self._state_cache.get(cache_key, cache_token) is None:
-        # We have never cached this key before, first initialize cache
-        self.blocking_get(state_key, coder, is_cached=True)
-      # Now update the values in the cache
-      self._state_cache.extend(cache_key, cache_token, elements)
+      cached_value = self._state_cache.get(cache_key, cache_token)
+      # Keep in mind that the state for this key can be evicted
+      # while executing this function. Either read or write to the cache
+      # but never do both here!
+      if cached_value is None:
+        # We have never cached this key before, first retrieve state
+        cached_value = self.blocking_get(state_key, coder)
+      # Just extend the already cached value
+      if isinstance(cached_value, list):
+        # The state is fully cached and can be extended
+        cached_value.extend(elements)
+      elif isinstance(cached_value, itertools.chain):
+        # The state is too large to be fully cached (continuation token used),
+        # only the first part is cached, the rest if enumerated via the runner.
+        pass
+      else:
+        raise Exception("Unexpected cached value: %s" % cached_value)
     # Write to state handler
     out = coder_impl.create_OutputStream()
     for element in elements:
@@ -1017,35 +1032,27 @@ class CachingStateHandler(object):
     while input_stream.size() > 0:
       head.append(coder.decode_from_stream(input_stream, True))
 
-    if continuation_token is None:
+    if not continuation_token:
       return head
     else:
 
-      def iter_func():
-        for item in head:
-          yield item
-        if continuation_token:
-          for item in self._lazy_iterator(state_key, coder, continuation_token):
+      class ContinuationIterator(object):
+        def __init__(self, handler):
+          self.handler = handler
+
+        def __iter__(self):
+          for item in head:
+            yield item
+          for item in self.handler._lazy_iterator(state_key,
+                                                  coder,
+                                                  continuation_token):
             yield item
 
-      return _IterableFromIterator(iter_func)
+      return itertools.chain(head, ContinuationIterator(self))
 
   @staticmethod
   def _convert_to_cache_key(state_key):
     return state_key.SerializeToString()
-
-
-class _IterableFromIterator(object):
-  """Wraps an iterator as an iterable."""
-  def __init__(self, iter_func):
-    self._iter_func = iter_func
-
-  def __iter__(self):
-    return self._iter_func()
-
-
-coder_impl.FastPrimitivesCoderImpl.register_iterable_like_type(
-    _IterableFromIterator)
 
 
 class _Future(object):

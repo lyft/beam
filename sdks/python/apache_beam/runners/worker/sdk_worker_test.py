@@ -229,30 +229,85 @@ class CachingStateHandlerTest(unittest.TestCase):
       self.assertEqual(get_as_list(side2), [502])  # uncached
       self.assertEqual(get_as_list(side2), [502])  # cached on bundle
 
-  def test_extend_fetches_initial_state(self):
+  class UnderlyingStateHandler(object):
+    """Simply returns an incremented counter as the state "value."
+    """
+    def __init__(self):
+      self._encoded_values = []
+      self._continuations = False
+
+    def set_value(self, value, coder):
+      self._encoded_values = [coder.encode(value)]
+
+    def set_values(self, values, coder):
+      self._encoded_values = [coder.encode(value) for value in values]
+
+    def set_continuations(self, continuations):
+      self._continuations = continuations
+
+    def get_raw(self, _state_key, continuation_token=None):
+      if self._continuations and len(self._encoded_values) > 0:
+        if not continuation_token:
+          continuation_token = '0'
+        idx = int(continuation_token)
+        next_token = str(
+            idx + 1) if idx + 1 < len(self._encoded_values) - 1 else None
+        return self._encoded_values[idx], next_token
+      else:
+        return b''.join(self._encoded_values), None
+
+    def append_raw(self, _key, bytes):
+      self._encoded_values.append(bytes)
+
+    def clear(self, *args):
+      self._encoded_values = []
+
+    @contextlib.contextmanager
+    def process_instruction_id(self, bundle_id):
+      yield
+
+  def test_continuation_token(self):
+    underlying_state_handler = self.UnderlyingStateHandler()
+    state_cache = statecache.StateCache(100)
+    handler = sdk_worker.CachingStateHandler(
+        state_cache, underlying_state_handler)
+
     coder = VarIntCoder()
-    coder_impl = coder.get_impl()
 
-    class UnderlyingStateHandler(object):
-      """Simply returns an incremented counter as the state "value."
-      """
-      def set_value(self, value):
-        self._encoded_values = coder.encode(value)
+    state = beam_fn_api_pb2.StateKey(
+        bag_user_state=beam_fn_api_pb2.StateKey.BagUserState(
+            user_state_id='state1'))
 
-      def get_raw(self, *args):
-        return self._encoded_values, None
+    cache_token = beam_fn_api_pb2.ProcessBundleRequest.CacheToken(
+        token=b'state_token1',
+        user_state=beam_fn_api_pb2.ProcessBundleRequest.CacheToken.UserState())
 
-      def append_raw(self, _key, bytes):
-        self._encoded_values += bytes
+    def get():
+      return list(handler.blocking_get(state, coder.get_impl(), True))
 
-      def clear(self, *args):
-        self._encoded_values = bytes()
+    def append(*values):
+      handler.extend(state, coder.get_impl(), values, True)
 
-      @contextlib.contextmanager
-      def process_instruction_id(self, bundle_id):
-        yield
+    def clear():
+      handler.clear(state, True)
 
-    underlying_state_handler = UnderlyingStateHandler()
+    underlying_state_handler.set_continuations(True)
+    with handler.process_instruction_id('bundle', [cache_token]):
+      append(45, 46)
+      self.assertEqual(get(), [45, 46])
+      clear()
+      self.assertEqual(get(), [])
+      append(1)
+      self.assertEqual(get(), [1])
+      append(2, 3)
+      self.assertEqual(get(), [1, 2, 3])
+      clear()
+      for i in range(1000):
+        append(i)
+      self.assertEqual(get(), [i for i in range(1000)])
+
+  def test_extend_fetches_initial_state(self):
+    underlying_state_handler = self.UnderlyingStateHandler()
     state_cache = statecache.StateCache(100)
     handler = sdk_worker.CachingStateHandler(
         state_cache, underlying_state_handler)
@@ -265,17 +320,19 @@ class CachingStateHandlerTest(unittest.TestCase):
         token=b'state_token1',
         user_state=beam_fn_api_pb2.ProcessBundleRequest.CacheToken.UserState())
 
+    coder = VarIntCoder()
+
     def get():
-      return list(handler.blocking_get(state, coder_impl, True))
+      return list(handler.blocking_get(state, coder.get_impl(), True))
 
     def append(value):
-      handler.extend(state, coder_impl, [value], True)
+      handler.extend(state, coder.get_impl(), [value], True)
 
     def clear():
       handler.clear(state, True)
 
     # Initialize state
-    underlying_state_handler.set_value(42)
+    underlying_state_handler.set_value(42, coder)
     with handler.process_instruction_id('bundle', [cache_token]):
       # Append without reading beforehand
       append(43)
