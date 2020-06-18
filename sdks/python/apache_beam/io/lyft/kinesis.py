@@ -46,7 +46,7 @@ class FlinkKinesisInput(PTransform):
 
   @staticmethod
   @PTransform.register_urn("lyft:flinkKinesisInput", None)
-  def from_runner_api_parameter(_unused_ptransform, spec_parameter, _unused_context):
+  def from_runner_api_parameter(spec_parameter, *args):
     logging.info("kinesis spec: %s", spec_parameter)
     instance = FlinkKinesisInput()
     payload = json.loads(spec_parameter)
