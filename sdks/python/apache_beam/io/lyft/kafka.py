@@ -41,7 +41,7 @@ class FlinkKafkaInput(PTransform):
 
   @staticmethod
   @PTransform.register_urn("lyft:flinkKafkaInput", None)
-  def from_runner_api_parameter(_unused_ptransform, spec_parameter, _unused_context):
+  def from_runner_api_parameter(spec_parameter, *args):
     logging.info("kafka spec: %s", spec_parameter)
     instance = FlinkKafkaInput()
     payload = json.loads(spec_parameter)
