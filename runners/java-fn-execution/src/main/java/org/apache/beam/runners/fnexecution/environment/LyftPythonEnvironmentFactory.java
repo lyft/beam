@@ -22,6 +22,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
+import org.apache.beam.runners.core.construction.Environments;
+import org.apache.beam.runners.core.construction.PipelineOptionsTranslation;
 import org.apache.beam.runners.fnexecution.GrpcFnServer;
 import org.apache.beam.runners.fnexecution.artifact.LegacyArtifactRetrievalService;
 import org.apache.beam.runners.fnexecution.control.ControlClientPool;
@@ -31,6 +33,7 @@ import org.apache.beam.runners.fnexecution.logging.GrpcLoggingService;
 import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
 import org.apache.beam.runners.fnexecution.provisioning.StaticGrpcProvisionService;
 import org.apache.beam.sdk.fn.IdGenerator;
+import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.vendor.grpc.v1p26p0.com.google.protobuf.util.JsonFormat;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.MoreObjects;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
@@ -67,6 +70,8 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
   private final IdGenerator idGenerator;
   private final ControlClientPool.Source clientSource;
 
+  private final EnvironmentFactory embeddedEnvironmentFactory;
+
   private LyftPythonEnvironmentFactory(
       JobInfo jobInfo,
       GrpcFnServer<FnApiControlClientPoolService> controlServiceServer,
@@ -83,11 +88,27 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
     this.provisioningServiceServer = provisioningServiceServer;
     this.idGenerator = idGenerator;
     this.clientSource = clientSource;
+    PipelineOptions pipelineOptions =
+        PipelineOptionsTranslation.fromProto(jobInfo.pipelineOptions());
+    this.embeddedEnvironmentFactory =
+        EmbeddedEnvironmentFactory.create(
+            pipelineOptions, loggingServiceServer, controlServiceServer, clientSource);
   }
 
   /** Creates a new, active {@link RemoteEnvironment} backed by a forked process. */
   @Override
   public RemoteEnvironment createEnvironment(RunnerApi.Environment environment) throws Exception {
+    final RunnerApi.DockerPayload dockerPayload =
+        RunnerApi.DockerPayload.parseFrom(environment.getPayload());
+    final RunnerApi.DockerPayload defaultJavaEnvironment =
+        RunnerApi.DockerPayload.parseFrom(Environments.JAVA_SDK_HARNESS_ENVIRONMENT.getPayload());
+    // We run Java transforms embedded (currently only used by Python's SqlTransform).
+    if (dockerPayload.getContainerImage().equals(defaultJavaEnvironment.getContainerImage())) {
+      RunnerApi.Environment updatedEnvironment =
+          environment.toBuilder().setUrn(Environments.ENVIRONMENT_EMBEDDED).clearPayload().build();
+      return embeddedEnvironmentFactory.createEnvironment(updatedEnvironment);
+    }
+
     String workerId = idGenerator.getId();
 
     String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
