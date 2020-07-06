@@ -25,7 +25,6 @@ import typing
 
 from past.builtins import unicode
 
-from apache_beam.transforms.external import BeamJarExpansionService
 from apache_beam.transforms.external import ExternalTransform
 from apache_beam.transforms.external import NamedTupleBasedPayloadBuilder
 
@@ -69,4 +68,12 @@ class SqlTransform(ExternalTransform):
   def __init__(self, query):
     super(SqlTransform, self).__init__(
         self.URN,
-        NamedTupleBasedPayloadBuilder(SqlTransformSchema(query=query)))
+        NamedTupleBasedPayloadBuilder(SqlTransformSchema(query=query)),
+        # Use the default expansion server address for the job server bundled
+        # with the Flink job server. Beam uses JavaJarServer to download an
+        # expansion JAR. We don't want that to happen. Future Beam versions
+        # also allow to override this via
+        # JavaJarServer.beam_services(
+        #     {':sdks:java:extensions:sql:expansion-service:shadowJar':
+        #      'localhost:8097'})
+        expansion_service=ExternalTransform.DEFAULT_EXPANSION_SERVICE)
