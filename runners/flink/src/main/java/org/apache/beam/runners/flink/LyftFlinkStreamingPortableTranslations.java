@@ -28,10 +28,20 @@ import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
 import com.lyft.streamingplatform.analytics.EventField;
+import com.lyft.streamingplatform.dryftsdk.data.FeatureConfiguration;
+import com.lyft.streamingplatform.dryftsdk.data.FeatureDefinitionConfiguration;
+import com.lyft.streamingplatform.dryftsdk.data.ProgramConfiguration;
+import com.lyft.streamingplatform.dryftsdk.source.BootstrapKinesisSourceConnector;
+import com.lyft.streamingplatform.dryftsdk.source.SourceConnector;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
+import com.lyft.streamingplatform.utils.environment.LyftStreamExecutionEnvironment;
+import com.twitter.chill.protobuf.ProtobufSerializer;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -54,10 +64,13 @@ import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
+import org.apache.commons.io.IOUtils;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -71,10 +84,13 @@ import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeseri
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
+import org.apache.flink.types.Row;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import pb.lyft.dryft.Dryft;
 
 public class LyftFlinkStreamingPortableTranslations {
 
@@ -84,6 +100,7 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
   private static final String FLINK_KAFKA_SINK_URN = "lyft:flinkKafkaSink";
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
+  private static final String FLINK_S3_AND_KINESIS_URN = "lyft:flinkS3AndKinesisInput";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
 
@@ -93,7 +110,9 @@ public class LyftFlinkStreamingPortableTranslations {
     public boolean test(RunnerApi.PTransform pTransform) {
       return FLINK_KAFKA_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_KAFKA_SINK_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
-          || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
+          || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_S3_AND_KINESIS_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
 
@@ -103,6 +122,7 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(FLINK_KAFKA_URN, this::translateKafkaInput);
     translatorMap.put(FLINK_KAFKA_SINK_URN, this::translateKafkaSink);
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
+    translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
   }
 
   @VisibleForTesting
@@ -355,6 +375,65 @@ public class LyftFlinkStreamingPortableTranslations {
         context
             .getExecutionEnvironment()
             .addSource(source, FlinkLyftKinesisConsumer.class.getSimpleName()));
+  }
+
+  private void translateS3AndKinesisInputs(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    ObjectMapper mapper = new ObjectMapper();
+    String programConfigPath;
+    JSONObject jsonContent;
+
+    try {
+      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
+      Preconditions.checkNotNull(
+          programConfigPath = params.path(
+              "program_config_path").textValue(),
+          "'program_config_path' needs to be set");
+
+
+      File programConfigFile = new File(programConfigPath);
+      if (!programConfigFile.exists()) {
+        throw new IllegalArgumentException("File not found at " + programConfigPath);
+      }
+
+      InputStream inputStream = new FileInputStream(programConfigPath);
+      String fileContent = IOUtils.toString(inputStream, "UTF-8");
+      jsonContent = new JSONObject(fileContent);
+
+      Preconditions.checkNotNull(jsonContent, "Program config file seems to be empty");
+
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse config");
+    }
+
+    ProgramConfiguration programConfig = ProgramConfiguration.parse(jsonContent);
+    StreamExecutionEnvironment streamExecutionEnvironment = LyftStreamExecutionEnvironment.get();
+    setupEnvAndFeatures(streamExecutionEnvironment, programConfig);
+
+    // Create a new source connector
+    SourceConnector multiInputSource = new BootstrapKinesisSourceConnector();
+    Map<String, DataStream<Row>> eventStreams =
+        multiInputSource.getEventStreams(streamExecutionEnvironment, programConfig);
+
+    // Add the DataStreams to the beam context
+    for (Map.Entry<String, DataStream<Row>> entry : eventStreams.entrySet()) {
+      context.addDataStream(entry.getKey(), entry.getValue());
+    }
+  }
+
+  private void setupEnvAndFeatures(StreamExecutionEnvironment env,
+      ProgramConfiguration programConfiguration) {
+    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+    env.getConfig().registerTypeWithKryoSerializer(Dryft.Result.class, ProtobufSerializer.class);
+
+    // Register all the features listed in this configuration
+    for (FeatureConfiguration conf: programConfiguration.features) {
+      FeatureDefinitionConfiguration.register(conf.featureDefinitionConfiguration);
+    }
   }
 
   /**
