@@ -386,6 +386,7 @@ public class LyftFlinkStreamingPortableTranslations {
     ObjectMapper mapper = new ObjectMapper();
     String programConfigPath;
     JSONObject jsonContent;
+    ProgramConfiguration programConfig;
 
     try {
       JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
@@ -406,12 +407,13 @@ public class LyftFlinkStreamingPortableTranslations {
 
       Preconditions.checkNotNull(jsonContent, "Program config file seems to be empty");
 
-    } catch (IOException e) {
+      programConfig = ProgramConfiguration.parse(jsonContent);
+
+    } catch (Exception e) {
       throw new RuntimeException("Could not parse config");
     }
 
-    ProgramConfiguration programConfig = ProgramConfiguration.parse(jsonContent);
-    StreamExecutionEnvironment streamExecutionEnvironment = LyftStreamExecutionEnvironment.get();
+    StreamExecutionEnvironment streamExecutionEnvironment = context.getExecutionEnvironment();
     setupEnvAndFeatures(streamExecutionEnvironment, programConfig);
 
     // Create a new source connector
