@@ -474,11 +474,16 @@ public class ExecutableStageDoFnOperator<InputT, OutputT> extends DoFnOperator<I
               timerData.getNamespace(), timerData.getTimerId(), timerData.getDomain());
         } else {
           timerInternals.setTimer(timerData);
-          if (!timerData.getTimerId().equals(GC_TIMER_ID)) {
+          long timestampMillis = timerData.getTimestamp().getMillis();
+          // Check that we're not setting this timer late because there is no point in holding back
+          // the watermark then
+          // Also, we don't care about cleanup timers because they don't set timers themselves.
+          if (timestampMillis > getCurrentOutputWatermark()
+              && !timerData.getTimerId().equals(GC_TIMER_ID)) {
             minEventTimeTimerTimestampInCurrentBundle =
                 Math.min(
                     minEventTimeTimerTimestampInCurrentBundle,
-                    adjustTimestampForFlink(timerData.getTimestamp().getMillis()));
+                    adjustTimestampForFlink(timestampMillis));
           }
         }
       }
