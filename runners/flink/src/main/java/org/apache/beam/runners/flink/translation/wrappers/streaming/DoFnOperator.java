@@ -1282,7 +1282,10 @@ public class DoFnOperator<InputT, OutputT> extends AbstractStreamOperator<Window
     private boolean timerUsesOutputTimestamp(TimerData timer) {
       // If a timer's output timestamp is earlier than the timer timestamp,
       // we have to hold back the output watermark.
-      return timer.getOutputTimestamp().isBefore(timer.getTimestamp());
+      Instant outputTimestamp = timer.getOutputTimestamp();
+      return outputTimestamp.isBefore(timer.getTimestamp())
+          // Unless the output watermark has already been advanced past the output timestamp.
+          && currentOutputWatermark < adjustTimestampForFlink(outputTimestamp.getMillis());
     }
 
     @Override
