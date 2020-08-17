@@ -22,21 +22,22 @@ import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMAT
 import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
 import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.api.client.util.Lists;
 import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
+import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
-import com.lyft.streamingplatform.dryftsdk.data.FeatureConfiguration;
-import com.lyft.streamingplatform.dryftsdk.data.FeatureDefinitionConfiguration;
-import com.lyft.streamingplatform.dryftsdk.data.ProgramConfiguration;
-import com.lyft.streamingplatform.dryftsdk.source.BootstrapKinesisSourceConnector;
-import com.lyft.streamingplatform.dryftsdk.source.SourceConnector;
+import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
+import com.lyft.streamingplatform.eventssource.config.EventConfig;
+import com.lyft.streamingplatform.eventssource.config.KinesisConfig;
+import com.lyft.streamingplatform.eventssource.config.S3Config;
+import com.lyft.streamingplatform.eventssource.config.SourceContext;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
-import com.lyft.streamingplatform.utils.environment.LyftStreamExecutionEnvironment;
-import com.twitter.chill.protobuf.ProtobufSerializer;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -48,6 +49,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.TemporalAccessor;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.zip.DataFormatException;
@@ -90,7 +92,6 @@ import org.joda.time.Instant;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import pb.lyft.dryft.Dryft;
 
 public class LyftFlinkStreamingPortableTranslations {
 
@@ -384,58 +385,118 @@ public class LyftFlinkStreamingPortableTranslations {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
 
     ObjectMapper mapper = new ObjectMapper();
-    String programConfigPath;
-    JSONObject jsonContent;
-    ProgramConfiguration programConfig;
 
     try {
       JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
-      Preconditions.checkNotNull(
-          programConfigPath = params.path(
-              "program_config_path").textValue(),
-          "'program_config_path' needs to be set");
+      Map<?, ?> jsonMap = mapper.convertValue(params, Map.class);
+      String sourceName = (String) jsonMap.get("source_name");
+      Preconditions.checkNotNull(sourceName, "Source name has to be set");
+      Map<String, JsonNode> userKinesisConfig = mapper.convertValue(
+          jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
 
+      Map<String, JsonNode> userS3Config = mapper.convertValue(
+          jsonMap.get("s3"), new TypeReference<Map<String, JsonNode>>() {});
 
-      File programConfigFile = new File(programConfigPath);
-      if (!programConfigFile.exists()) {
-        throw new IllegalArgumentException("File not found at " + programConfigPath);
+      List<Map<String, JsonNode>> events = mapper.convertValue(
+          jsonMap.get("events"), new TypeReference<List<Map<String, JsonNode>>>() {});
+
+      KinesisConfig kinesisConfig = getKinesisConfig(userKinesisConfig, mapper);
+      S3Config s3Config = getS3Config(userS3Config);
+      List<EventConfig> eventConfigs = getEventConfigs(events);
+
+      SourceContext sourceContext = new SourceContext.Builder()
+          .withStreamConfig(kinesisConfig)
+          .withS3Config(s3Config)
+          .withEventConfigs(eventConfigs)
+          .withSourceName(sourceName)
+          .build();
+
+      KinesisAndS3EventSource source = new KinesisAndS3EventSource();
+      StreamExecutionEnvironment environment = context.getExecutionEnvironment();
+      Map<String, DataStream<Event>> eventStreams =
+          source.getEventStreams(environment, sourceContext);
+
+      // Add the DataStreams to the beam context
+      for (Map.Entry<String, DataStream<Event>> entry : eventStreams.entrySet()) {
+        context.addDataStream(entry.getKey(), entry.getValue());
       }
 
-      InputStream inputStream = new FileInputStream(programConfigPath);
-      String fileContent = IOUtils.toString(inputStream, "UTF-8");
-      jsonContent = new JSONObject(fileContent);
-
-      Preconditions.checkNotNull(jsonContent, "Program config file seems to be empty");
-
-      programConfig = ProgramConfiguration.parse(jsonContent);
-
-    } catch (Exception e) {
-      throw new RuntimeException("Could not parse config");
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse provided source json");
     }
 
-    StreamExecutionEnvironment streamExecutionEnvironment = context.getExecutionEnvironment();
-    setupEnvAndFeatures(streamExecutionEnvironment, programConfig);
-
-    // Create a new source connector
-    SourceConnector multiInputSource = new BootstrapKinesisSourceConnector();
-    Map<String, DataStream<Row>> eventStreams =
-        multiInputSource.getEventStreams(streamExecutionEnvironment, programConfig);
-
-    // Add the DataStreams to the beam context
-    for (Map.Entry<String, DataStream<Row>> entry : eventStreams.entrySet()) {
-      context.addDataStream(entry.getKey(), entry.getValue());
-    }
   }
 
-  private void setupEnvAndFeatures(StreamExecutionEnvironment env,
-      ProgramConfiguration programConfiguration) {
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-    env.getConfig().registerTypeWithKryoSerializer(Dryft.Result.class, ProtobufSerializer.class);
+  private List<EventConfig> getEventConfigs(List<Map<String, JsonNode>> events) {
+    List<EventConfig> eventConfigs = Lists.newArrayList();
+    for (Map<String, JsonNode> node : events) {
+      Preconditions.checkNotNull(node.get("name"), "Event name has to be set");
+      EventConfig.Builder builder = new EventConfig.Builder(node.get("name").asText());
 
-    // Register all the features listed in this configuration
-    for (FeatureConfiguration conf: programConfiguration.features) {
-      FeatureDefinitionConfiguration.register(conf.featureDefinitionConfiguration);
+      // Add lateness in sec
+      JsonNode latenessInSec = node.get("lateness_in_sec");
+      if (latenessInSec != null) {
+        builder = builder.withLatenessInSec(latenessInSec.asLong());
+      }
+
+      // Add lookback hours
+      JsonNode lookbackDays = node.get("lookback_days");
+      if (lookbackDays != null) {
+        builder = builder.withLookbackInDays(lookbackDays.asInt());
+      }
+
+      eventConfigs.add(builder.build());
     }
+
+    return eventConfigs;
+  }
+
+  private S3Config getS3Config(Map<String, JsonNode> userS3Config) {
+    S3Config.Builder builder = new S3Config.Builder();
+
+    // Add s3 parallelism
+    JsonNode parallelism = userS3Config.get("parallelism");
+    if (parallelism != null) {
+      builder = builder.withParallelism(parallelism.asInt());
+    }
+
+    // Add s3 lookback hours
+    JsonNode lookbackHours = userS3Config.get("lookback_hours");
+    if (lookbackHours != null) {
+      builder = builder.withLookbackHours(lookbackHours.asInt());
+    }
+
+    return builder.build();
+  }
+
+  private KinesisConfig getKinesisConfig(
+      Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
+    Properties properties = new Properties();
+    Preconditions.checkNotNull(userKinesisConfig.get("name"), "Kinesis stream name needs to be set");
+
+    KinesisConfig.Builder builder = new KinesisConfig
+        .Builder(userKinesisConfig.get("name").asText());
+    // Add kinesis parallelism
+    JsonNode kinesisParallelism = userKinesisConfig.get("parallelism");
+    if (kinesisParallelism != null) {
+      builder = builder.withParallelism(kinesisParallelism.asInt());
+    }
+    // Add kinesis properties
+    Map<String, String> kinesisProps = mapper.convertValue(
+        userKinesisConfig.get("properties"), new TypeReference<Map<String, String>>() {});
+    if (kinesisProps != null) {
+      for (Map.Entry<String ,String> property : kinesisProps.entrySet()) {
+        properties.put(property.getKey(), property.getValue());
+      }
+      builder = builder.withProperties(properties);
+    }
+    // Add kinesis stream start mode
+    JsonNode streamStartMode = userKinesisConfig.get("stream_start_mode");
+    if (streamStartMode != null) {
+      builder = builder.withStreamStartMode(streamStartMode.asText());
+    }
+
+    return builder.build();
   }
 
   /**
