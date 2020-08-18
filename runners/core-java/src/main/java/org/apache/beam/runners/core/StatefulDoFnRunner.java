@@ -36,6 +36,7 @@ import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
+import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.NonMergingWindowFn;
 import org.apache.beam.sdk.transforms.windowing.TimestampCombiner;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
@@ -147,7 +148,12 @@ public class StatefulDoFnRunner<InputT, OutputT, W extends BoundedWindow>
   }
 
   private void processElementUnordered(BoundedWindow window, WindowedValue<InputT> value) {
-    cleanupTimer.setForWindow(value.getValue(), window);
+    // Skip setting the cleanup timer for global windows as the timer itself
+    // will never fire but lead to potentially unbounded state growth in the runner,
+    // depending on key cardinality.
+    if (!window.equals(GlobalWindow.INSTANCE)) {
+      cleanupTimer.setForWindow(value.getValue(), window);
+    }
     doFnRunner.processElement(value);
   }
 
