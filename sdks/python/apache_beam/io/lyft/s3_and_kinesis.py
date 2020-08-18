@@ -92,7 +92,12 @@ class S3AndKinesisInput(PTransform):
 
         json_map['events'] = event_list_json
 
-        return "lyft:flinkS3AndKinesisInput", json.dumps(json_map)
+        return "lyft:flinkS3AndKinesisInput", json.dumps(json_map, default=self._set_to_list_conversion)
+
+    def _set_to_list_conversion(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return obj
 
     def _get_random_source_name(self):
         letters = string.ascii_lowercase
