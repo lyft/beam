@@ -54,7 +54,7 @@ class S3AndKinesisInput(PTransform):
     @staticmethod
     @PTransform.register_urn("lyft:flinkS3AndKinesisInput", None)
     def from_runner_api_parameter(_unused_ptransform, spec_parameter, _unused_context):
-        logging.info("S3AndKinesisInput spec :" + spec_parameter)
+        logging.info("S3AndKinesisInput spec: %s", spec_parameter)
         instance = S3AndKinesisInput()
         payload = json.loads(spec_parameter)
         instance.source_name = payload['source_name']
