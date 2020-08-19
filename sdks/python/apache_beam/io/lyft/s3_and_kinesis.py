@@ -58,9 +58,30 @@ class S3AndKinesisInput(PTransform):
         instance = S3AndKinesisInput()
         payload = json.loads(spec_parameter)
         instance.source_name = payload['source_name']
-        instance.s3_config = payload['s3']
-        instance.kinesis_config = payload['kinesis']
-        instance.events = payload['events']
+        s3_config_dict = payload['s3']
+        instance.s3_config = S3Config(
+            parallelism=s3_config_dict.get('parallelism', None),
+            lookback_hours=s3_config_dict.get('lookback_hours', None)
+        )
+        kinesis_config_dict = payload['kinesis']
+        assert kinesis_config_dict.get('name') is not None, "Kinesis stream name not set"
+        instance.kinesis_config = KinesisConfig(
+            name=kinesis_config_dict.get('name'),
+            properties=kinesis_config_dict.get('properties', None),
+            parallelism=kinesis_config_dict.get('parallelism', None),
+            stream_start_mode=kinesis_config_dict.get('stream_start_mode', None)
+        )
+        events_list = payload['events']
+        instance.events = []
+        for event in events_list:
+            assert event.get('name') is not None, "Event name must be set"
+            instance.events.append(
+                Event(
+                    name=event.get('name'),
+                    lateness_in_sec=event.get('lateness_in_sec', None),
+                    lookback_days=event.get('lookback_days', None)
+                )
+            )
         return instance
 
     def to_runner_api_parameter(self, _unused_context):
