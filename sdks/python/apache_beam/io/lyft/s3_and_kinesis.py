@@ -11,7 +11,7 @@ from apache_beam.transforms.core import Windowing
 from apache_beam.transforms.window import GlobalWindows
 
 Event = namedtuple('Event', 'name lateness_in_sec lookback_days')
-KinesisConfig = namedtuple('KinesisConfig', 'name properties parallelism stream_start_mode')
+KinesisConfig = namedtuple('KinesisConfig', 'stream properties parallelism stream_start_mode')
 S3Config = namedtuple('S3Config', 'parallelism lookback_hours')
 
 
@@ -64,9 +64,9 @@ class S3AndKinesisInput(PTransform):
             lookback_hours=s3_config_dict.get('lookback_hours', None)
         )
         kinesis_config_dict = payload['kinesis']
-        assert kinesis_config_dict.get('name') is not None, "Kinesis stream name not set"
+        assert kinesis_config_dict.get('stream') is not None, "Kinesis stream name not set"
         instance.kinesis_config = KinesisConfig(
-            name=kinesis_config_dict.get('name'),
+            stream=kinesis_config_dict.get('stream'),
             properties=kinesis_config_dict.get('properties', None),
             parallelism=kinesis_config_dict.get('parallelism', None),
             stream_start_mode=kinesis_config_dict.get('stream_start_mode', None)
@@ -94,7 +94,7 @@ class S3AndKinesisInput(PTransform):
         json_map = {
             'source_name': self.source_name,
             'kinesis': {
-                'stream': self.kinesis_config.name,
+                'stream': self.kinesis_config.stream,
                 'properties': self.kinesis_config.properties,
                 'parallelism': self.kinesis_config.parallelism,
                 'stream_start_mode': self.kinesis_config.stream_start_mode
