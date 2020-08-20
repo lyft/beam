@@ -35,6 +35,9 @@ class S3AndKinesisInput(PTransform):
     def get_windowing(self, inputs):
         return Windowing(GlobalWindows())
 
+    def infer_output_type(self, unused_input_type):
+        return bytes
+
     def with_event(self, event):
         self.events.append(event)
         return self
