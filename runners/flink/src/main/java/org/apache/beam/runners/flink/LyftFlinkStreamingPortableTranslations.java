@@ -416,9 +416,15 @@ public class LyftFlinkStreamingPortableTranslations {
       Map<String, DataStream<Event>> eventStreams =
           source.getEventStreams(environment, sourceContext);
 
+      for (String event : eventStreams.keySet()) {
+        LOG.info("Created data streams for event: " + event);
+      }
+
       // Add the DataStreams to the beam context
       for (Map.Entry<String, DataStream<Event>> entry : eventStreams.entrySet()) {
-        context.addDataStream(entry.getKey(), entry.getValue());
+        context.addDataStream(
+            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+            entry.getValue());
       }
 
     } catch (IOException e) {
