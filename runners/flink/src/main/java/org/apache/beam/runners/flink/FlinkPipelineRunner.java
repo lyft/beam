@@ -45,6 +45,7 @@ import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.PortablePipelineOptions;
 import org.apache.beam.sdk.options.PortablePipelineOptions.RetrievalServiceType;
+import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.vendor.grpc.v1p26p0.com.google.protobuf.Struct;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.flink.api.common.JobExecutionResult;
@@ -89,6 +90,10 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
           throws Exception {
     LOG.info("Translating pipeline to Flink program.");
 
+    List<RunnerApi.DisplayData> preTrimmedDisplayData = pipeline.getDisplayDataList();
+    for (RunnerApi.DisplayData displayData : preTrimmedDisplayData) {
+      LOG.info("Display data: " + displayData.getUrn());
+    }
     // Expand any splittable ParDos within the graph to enable sizing and splitting of bundles.
     Pipeline pipelineWithSdfExpanded =
         ProtoOverrides.updateTransform(
@@ -101,6 +106,11 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
         TrivialNativeTransformExpander.forKnownUrns(
             pipelineWithSdfExpanded, translator.knownUrns());
 
+    LOG.info("Trimmed pipeline");
+    List<RunnerApi.DisplayData> displayDataList = trimmedPipeline.getDisplayDataList();
+    for (RunnerApi.DisplayData displayData : displayDataList) {
+      LOG.info("Display data: " + displayData.getUrn());
+    }
     // Fused pipeline proto.
     // TODO: Consider supporting partially-fused graphs.
     RunnerApi.Pipeline fusedPipeline =

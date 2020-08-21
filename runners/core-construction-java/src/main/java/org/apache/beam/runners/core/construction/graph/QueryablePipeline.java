@@ -70,12 +70,15 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Sets;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.graph.MutableNetwork;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.graph.Network;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.graph.NetworkBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link Pipeline} which has additional methods to relate nodes in the graph relative to each
  * other.
  */
 public class QueryablePipeline {
+  private static Logger LOG = LoggerFactory.getLogger(QueryablePipeline.class);
   // TODO: Is it better to have the signatures here require nodes in almost all contexts, or should
   // they all take strings? Nodes gives some degree of type signalling that names might not, but
   // it's more painful to construct the node. However, right now the traversal is done starting
@@ -159,6 +162,8 @@ public class QueryablePipeline {
         }
       }
     }
+    LOG.info("All primitive transform ids: " + ids);
+    LOG.info("All primitive transform ids size: " + ids.size());
     return ids;
   }
 
@@ -194,7 +199,10 @@ public class QueryablePipeline {
     MutableNetwork<PipelineNode, PipelineEdge> network =
         NetworkBuilder.directed().allowsParallelEdges(true).allowsSelfLoops(false).build();
     Set<PCollectionNode> unproducedCollections = new HashSet<>();
+    LOG.info("Created set of CollectionNode");
     for (String transformId : transformIds) {
+      LOG.info("Transform ID: " + transformId);
+      LOG.info("Size of unproducedCollections: " + unproducedCollections.size());
       PTransform transform = components.getTransformsOrThrow(transformId);
       PTransformNode transformNode =
           PipelineNode.pTransform(transformId, this.components.getTransformsOrThrow(transformId));
@@ -212,6 +220,7 @@ public class QueryablePipeline {
             network.predecessors(producedNode).size(),
             producedNode,
             network.predecessors(producedNode));
+        LOG.info("Removing producedNode from collections with ID: " + producedNode.getId());
         unproducedCollections.remove(producedNode);
       }
       for (Map.Entry<String, String> consumed : transform.getInputsMap().entrySet()) {
@@ -223,6 +232,7 @@ public class QueryablePipeline {
                 pcollectionId, this.components.getPcollectionsOrThrow(pcollectionId));
         if (network.addNode(consumedNode)) {
           // This node has been added to the network for the first time, so it has no producer.
+          LOG.info("Adding a new node: " + consumedNode.getId());
           unproducedCollections.add(consumedNode);
         }
         if (getLocalSideInputNames(transform).contains(consumed.getKey())) {
