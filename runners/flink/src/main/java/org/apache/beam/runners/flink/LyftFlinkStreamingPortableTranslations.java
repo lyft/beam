@@ -478,10 +478,10 @@ public class LyftFlinkStreamingPortableTranslations {
   private KinesisConfig getKinesisConfig(
       Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
     Properties properties = new Properties();
-    Preconditions.checkNotNull(userKinesisConfig.get("name"), "Kinesis stream name needs to be set");
+    Preconditions.checkNotNull(userKinesisConfig.get("stream"), "Kinesis stream name needs to be set");
 
     KinesisConfig.Builder builder = new KinesisConfig
-        .Builder(userKinesisConfig.get("name").asText());
+        .Builder(userKinesisConfig.get("stream").asText());
     // Add kinesis parallelism
     JsonNode kinesisParallelism = userKinesisConfig.get("parallelism");
     if (kinesisParallelism != null) {
