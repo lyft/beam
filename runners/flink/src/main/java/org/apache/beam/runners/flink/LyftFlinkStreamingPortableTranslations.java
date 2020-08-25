@@ -552,7 +552,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
   static class EventToWindowedValue implements FlatMapFunction<Event, WindowedValue<byte[]>> {
 
-    private final EventUtils eventUtils;
+    private transient final EventUtils eventUtils;
 
     public EventToWindowedValue() {
       eventUtils = new EventUtils();
