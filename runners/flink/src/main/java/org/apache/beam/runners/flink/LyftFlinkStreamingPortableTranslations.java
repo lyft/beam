@@ -27,10 +27,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.api.client.util.Lists;
 import com.google.auto.service.AutoService;
+import com.google.common.collect.Maps;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
+import com.lyft.streamingplatform.analytics.EventUtils;
 import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
 import com.lyft.streamingplatform.eventssource.config.EventConfig;
 import com.lyft.streamingplatform.eventssource.config.KinesisConfig;
@@ -43,6 +45,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ObjectOutputStream;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -68,10 +71,12 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
 import org.apache.commons.io.IOUtils;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
 import org.apache.flink.streaming.api.graph.StreamConfig;
@@ -87,6 +92,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
 import org.json.JSONObject;
@@ -416,12 +422,20 @@ public class LyftFlinkStreamingPortableTranslations {
       Map<String, DataStream<Event>> eventStreams =
           source.getEventStreams(environment, sourceContext);
 
+      Map<String, DataStream<WindowedValue<byte[]>>> windowedValueStreams = Maps.newHashMap();
+
       for (String event : eventStreams.keySet()) {
         LOG.info("Created data streams for event: " + event);
+        DataStream<Event> stream = eventStreams.get(event);
+        DataStream<WindowedValue<byte[]>> windowedStream = stream
+            .flatMap(new EventToWindowedValue())
+            .uid(event + "_windowed_value");
+        windowedValueStreams.put(event, windowedStream);
       }
 
       // Add the DataStreams to the beam context
-      for (Map.Entry<String, DataStream<Event>> entry : eventStreams.entrySet()) {
+      for (Map.Entry<String, DataStream<WindowedValue<byte[]>>> entry :
+          windowedValueStreams.entrySet()) {
         context.addDataStream(
             Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
             entry.getValue());
@@ -533,6 +547,49 @@ public class LyftFlinkStreamingPortableTranslations {
         String stream,
         String shardId) {
       return WindowedValue.valueInGlobalWindow(recordValue);
+    }
+  }
+
+  static class EventToWindowedValue implements FlatMapFunction<Event, WindowedValue<byte[]>> {
+
+    private final EventUtils eventUtils;
+
+    public EventToWindowedValue() {
+      eventUtils = new EventUtils();
+    }
+
+    @Override
+    public void flatMap(Event value, Collector<WindowedValue<byte[]>> out) {
+      long timestamp = Long.MIN_VALUE;
+      long occurredAtTs = eventUtils.getOccurredAt(value);
+      long loggedAtTs = eventUtils.getLoggedAt(value);
+      long minTs = Math.min(occurredAtTs, loggedAtTs);
+      if (minTs != 0L) {
+        timestamp = minTs;
+      }
+
+      out.collect(WindowedValue.timestampedValueInGlobalWindow(
+          getBytes(value), new Instant(timestamp)));
+    }
+
+    private byte[] getBytes(Event event) {
+      ByteArrayOutputStream bos = new ByteArrayOutputStream();
+      ObjectOutputStream out = null;
+      try {
+        out = new ObjectOutputStream(bos);
+        out.writeObject(event);
+        out.flush();
+      } catch (IOException e) {
+        LOG.warn("Unable to serialize event " + eventUtils.getEventName(event));
+        // Ignore exception
+      } finally {
+        try {
+          bos.close();
+        } catch (IOException e) {
+          // ignore exception
+        }
+      }
+      return bos.toByteArray();
     }
   }
 
