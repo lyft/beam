@@ -22,9 +22,11 @@ import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMAT
 import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
 import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import com.google.api.client.util.Lists;
 import com.google.auto.service.AutoService;
 import com.google.common.collect.Maps;
@@ -600,23 +602,17 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     private byte[] getBytes(Event event) {
-      ByteArrayOutputStream bos = new ByteArrayOutputStream();
-      ObjectOutputStream out = null;
+      ObjectMapper mapper = new ObjectMapper();
+      JsonNode eventJson = mapper.valueToTree(event);
+      ObjectWriter writer = mapper.writer();
+      byte[] bytes = new byte[0];
       try {
-        out = new ObjectOutputStream(bos);
-        out.writeObject(event);
-        out.flush();
-      } catch (IOException e) {
-        LOG.warn("Unable to serialize event " + event.get(EventField.EventName.fieldName()));
-        // Ignore exception
-      } finally {
-        try {
-          bos.close();
-        } catch (IOException e) {
-          // ignore exception
-        }
+        bytes = writer.writeValueAsBytes(eventJson);
+      } catch (JsonProcessingException e) {
+        LOG.warn("Unable to convert event json to byte[]: " + event.get(
+            EventField.EventName.fieldName()));
       }
-      return bos.toByteArray();
+      return bytes;
     }
   }
 
