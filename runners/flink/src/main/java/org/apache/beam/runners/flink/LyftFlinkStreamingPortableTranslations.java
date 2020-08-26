@@ -570,13 +570,14 @@ public class LyftFlinkStreamingPortableTranslations {
           LOG.warn("Occurred at ts unrecognized");
         }
         if (event.contains(EventField.EventLoggedAt.fieldName())) {
-          long loggedAtMs = event.get(EventField.EventLoggedAt.fieldName());
+          long loggedAtMs = Long.parseLong(
+              event.get(EventField.EventLoggedAt.fieldName()));
           if (loggedAtMs > 0 && loggedAtMs < Integer.MAX_VALUE) {
             loggedAtMs *= 1000;
           }
           occurredAtMs = Math.min(occurredAtMs, loggedAtMs);
         }
-      } catch (DateTimeParseException e) {
+      } catch (DateTimeParseException | NumberFormatException e) {
         // skip this event
         LOG.warn("Skipping event: " + event.get(EventField.EventName.fieldName()));
       }
