@@ -552,24 +552,50 @@ public class LyftFlinkStreamingPortableTranslations {
 
   static class EventToWindowedValue implements FlatMapFunction<Event, WindowedValue<byte[]>> {
 
-    private transient final EventUtils eventUtils;
-
-    public EventToWindowedValue() {
-      eventUtils = new EventUtils();
-    }
-
     @Override
     public void flatMap(Event value, Collector<WindowedValue<byte[]>> out) {
-      long timestamp = Long.MIN_VALUE;
-      long occurredAtTs = eventUtils.getOccurredAt(value);
-      long loggedAtTs = eventUtils.getLoggedAt(value);
-      long minTs = Math.min(occurredAtTs, loggedAtTs);
-      if (minTs != 0L) {
-        timestamp = minTs;
-      }
-
       out.collect(WindowedValue.timestampedValueInGlobalWindow(
-          getBytes(value), new Instant(timestamp)));
+          getBytes(value), new Instant(getTimestamp(value))));
+    }
+
+    private long getTimestamp(Event event) {
+      Object occurredAt = event.get(EventField.EventOccurredAt.fieldName());
+      long occurredAtMs = 0L;
+      try {
+        if (occurredAt instanceof String) {
+          occurredAtMs = parseDateTime((String) occurredAt);
+        } else if (occurredAt instanceof Long || occurredAt instanceof Integer) {
+          occurredAtMs = (long) occurredAt;
+        } else {
+          LOG.warn("Occurred at ts unrecognized");
+        }
+        if (event.contains(EventField.EventLoggedAt.fieldName())) {
+          long loggedAtMs = event.get(EventField.EventLoggedAt.fieldName());
+          if (loggedAtMs > 0 && loggedAtMs < Integer.MAX_VALUE) {
+            loggedAtMs *= 1000;
+          }
+          occurredAtMs = Math.min(occurredAtMs, loggedAtMs);
+        }
+      } catch (DateTimeParseException e) {
+        // skip this event
+        LOG.warn("Skipping event: " + event.get(EventField.EventName.fieldName()));
+      }
+      return occurredAtMs;
+    }
+
+    private static long parseDateTime(String datetime) {
+      try {
+        DateTimeFormatter formatterToUse =
+            (datetime.length() - datetime.indexOf('.') == 7)
+                ? DB_DATETIME_FORMATTER
+                : BACKUP_DB_DATETIME_FORMATTER;
+        TemporalAccessor temporalAccessor = formatterToUse.parse(datetime);
+        LocalDateTime localDateTime = LocalDateTime.from(temporalAccessor);
+        ZonedDateTime zonedDateTime = ZonedDateTime.of(localDateTime, GMT);
+        return java.time.Instant.from(zonedDateTime).toEpochMilli();
+      } catch (DateTimeParseException e) {
+        return java.time.Instant.from(ISO_DATETIME_FORMATTER.parse(datetime)).toEpochMilli();
+      }
     }
 
     private byte[] getBytes(Event event) {
@@ -580,7 +606,7 @@ public class LyftFlinkStreamingPortableTranslations {
         out.writeObject(event);
         out.flush();
       } catch (IOException e) {
-        LOG.warn("Unable to serialize event " + eventUtils.getEventName(event));
+        LOG.warn("Unable to serialize event " + event.get(EventField.EventName.fieldName()));
         // Ignore exception
       } finally {
         try {
