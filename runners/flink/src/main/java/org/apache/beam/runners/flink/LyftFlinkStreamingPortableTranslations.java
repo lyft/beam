@@ -29,12 +29,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import com.google.api.client.util.Lists;
 import com.google.auto.service.AutoService;
-import com.google.common.collect.Maps;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
-import com.lyft.streamingplatform.analytics.EventUtils;
 import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
 import com.lyft.streamingplatform.eventssource.config.EventConfig;
 import com.lyft.streamingplatform.eventssource.config.KinesisConfig;
@@ -43,11 +41,7 @@ import com.lyft.streamingplatform.eventssource.config.SourceContext;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.ObjectOutputStream;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -71,15 +65,11 @@ import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
-import org.apache.commons.io.IOUtils;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
 import org.apache.flink.streaming.api.graph.StreamConfig;
@@ -94,11 +84,8 @@ import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeseri
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
-import org.apache.flink.types.Row;
-import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
-import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -425,29 +412,20 @@ public class LyftFlinkStreamingPortableTranslations {
       Map<String, DataStream<Event>> eventStreams =
           source.getEventStreams(environment, sourceContext);
 
-      Map<String, DataStream<WindowedValue<byte[]>>> windowedValueStreams = Maps.newHashMap();
-
-      for (String event : eventStreams.keySet()) {
-        LOG.info("Created data streams for event: " + event);
-        DataStream<Event> stream = eventStreams.get(event);
-        DataStream<WindowedValue<byte[]>> windowedStream = stream
-            .map(new EventToWindowedValue())
-            .name(event + "_windowed_value")
-            .uid(event + "_windowed_value");
-        windowedValueStreams.put(event, windowedStream);
+      LOG.info("Unioning all the event streams");
+      DataStream<Event> unionedStream = eventStreams.remove(eventConfigs.get(0).eventName);
+      for (Map.Entry<String, DataStream<Event>> entry : eventStreams.entrySet()) {
+        unionedStream = unionedStream.union(entry.getValue());
       }
 
-      DataStream<WindowedValue<byte[]>> unionOfEvents = windowedValueStreams.remove(
-          eventConfigs.get(0).eventName);
-      // Add the DataStreams to the beam context
-      for (Map.Entry<String, DataStream<WindowedValue<byte[]>>> entry :
-          windowedValueStreams.entrySet()) {
-        unionOfEvents.union(entry.getValue());
-      }
+      DataStream<WindowedValue<byte[]>> windowedStream = unionedStream
+          .map(new EventToWindowedValue())
+          .name("windowed_value_stream")
+          .uid("windowed_value_stream");
 
       context.addDataStream(
           Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
-          unionOfEvents.rebalance());
+          windowedStream.rebalance());
 
     } catch (IOException e) {
       throw new RuntimeException("Could not parse provided source json");
