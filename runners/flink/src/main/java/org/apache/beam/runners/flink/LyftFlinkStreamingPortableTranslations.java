@@ -74,6 +74,7 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterable
 import org.apache.commons.io.IOUtils;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.TimeCharacteristic;
@@ -430,18 +431,23 @@ public class LyftFlinkStreamingPortableTranslations {
         LOG.info("Created data streams for event: " + event);
         DataStream<Event> stream = eventStreams.get(event);
         DataStream<WindowedValue<byte[]>> windowedStream = stream
-            .flatMap(new EventToWindowedValue())
+            .map(new EventToWindowedValue())
+            .name(event + "_windowed_value")
             .uid(event + "_windowed_value");
         windowedValueStreams.put(event, windowedStream);
       }
 
+      DataStream<WindowedValue<byte[]>> unionOfEvents = windowedValueStreams.remove(
+          eventConfigs.get(0).eventName);
       // Add the DataStreams to the beam context
       for (Map.Entry<String, DataStream<WindowedValue<byte[]>>> entry :
           windowedValueStreams.entrySet()) {
-        context.addDataStream(
-            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
-            entry.getValue());
+        unionOfEvents.union(entry.getValue());
       }
+
+      context.addDataStream(
+          Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+          unionOfEvents.rebalance());
 
     } catch (IOException e) {
       throw new RuntimeException("Could not parse provided source json");
@@ -552,12 +558,12 @@ public class LyftFlinkStreamingPortableTranslations {
     }
   }
 
-  static class EventToWindowedValue implements FlatMapFunction<Event, WindowedValue<byte[]>> {
+  static class EventToWindowedValue implements MapFunction<Event, WindowedValue<byte[]>> {
 
     @Override
-    public void flatMap(Event value, Collector<WindowedValue<byte[]>> out) {
-      out.collect(WindowedValue.timestampedValueInGlobalWindow(
-          getBytes(value), new Instant(getTimestamp(value))));
+    public WindowedValue<byte[]> map(Event value) {
+      return WindowedValue.timestampedValueInGlobalWindow(
+          getBytes(value), new Instant(getTimestamp(value)));
     }
 
     private long getTimestamp(Event event) {
