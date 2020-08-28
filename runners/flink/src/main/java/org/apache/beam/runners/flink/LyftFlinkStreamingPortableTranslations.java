@@ -42,6 +42,7 @@ import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -552,16 +553,31 @@ public class LyftFlinkStreamingPortableTranslations {
           occurredAtMs = parseDateTime((String) occurredAt);
         } else if (occurredAt instanceof Long || occurredAt instanceof Integer) {
           occurredAtMs = (long) occurredAt;
-        } else {
+        } else if (occurredAt instanceof Timestamp) {
+          occurredAtMs = ((Timestamp) occurredAt).getTime();
+        }
+        else {
           LOG.warn("Occurred at ts unrecognized");
         }
         if (event.contains(EventField.EventLoggedAt.fieldName())) {
-          long loggedAtMs = Long.parseLong(
-              event.get(EventField.EventLoggedAt.fieldName()));
+          Object loggedAt = event.get(EventField.EventLoggedAt.fieldName());
+          long loggedAtMs = 0L;
+          if (loggedAt instanceof String) {
+            loggedAtMs = Long.parseLong(
+                    event.get(EventField.EventLoggedAt.fieldName()));
+          } else if (loggedAt instanceof Long || loggedAt instanceof Integer) {
+            loggedAtMs = (long) loggedAt;
+          } else if (loggedAt instanceof Timestamp) {
+            loggedAtMs = ((Timestamp) loggedAt).getTime();
+          } else {
+            LOG.warn("Logged at ts unrecognized");
+          }
           if (loggedAtMs > 0 && loggedAtMs < Integer.MAX_VALUE) {
             loggedAtMs *= 1000;
           }
-          occurredAtMs = Math.min(occurredAtMs, loggedAtMs);
+          if (loggedAtMs != 0) {
+            occurredAtMs = Math.min(occurredAtMs, loggedAtMs);
+          }
         }
       } catch (DateTimeParseException | NumberFormatException e) {
         // skip this event
