@@ -27,7 +27,8 @@ class S3AndKinesisInput(PTransform):
         self.s3_config = S3Config(None, None)
         self.source_name = 'S3andKinesis_' + self._get_random_source_name()
         self.kinesis_properties = {'aws.region': 'us-east-1'}
-        self.stream_name = None
+        self.stream_start_mode = 'TRIM_HORIZON'
+        self.kinesis_parallelism = 1
 
     def expand(self, pbegin):
         assert isinstance(pbegin, PBegin), (
@@ -90,7 +91,6 @@ class S3AndKinesisInput(PTransform):
             lookback_hours=s3_config_dict.get('lookback_hours', None)
         )
         kinesis_config_dict = payload['kinesis']
-        assert kinesis_config_dict.get('stream') is not None, "Kinesis stream name not set"
 
         instance.kinesis_config = KinesisConfig(
             stream=kinesis_config_dict.get('stream'),
@@ -99,7 +99,6 @@ class S3AndKinesisInput(PTransform):
             stream_start_mode=kinesis_config_dict.get('stream_start_mode', None)
         )
         events_list = payload['events']
-        assert events_list is not None, "At least one event must be set"
         instance.events = []
         for event in events_list:
             assert event.get('name') is not None, "Event name must be set"
@@ -131,7 +130,6 @@ class S3AndKinesisInput(PTransform):
             },
         }
 
-        assert self.events is not None, "At least one event must be set"
         event_list_json = []
         for e in self.events:
             assert isinstance(e, Event), "expected instance of Event, but got %s" % type(e)
