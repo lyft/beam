@@ -26,7 +26,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectWriter;
 import com.google.auto.service.AutoService;
 import com.google.common.collect.Lists;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
@@ -434,7 +433,8 @@ public class LyftFlinkStreamingPortableTranslations {
 
   }
 
-  private List<EventConfig> getEventConfigs(List<Map<String, JsonNode>> events) {
+  @VisibleForTesting
+  List<EventConfig> getEventConfigs(List<Map<String, JsonNode>> events) {
     List<EventConfig> eventConfigs = Lists.newArrayList();
     for (Map<String, JsonNode> node : events) {
       Preconditions.checkNotNull(node.get("name"), "Event name has to be set");
@@ -458,7 +458,8 @@ public class LyftFlinkStreamingPortableTranslations {
     return eventConfigs;
   }
 
-  private S3Config getS3Config(Map<String, JsonNode> userS3Config) {
+  @VisibleForTesting
+  S3Config getS3Config(Map<String, JsonNode> userS3Config) {
     S3Config.Builder builder = new S3Config.Builder();
 
     // Add s3 parallelism
@@ -476,7 +477,8 @@ public class LyftFlinkStreamingPortableTranslations {
     return builder.build();
   }
 
-  private KinesisConfig getKinesisConfig(
+  @VisibleForTesting
+  KinesisConfig getKinesisConfig(
       Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
     Properties properties = new Properties();
     Preconditions.checkNotNull(userKinesisConfig.get("stream"), "Kinesis stream name needs to be set");
@@ -506,6 +508,7 @@ public class LyftFlinkStreamingPortableTranslations {
     return builder.build();
   }
 
+  @VisibleForTesting
   static class EventToWindowedValue implements MapFunction<Event, WindowedValue<byte[]>> {
 
     @Override
@@ -514,7 +517,7 @@ public class LyftFlinkStreamingPortableTranslations {
           getBytes(value), new Instant(getTimestamp(value)));
     }
 
-    private long getTimestamp(Event event) {
+    long getTimestamp(Event event) {
       Object occurredAt = event.get(EventField.EventOccurredAt.fieldName());
       long occurredAtMs = 0L;
       try {
@@ -555,6 +558,7 @@ public class LyftFlinkStreamingPortableTranslations {
       return occurredAtMs;
     }
 
+    // TODO: https://jira.lyft.net/browse/STRMCMP-1109
     private static long parseDateTime(String datetime) {
       try {
         DateTimeFormatter formatterToUse =
@@ -572,16 +576,13 @@ public class LyftFlinkStreamingPortableTranslations {
 
     private byte[] getBytes(Event event) {
       ObjectMapper mapper = new ObjectMapper();
-      JsonNode eventJson = mapper.valueToTree(event);
-      ObjectWriter writer = mapper.writer();
-      byte[] bytes = new byte[0];
       try {
-        bytes = writer.writeValueAsBytes(eventJson);
+        return mapper.writeValueAsBytes(event);
       } catch (JsonProcessingException e) {
         LOG.warn("Unable to convert event json to byte[]: " + event.get(
             EventField.EventName.fieldName()));
       }
-      return bytes;
+      return new byte[0];
     }
   }
 
