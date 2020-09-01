@@ -11,7 +11,6 @@ from apache_beam.transforms.core import Windowing
 from apache_beam.transforms.window import GlobalWindows
 
 Event = namedtuple('Event', 'name lateness_in_sec lookback_days')
-KinesisConfig = namedtuple('KinesisConfig', 'stream properties parallelism stream_start_mode')
 S3Config = namedtuple('S3Config', 'parallelism lookback_hours')
 
 
@@ -91,13 +90,10 @@ class S3AndKinesisInput(PTransform):
             lookback_hours=s3_config_dict.get('lookback_hours', None)
         )
         kinesis_config_dict = payload['kinesis']
-
-        instance.kinesis_config = KinesisConfig(
-            stream=kinesis_config_dict.get('stream'),
-            properties=kinesis_config_dict.get('properties', None),
-            parallelism=kinesis_config_dict.get('parallelism', None),
-            stream_start_mode=kinesis_config_dict.get('stream_start_mode', None)
-        )
+        instance.stream_name = kinesis_config_dict.get('stream')
+        instance.kinesis_properties = kinesis_config_dict.get('properties', None)
+        instance.kinesis_parallelism = kinesis_config_dict.get('parallelism', None)
+        instance.stream_start_mode = kinesis_config_dict.get('stream_start_mode', None)
         events_list = payload['events']
         instance.events = []
         for event in events_list:
