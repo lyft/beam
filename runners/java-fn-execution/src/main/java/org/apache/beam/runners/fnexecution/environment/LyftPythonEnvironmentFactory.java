@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.concurrent.TimeoutException;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.fnexecution.GrpcFnServer;
-import org.apache.beam.runners.fnexecution.artifact.LegacyArtifactRetrievalService;
+import org.apache.beam.runners.fnexecution.artifact.ArtifactRetrievalService;
 import org.apache.beam.runners.fnexecution.control.ControlClientPool;
 import org.apache.beam.runners.fnexecution.control.FnApiControlClientPoolService;
 import org.apache.beam.runners.fnexecution.control.InstructionRequestHandler;
@@ -62,7 +62,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
   private final ProcessManager processManager;
   private final GrpcFnServer<FnApiControlClientPoolService> controlServiceServer;
   private final GrpcFnServer<GrpcLoggingService> loggingServiceServer;
-  private final GrpcFnServer<LegacyArtifactRetrievalService> retrievalServiceServer;
+  private final GrpcFnServer<ArtifactRetrievalService> retrievalServiceServer;
   private final GrpcFnServer<StaticGrpcProvisionService> provisioningServiceServer;
   private final IdGenerator idGenerator;
   private final ControlClientPool.Source clientSource;
@@ -71,7 +71,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
       JobInfo jobInfo,
       GrpcFnServer<FnApiControlClientPoolService> controlServiceServer,
       GrpcFnServer<GrpcLoggingService> loggingServiceServer,
-      GrpcFnServer<LegacyArtifactRetrievalService> retrievalServiceServer,
+      GrpcFnServer<ArtifactRetrievalService> retrievalServiceServer,
       GrpcFnServer<StaticGrpcProvisionService> provisioningServiceServer,
       ControlClientPool.Source clientSource,
       IdGenerator idGenerator) {
@@ -87,9 +87,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
 
   /** Creates a new, active {@link RemoteEnvironment} backed by a forked process. */
   @Override
-  public RemoteEnvironment createEnvironment(RunnerApi.Environment environment) throws Exception {
-    String workerId = idGenerator.getId();
-
+  public RemoteEnvironment createEnvironment(RunnerApi.Environment environment, String workerId) throws Exception {
     String pipelineOptionsJson = JsonFormat.printer().print(jobInfo.pipelineOptions());
     // https://issues.apache.org/jira/browse/BEAM-5509
     // pipelineOptionsJson =
@@ -165,7 +163,7 @@ public class LyftPythonEnvironmentFactory implements EnvironmentFactory {
     public EnvironmentFactory createEnvironmentFactory(
         GrpcFnServer<FnApiControlClientPoolService> controlServiceServer,
         GrpcFnServer<GrpcLoggingService> loggingServiceServer,
-        GrpcFnServer<LegacyArtifactRetrievalService> retrievalServiceServer,
+        GrpcFnServer<ArtifactRetrievalService> retrievalServiceServer,
         GrpcFnServer<StaticGrpcProvisionService> provisioningServiceServer,
         ControlClientPool clientPool,
         IdGenerator idGenerator) {
