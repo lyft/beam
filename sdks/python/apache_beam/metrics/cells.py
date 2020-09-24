@@ -28,6 +28,7 @@ from __future__ import division
 
 import threading
 import time
+import logging
 from builtins import object
 from typing import Optional
 
@@ -191,6 +192,7 @@ class GaugeCell(MetricCell):
   def __init__(self, *args):
     super(GaugeCell, self).__init__(*args)
     self.data = GaugeAggregator.identity_element()
+    logging.info('RM in init of gauge cell with data [{}]'.format(self.data.value))
 
   def reset(self):
     self.data = GaugeAggregator.identity_element()
@@ -199,6 +201,7 @@ class GaugeCell(MetricCell):
     # type: (GaugeCell) -> GaugeCell
     result = GaugeCell()
     result.data = self.data.combine(other.data)
+    logging.info('RM in combine of gauge with data [{}]'.format(result.data.value))
     return result
 
   def set(self, value):
@@ -211,6 +214,7 @@ class GaugeCell(MetricCell):
       # this value is naturally the latest value.
       self.data.value = value
       self.data.timestamp = time.time()
+      logging.info('RM in update of gauge with data [{}]'.format(self.data.value))
 
   def get_cumulative(self):
     # type: () -> GaugeData
