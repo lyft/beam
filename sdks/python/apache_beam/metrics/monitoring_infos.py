@@ -24,6 +24,7 @@ from __future__ import absolute_import
 
 import collections
 import time
+import logging
 from functools import reduce
 from typing import FrozenSet
 from typing import Hashable
@@ -219,6 +220,7 @@ def int64_user_gauge(namespace, name, metric, ptransform=None):
     raise TypeError(
         'Expected GaugeData metric type but received %s with value %s' %
         (type(metric), metric))
+  logging.info('RM before _encode_gauge [{}] '.format(value))
   payload = _encode_gauge(coder, timestamp, value)
   return create_monitoring_info(
       USER_GAUGE_URN, LATEST_INT64_TYPE, payload, labels)
@@ -394,6 +396,7 @@ def _encode_gauge(coder, timestamp, value):
   timestamp_coder = coders.VarIntCoder().get_impl()
   stream = coder_impl.create_OutputStream()
   timestamp_coder.encode_to_stream(int(timestamp * 1000), stream, True)
+  logging.info('RM in _encode_gauge [{}] '.format(value))
   coder.get_impl().encode_to_stream(value, stream, True)
   return stream.get()
 
