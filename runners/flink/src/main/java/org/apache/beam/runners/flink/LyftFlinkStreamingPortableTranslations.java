@@ -27,7 +27,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
-import com.google.common.collect.Lists;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
 import com.lyft.streamingplatform.analytics.Event;
@@ -65,6 +64,7 @@ import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -387,25 +387,28 @@ public class LyftFlinkStreamingPortableTranslations {
       Map<?, ?> jsonMap = mapper.convertValue(params, Map.class);
       String sourceName = (String) jsonMap.get("source_name");
       Preconditions.checkNotNull(sourceName, "Source name has to be set");
-      Map<String, JsonNode> userKinesisConfig = mapper.convertValue(
-          jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
+      Map<String, JsonNode> userKinesisConfig =
+          mapper.convertValue(
+              jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
 
-      Map<String, JsonNode> userS3Config = mapper.convertValue(
-          jsonMap.get("s3"), new TypeReference<Map<String, JsonNode>>() {});
+      Map<String, JsonNode> userS3Config =
+          mapper.convertValue(jsonMap.get("s3"), new TypeReference<Map<String, JsonNode>>() {});
 
-      List<Map<String, JsonNode>> events = mapper.convertValue(
-          jsonMap.get("events"), new TypeReference<List<Map<String, JsonNode>>>() {});
+      List<Map<String, JsonNode>> events =
+          mapper.convertValue(
+              jsonMap.get("events"), new TypeReference<List<Map<String, JsonNode>>>() {});
 
       KinesisConfig kinesisConfig = getKinesisConfig(userKinesisConfig, mapper);
       S3Config s3Config = getS3Config(userS3Config);
       List<EventConfig> eventConfigs = getEventConfigs(events);
 
-      SourceContext sourceContext = new SourceContext.Builder()
-          .withStreamConfig(kinesisConfig)
-          .withS3Config(s3Config)
-          .withEventConfigs(eventConfigs)
-          .withSourceName(sourceName)
-          .build();
+      SourceContext sourceContext =
+          new SourceContext.Builder()
+              .withStreamConfig(kinesisConfig)
+              .withS3Config(s3Config)
+              .withEventConfigs(eventConfigs)
+              .withSourceName(sourceName)
+              .build();
 
       KinesisAndS3EventSource source = new KinesisAndS3EventSource();
       StreamExecutionEnvironment environment = context.getExecutionEnvironment();
@@ -418,10 +421,11 @@ public class LyftFlinkStreamingPortableTranslations {
         unionedStream = unionedStream.union(entry.getValue());
       }
 
-      DataStream<WindowedValue<byte[]>> windowedStream = unionedStream
-          .map(new EventToWindowedValue())
-          .name("windowed_value_stream")
-          .uid("windowed_value_stream");
+      DataStream<WindowedValue<byte[]>> windowedStream =
+          unionedStream
+              .map(new EventToWindowedValue())
+              .name("windowed_value_stream")
+              .uid("windowed_value_stream");
 
       context.addDataStream(
           Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
@@ -430,7 +434,6 @@ public class LyftFlinkStreamingPortableTranslations {
     } catch (IOException e) {
       throw new RuntimeException("Could not parse provided source json");
     }
-
   }
 
   @VisibleForTesting
@@ -478,23 +481,24 @@ public class LyftFlinkStreamingPortableTranslations {
   }
 
   @VisibleForTesting
-  KinesisConfig getKinesisConfig(
-      Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
+  KinesisConfig getKinesisConfig(Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
     Properties properties = new Properties();
-    Preconditions.checkNotNull(userKinesisConfig.get("stream"), "Kinesis stream name needs to be set");
+    Preconditions.checkNotNull(
+        userKinesisConfig.get("stream"), "Kinesis stream name needs to be set");
 
-    KinesisConfig.Builder builder = new KinesisConfig
-        .Builder(userKinesisConfig.get("stream").asText());
+    KinesisConfig.Builder builder =
+        new KinesisConfig.Builder(userKinesisConfig.get("stream").asText());
     // Add kinesis parallelism
     JsonNode kinesisParallelism = userKinesisConfig.get("parallelism");
     if (kinesisParallelism != null) {
       builder = builder.withParallelism(kinesisParallelism.asInt());
     }
     // Add kinesis properties
-    Map<String, String> kinesisProps = mapper.convertValue(
-        userKinesisConfig.get("properties"), new TypeReference<Map<String, String>>() {});
+    Map<String, String> kinesisProps =
+        mapper.convertValue(
+            userKinesisConfig.get("properties"), new TypeReference<Map<String, String>>() {});
     if (kinesisProps != null) {
-      for (Map.Entry<String ,String> property : kinesisProps.entrySet()) {
+      for (Map.Entry<String, String> property : kinesisProps.entrySet()) {
         properties.put(property.getKey(), property.getValue());
       }
       builder = builder.withProperties(properties);
@@ -527,16 +531,14 @@ public class LyftFlinkStreamingPortableTranslations {
           occurredAtMs = (long) occurredAt;
         } else if (occurredAt instanceof Timestamp) {
           occurredAtMs = ((Timestamp) occurredAt).getTime();
-        }
-        else {
+        } else {
           LOG.warn("Occurred at ts unrecognized");
         }
         if (event.contains(EventField.EventLoggedAt.fieldName())) {
           Object loggedAt = event.get(EventField.EventLoggedAt.fieldName());
           long loggedAtMs = 0L;
           if (loggedAt instanceof String) {
-            loggedAtMs = Long.parseLong(
-                event.get(EventField.EventLoggedAt.fieldName()));
+            loggedAtMs = Long.parseLong(event.get(EventField.EventLoggedAt.fieldName()));
           } else if (loggedAt instanceof Long || loggedAt instanceof Integer) {
             loggedAtMs = (long) loggedAt;
           } else if (loggedAt instanceof Timestamp) {
@@ -579,8 +581,9 @@ public class LyftFlinkStreamingPortableTranslations {
       try {
         return mapper.writeValueAsBytes(event);
       } catch (JsonProcessingException e) {
-        LOG.warn("Unable to convert event json to byte[]: " + event.get(
-            EventField.EventName.fieldName()));
+        LOG.warn(
+            "Unable to convert event json to byte[]: "
+                + event.get(EventField.EventName.fieldName()));
       }
       return new byte[0];
     }

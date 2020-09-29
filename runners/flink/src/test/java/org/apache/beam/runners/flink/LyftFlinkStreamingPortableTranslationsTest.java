@@ -28,8 +28,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.Maps;
-import com.google.common.io.Resources;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.config.EventConfig;
@@ -54,6 +52,8 @@ import org.apache.beam.runners.flink.LyftFlinkStreamingPortableTranslations.Lyft
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.grpc.v1p26p0.com.google.protobuf.ByteString;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.io.Resources;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
@@ -394,8 +394,9 @@ public class LyftFlinkStreamingPortableTranslationsTest {
         new LyftFlinkStreamingPortableTranslations();
     ObjectMapper mapper = new ObjectMapper();
     Map<?, ?> jsonMap = getJsonMap(mapper);
-    List<Map<String, JsonNode>> events = mapper.convertValue(
-        jsonMap.get("events"), new TypeReference<List<Map<String, JsonNode>>>() {});
+    List<Map<String, JsonNode>> events =
+        mapper.convertValue(
+            jsonMap.get("events"), new TypeReference<List<Map<String, JsonNode>>>() {});
 
     List<EventConfig> eventConfigs = translations.getEventConfigs(events);
 
@@ -412,11 +413,10 @@ public class LyftFlinkStreamingPortableTranslationsTest {
         new LyftFlinkStreamingPortableTranslations();
     ObjectMapper mapper = new ObjectMapper();
     Map<?, ?> jsonMap = getJsonMap(mapper);
-    Map<String, JsonNode> userKinesisConfig = mapper.convertValue(
-        jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
+    Map<String, JsonNode> userKinesisConfig =
+        mapper.convertValue(jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
 
-    KinesisConfig kinesisConfig =
-        translations.getKinesisConfig(userKinesisConfig, mapper);
+    KinesisConfig kinesisConfig = translations.getKinesisConfig(userKinesisConfig, mapper);
 
     assertEquals("kinesis_stream", kinesisConfig.getStreamName());
     assertEquals(1, kinesisConfig.getParallelism());
@@ -430,8 +430,8 @@ public class LyftFlinkStreamingPortableTranslationsTest {
         new LyftFlinkStreamingPortableTranslations();
     ObjectMapper mapper = new ObjectMapper();
     Map<?, ?> jsonMap = getJsonMap(mapper);
-    Map<String, JsonNode> userS3Config = mapper.convertValue(
-        jsonMap.get("s3"), new TypeReference<Map<String, JsonNode>>() {});
+    Map<String, JsonNode> userS3Config =
+        mapper.convertValue(jsonMap.get("s3"), new TypeReference<Map<String, JsonNode>>() {});
 
     S3Config s3Config = translations.getS3Config(userS3Config);
     assertEquals(1, s3Config.parallelism);
@@ -439,8 +439,8 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   private Map<?, ?> getJsonMap(ObjectMapper mapper) throws IOException {
-    URL url = LyftFlinkStreamingPortableTranslationsTest.class.getResource(
-        "/s3_and_kinesis_config.json");
+    URL url =
+        LyftFlinkStreamingPortableTranslationsTest.class.getResource("/s3_and_kinesis_config.json");
     String eventsStr = Resources.toString(url, StandardCharsets.UTF_8);
     JsonNode jsonNode = mapper.readTree(eventsStr);
     return mapper.convertValue(jsonNode, Map.class);
