@@ -153,13 +153,9 @@ dependencies {
   compile "org.apache.flink:flink-java:$flink_version"
   compile "org.apache.flink:flink-runtime_2.11:$flink_version"
   compile("com.lyft:streamingplatform-events-source:2.1-dryft-SNAPSHOT") {
-    exclude group: "org.apache.flink", module: "flink-table-common"
-    exclude group: "org.apache.flink", module: "flink-table-api-java-bridge_2.11"
-    exclude group: "commons-validator", module: "commons-validator"
-    exclude group: "com.google.guava", module: "commons-validator"
+    exclude group: "com.google.guava", module: "guava"
+    exclude group: "com.google.protobuf", module: "protobuf-java"
     exclude group: "com.lyft", module: "streamingplatform-kinesis"
-    exclude group: "com.lyft", module: "streamingplatform-kafka"
-    exclude group: "com.lyft", module: "java-idl"
   }
   compile "org.apache.flink:flink-streaming-java_2.11:$flink_version"
   testCompile project(path: ":sdks:java:core", configuration: "shadowTest")
