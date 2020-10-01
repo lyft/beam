@@ -159,7 +159,6 @@ dependencies {
     exclude group: "org.apache.parquet", module: "parquet-common"
     exclude group: "org.apache.parquet", module: "parquet-encoding"
     exclude group: "org.apache.parquet", module: "parquet-hadoop"
-    exclude group: "org.apache.hive", module: "hive-metastore"
   }
   compile "org.apache.flink:flink-streaming-java_2.11:$flink_version"
   testCompile project(path: ":sdks:java:core", configuration: "shadowTest")
