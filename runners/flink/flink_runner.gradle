@@ -158,7 +158,6 @@ dependencies {
     exclude group: "com.lyft", module: "streamingplatform-kinesis"
     exclude group: "org.apache.parquet", module: "parquet-common"
     exclude group: "org.apache.parquet", module: "parquet-encoding"
-    exclude group: "org.apache.parquet", module: "parquet-column"
     exclude group: "org.apache.parquet", module: "parquet-hadoop"
     exclude group: "org.apache.hive", module: "hive-metastore"
   }
