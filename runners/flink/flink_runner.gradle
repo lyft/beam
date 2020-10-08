@@ -152,7 +152,8 @@ dependencies {
   compile "org.apache.flink:flink-metrics-core:$flink_version"
   compile "org.apache.flink:flink-java:$flink_version"
   compile "org.apache.flink:flink-runtime_2.11:$flink_version"
-  compile("org.apache.hive:hive-metastore:2.3.6") {
+  compile("com.lyft:streamingplatform-events-source:2.1-dryft-SNAPSHOT") {
+    exclude group: "com.lyft", module: "streamingplatform-kinesis"
     exclude group: "com.google.guava", module: "guava"
     exclude group: "com.google.protobuf", module: "protobuf-java"
     exclude group: "co.cask.tephra", module: "tephra-api"
@@ -169,12 +170,6 @@ dependencies {
     exclude group: "org.datanucleus", module: "datanucleus-api-jdo"
     exclude group: "org.datanucleus", module: "datanucleus-core"
     exclude group: "org.datanucleus", module: "datanucleus-rdbms"
-  }
-  compile("com.lyft:streamingplatform-events-source:2.1-dryft-SNAPSHOT") {
-    exclude group: "com.google.guava", module: "guava"
-    exclude group: "com.google.protobuf", module: "protobuf-java"
-    exclude group: "com.lyft", module: "streamingplatform-kinesis"
-    exclude group: "org.apache.hive", module: "hive-metastore"
   }
   compile "org.apache.flink:flink-streaming-java_2.11:$flink_version"
   testCompile project(path: ":sdks:java:core", configuration: "shadowTest")
