@@ -158,7 +158,6 @@ dependencies {
     exclude group: "com.lyft", module: "streamingplatform-kinesis"
     exclude group: "org.apache.hive", module: "hive-metastore"
   }
-  compile("org.apache.hive:hive-metastore:2.3.6")
   compile "org.apache.flink:flink-streaming-java_2.11:$flink_version"
   testCompile project(path: ":sdks:java:core", configuration: "shadowTest")
   // FlinkStateInternalsTest extends abstract StateInternalsTest
