@@ -416,7 +416,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     Map<String, JsonNode> userKinesisConfig =
         mapper.convertValue(jsonMap.get("kinesis"), new TypeReference<Map<String, JsonNode>>() {});
 
-    KinesisConfig kinesisConfig = translations.getKinesisConfig(userKinesisConfig, mapper);
+    KinesisConfig kinesisConfig = translations.getKinesisConfig(userKinesisConfig, mapper, streamingContext);
 
     assertEquals("kinesis_stream", kinesisConfig.getStreamName());
     assertEquals(1, kinesisConfig.getParallelism());
