@@ -134,7 +134,7 @@ class S3AndKinesisInput(PTransform):
         s3_parallelism=s3_config_dict.get('parallelism', None)
 
         if lookback_threshold_hours is not None:
-            s3_config.lookback_threshold_hours(lookback_threshold_hours)
+            s3_config.with_lookback_threshold_hours(lookback_threshold_hours)
         if s3_parallelism is not None:
             s3_config.with_parallelism(s3_parallelism)
         instance.s3_config = s3_config
