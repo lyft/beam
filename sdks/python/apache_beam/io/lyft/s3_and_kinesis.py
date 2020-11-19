@@ -12,23 +12,23 @@ from apache_beam.transforms.window import GlobalWindows
 
 class EventConfig(object):
     """
-    Configuration of analytic event to be consumed.
+    Configuration of analytic event.
     """
-    name = None                          # name of the analytics event.
-    max_out_of_orderness_millis = 5_000  # maximum amount of time an element is allowed to be late before being ignored.
-    lookback_days = None                 # historical start time to consume events from.
+    DEFAULT_MAX_OUT_OF_ORDERNESS_MILLIS = 5_000  # maximum allowed delay in time before an element is ignored
 
     def __init__(self, name):
-        self.name = name
+        self.name = name                          # name of the analytics event.
+        self.max_out_of_orderness_millis = EventConfig.DEFAULT_MAX_OUT_OF_ORDERNESS_MILLIS
+        self.lookback_days = None                 # historical start time to consume events from.
 
-    def with_max_out_of_orderness_millis(self, max_out_of_orderness_millis):
+    def with_max_out_of_orderness_millis(self, out_of_orderness_millis):
         """
         The interval between the maximum timestamp seen so far and the watermark that
         is emitted. For example, if this is set to 1000ms, after seeing a record for
         10:00:01 we will emit a watermark for 10:00:00, indicating that we believe that all
         data from before that time has arrived.
         """
-        self.max_out_of_orderness_millis = max_out_of_orderness_millis
+        self.max_out_of_orderness_millis = out_of_orderness_millis
         return self
 
     def with_lookback_in_days(self, lookback_days):
@@ -40,8 +40,12 @@ class S3Config(object):
     """
     S3 configuration.
     """
-    parallelism = 1                        # parallelism for s3 source connector.
-    lookback_threshold_hours = 23          # threshold in hours for consuming events from S3.
+    DEFAULT_S3_PARALLELISM = 1     # parallelism for s3 source connector. Defaults to 1.
+    DEFAULT_LOOKBACK_THREAD = 23   # threshold in hours for consuming events from S3.
+
+    def __init__(self):
+        self.parallelism = S3Config.DEFAULT_S3_PARALLELISM
+        self.lookback_threshold_hours = S3Config.DEFAULT_LOOKBACK_THREAD
 
     def with_parallelism(self, parallelism):
         self.parallelism = parallelism
@@ -129,14 +133,12 @@ class S3AndKinesisInput(PTransform):
         instance.source_name = payload['source_name']
         s3_config_dict = payload['s3']
 
+        lookback_threshold_hours=s3_config_dict.get('lookback_threshold_hours', S3Config.DEFAULT_LOOKBACK_THREAD)
+        s3_parallelism=s3_config_dict.get('parallelism', S3Config.DEFAULT_S3_PARALLELISM)
         s3_config = S3Config()
-        lookback_threshold_hours=s3_config_dict.get('lookback_threshold_hours', None)
-        s3_parallelism=s3_config_dict.get('parallelism', None)
+        s3_config.with_lookback_threshold_hours(lookback_threshold_hours)
+        s3_config.with_parallelism(s3_parallelism)
 
-        if lookback_threshold_hours is not None:
-            s3_config.with_lookback_threshold_hours(lookback_threshold_hours)
-        if s3_parallelism is not None:
-            s3_config.with_parallelism(s3_parallelism)
         instance.s3_config = s3_config
 
         kinesis_config_dict = payload['kinesis']
@@ -149,10 +151,11 @@ class S3AndKinesisInput(PTransform):
         for event in events_list:
             assert event.get('name') is not None, "Event name must be set"
             event_config = EventConfig(event.get('name'))
-            max_out_of_orderness_millis = event.get('max_out_of_orderness_millis', None)
+            max_out_of_orderness_millis = event.get('max_out_of_orderness_millis',
+                                                    EventConfig.DEFAULT_MAX_OUT_OF_ORDERNESS_MILLIS)
+            event_config.with_max_out_of_orderness_millis(max_out_of_orderness_millis)
+
             lookback_days = event.get('lookback_days', None)
-            if max_out_of_orderness_millis is not None:
-                event_config.with_max_out_of_orderness_millis(max_out_of_orderness_millis)
             if lookback_days is not None:
                 event_config.with_lookback_in_days(lookback_days)
             instance.events_config.append(event_config)
