@@ -54,7 +54,6 @@ import java.util.Properties;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
-import org.apache.beam.model.pipeline.v1.RunnerApi.Pipeline;
 import org.apache.beam.runners.core.construction.NativeTransforms;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.flink.FlinkStreamingPortablePipelineTranslator.PTransformTranslator;
@@ -113,8 +112,7 @@ public class LyftFlinkStreamingPortableTranslations {
           || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_AND_KINESIS_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform))
-          || FLINK_S3_URN.equals(
-          PTransformTranslation.urnForTransformOrNull(pTransform));
+          || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
 
@@ -498,7 +496,6 @@ public class LyftFlinkStreamingPortableTranslations {
       throw new RuntimeException("Could not parse provided source json");
     }
   }
-
 
   @VisibleForTesting
   List<EventConfig> getEventConfigs(List<Map<String, JsonNode>> events) {
