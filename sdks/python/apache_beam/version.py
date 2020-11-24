@@ -17,4 +17,4 @@
 
 """Apache Beam SDK version information and utilities."""
 
-__version__ = '2.21.0+lyft20201124{TEST_BUILD}'
+__version__ = '2.21.0+lyft20201124tests3source'
