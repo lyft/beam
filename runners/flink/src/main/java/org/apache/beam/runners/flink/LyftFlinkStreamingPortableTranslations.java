@@ -402,9 +402,15 @@ public class LyftFlinkStreamingPortableTranslations {
       S3Config s3Config = getS3Config(userS3Config);
       List<EventConfig> eventConfigs = getEventConfigs(events);
 
-      if (kinesisConfig.getParallelism() == 0) {
-
+      if (kinesisConfig.getParallelism() < 1) {
+        int parallelism = context.getExecutionEnvironment().getConfig().getParallelism();
+        KinesisConfig.Builder builder =
+                new KinesisConfig.Builder(kinesisConfig.getStreamName());
+        builder.withStreamStartMode(kinesisConfig.getStreamStartMode());
+        builder.withProperties(kinesisConfig.getProperties());
+        builder.withParallelism(parallelism - s3Config.parallelism);
       }
+
       SourceContext sourceContext =
           new SourceContext.Builder()
               .withStreamConfig(kinesisConfig)
@@ -484,8 +490,7 @@ public class LyftFlinkStreamingPortableTranslations {
   }
 
   @VisibleForTesting
-  KinesisConfig getKinesisConfig(Map<String, JsonNode> userKinesisConfig,
-                                 ObjectMapper mapper) {
+  KinesisConfig getKinesisConfig(Map<String, JsonNode> userKinesisConfig, ObjectMapper mapper) {
     Properties properties = new Properties();
     Preconditions.checkNotNull(
         userKinesisConfig.get("stream"), "Kinesis stream name needs to be set");
@@ -497,7 +502,6 @@ public class LyftFlinkStreamingPortableTranslations {
     if (kinesisParallelism != null && kinesisParallelism.asInt() > 0) {
       builder = builder.withParallelism(kinesisParallelism.asInt());
     }
-
     // Add kinesis properties
     Map<String, String> kinesisProps =
         mapper.convertValue(
