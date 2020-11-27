@@ -61,6 +61,8 @@ class S3AndKinesisInput(PTransform):
     input sources. This wraps the streamingplatform-dryft-sdk SourceConnector.
     Only works with the portable Flink runner.
     """
+    DEFAULT_KINESIS_PARALLELISM = -1
+    DEFAULT_START_MODE = 'TRIM_HORIZON'
 
     def __init__(self):
         super().__init__()
@@ -68,8 +70,8 @@ class S3AndKinesisInput(PTransform):
         self.s3_config = S3Config()
         self.source_name = 'S3andKinesis_' + self._get_random_source_name()
         self.kinesis_properties = {'aws.region': 'us-east-1'}
-        self.stream_start_mode = 'TRIM_HORIZON'
-        self.kinesis_parallelism = -1
+        self.stream_start_mode = S3AndKinesisInput.DEFAULT_START_MODE
+        self.kinesis_parallelism = S3AndKinesisInput.DEFAULT_KINESIS_PARALLELISM
 
     def expand(self, pbegin):
         assert isinstance(pbegin, PBegin), (
@@ -144,8 +146,10 @@ class S3AndKinesisInput(PTransform):
         kinesis_config_dict = payload['kinesis']
         instance.stream_name = kinesis_config_dict.get('stream')
         instance.kinesis_properties = kinesis_config_dict.get('properties', None)
-        instance.kinesis_parallelism = kinesis_config_dict.get('parallelism', None)
-        instance.stream_start_mode = kinesis_config_dict.get('stream_start_mode', None)
+        instance.kinesis_parallelism = kinesis_config_dict.get('parallelism',
+                                                               S3AndKinesisInput.DEFAULT_KINESIS_PARALLELISM)
+        instance.stream_start_mode = kinesis_config_dict.get('stream_start_mode',
+                                                             S3AndKinesisInput.DEFAULT_START_MODE)
         events_list = payload['events']
         instance.events_config = []
         for event in events_list:
