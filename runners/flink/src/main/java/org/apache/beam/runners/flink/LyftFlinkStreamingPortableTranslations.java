@@ -455,6 +455,7 @@ public class LyftFlinkStreamingPortableTranslations {
       EventConfig.Builder builder = new EventConfig.Builder(node.get("name").asText());
 
       // Add lateness in sec
+      // TODO : refactor the builder to use a standard name.
       JsonNode maxOutOfOrdernessMillis = node.get("max_out_of_orderness_millis");
       if (maxOutOfOrdernessMillis != null) {
         builder = builder.withLatenessInSec(maxOutOfOrdernessMillis.asLong()/1000);

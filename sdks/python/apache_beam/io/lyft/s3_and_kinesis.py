@@ -40,12 +40,12 @@ class S3Config(object):
     """
     S3 configuration.
     """
-    DEFAULT_S3_PARALLELISM = 1     # parallelism for s3 source connector. Defaults to 1.
-    DEFAULT_LOOKBACK_THREAD = 23   # threshold in hours for consuming events from S3.
+    DEFAULT_S3_PARALLELISM = 1              # parallelism for s3 source connector. Defaults to 1.
+    DEFAULT_LOOKBACK_THRESHOLD_HOURS = 23   # threshold in hours for consuming events from S3.
 
     def __init__(self):
         self.parallelism = S3Config.DEFAULT_S3_PARALLELISM
-        self.lookback_threshold_hours = S3Config.DEFAULT_LOOKBACK_THREAD
+        self.lookback_threshold_hours = S3Config.DEFAULT_LOOKBACK_THRESHOLD_HOURS
 
     def with_parallelism(self, parallelism):
         self.parallelism = parallelism
@@ -135,7 +135,7 @@ class S3AndKinesisInput(PTransform):
         instance.source_name = payload['source_name']
         s3_config_dict = payload['s3']
 
-        lookback_threshold_hours=s3_config_dict.get('lookback_threshold_hours', S3Config.DEFAULT_LOOKBACK_THREAD)
+        lookback_threshold_hours=s3_config_dict.get('lookback_threshold_hours', S3Config.DEFAULT_LOOKBACK_THRESHOLD_HOURS)
         s3_parallelism=s3_config_dict.get('parallelism', S3Config.DEFAULT_S3_PARALLELISM)
         s3_config = S3Config()
         s3_config.with_lookback_threshold_hours(lookback_threshold_hours)
