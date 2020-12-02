@@ -527,6 +527,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     @Override
     public WindowedValue<byte[]> map(Event value) {
+      LOG.warn(String.format("rm : the event is [{}]".format(value.toString())));
       return WindowedValue.timestampedValueInGlobalWindow(
           getBytes(value), new Instant(getTimestamp(value)));
     }
