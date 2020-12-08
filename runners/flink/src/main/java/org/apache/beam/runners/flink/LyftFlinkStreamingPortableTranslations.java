@@ -172,6 +172,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     if (params.containsKey("max_out_of_orderness_millis")) {
       Number maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
+      LOG.info(String.format("RM: max_out_of_orderness is [%s] ", maxOutOfOrdernessMillis));
       if (maxOutOfOrdernessMillis != null) {
         kafkaSource.assignTimestampsAndWatermarks(
             new WindowedTimestampExtractor<>(
@@ -294,12 +295,17 @@ public class LyftFlinkStreamingPortableTranslations {
       super.setChainingStrategy(ChainingStrategy.ALWAYS);
     }
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(FlinkTimestampAssigner.class.getName());
+
     @Override
     public void processElement(StreamRecord<WindowedValue<T>> element) {
       Instant timestamp = element.getValue().getTimestamp();
       if (timestamp != null && timestamp.getMillis() > 0) {
+        LOG.info(String.format("RM: in process element while writing the timestamp is [%s] ", timestamp.getMillis()));
         super.output.collect(element.replace(element.getValue(), timestamp.getMillis()));
       } else {
+        LOG.info("RM: no timestamp when writing");
         super.output.collect(element);
       }
     }
@@ -805,13 +811,17 @@ public class LyftFlinkStreamingPortableTranslations {
 
   private static class WindowedTimestampExtractor<T>
       extends BoundedOutOfOrdernessTimestampExtractor<WindowedValue<T>> {
+    private static final Logger LOG =
+            LoggerFactory.getLogger(WindowedTimestampExtractor.class.getName());
     public WindowedTimestampExtractor(Time maxOutOfOrderness) {
       super(maxOutOfOrderness);
     }
 
     @Override
     public long extractTimestamp(WindowedValue<T> element) {
-      return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+      long ts = element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+      LOG.info(String.format("RM : while consuming, the extract ts is [%s]", ts));
+      return ts;
     }
   }
 }
