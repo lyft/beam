@@ -22,7 +22,7 @@ import org.gradle.api.Project
 
 class Repositories {
 
-  static class Repository {
+  class Repository {
     String url
     String id
     String username
@@ -126,7 +126,7 @@ class Repositories {
     def settingsXml = new File(System.getProperty('user.home'), '.m2/settings.xml')
     def content = new XmlSlurper().parse(settingsXml)
     def repo = content.'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
-    Repositories.Repository repository = new Repositories.Repository()
+    Repositories.Repository repository = new Repositories().Repository()
     if (repo) {
       GroovyShell shell = new GroovyShell(new Binding([env: System.getenv()]))
       repository.url = shell.evaluate('"' + repo.url.text() + '"')
