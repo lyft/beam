@@ -69,7 +69,7 @@ class Repositories {
       }
 
       //LYFT CUSTOM pull in the central repo override from settings, if any
-      Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
+      Repository releasesConfig = fetchLyftRepositoryConfig("lyft-release")
       if (releasesConfig.url != null) {
         maven {
           url releasesConfig.url
@@ -81,7 +81,7 @@ class Repositories {
         }
       }
 
-      Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshots")
+      Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshot")
       if (snapshotsConfig.url != null) {
         maven {
           url snapshotsConfig.url
