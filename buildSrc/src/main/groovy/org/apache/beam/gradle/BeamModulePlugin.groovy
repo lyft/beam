@@ -495,7 +495,7 @@ class BeamModulePlugin implements Plugin<Project> {
         maven_exec_plugin    : "maven-plugins:maven-exec-plugin:1.6.0",
         maven_jar_plugin     : "maven-plugins:maven-jar-plugin:3.0.2",
         maven_shade_plugin   : "maven-plugins:maven-shade-plugin:3.1.0",
-        maven_surefire_plugin: "maven-plugins:maven-surefire-plugin:2.21.0-lyft202105181621359297",
+        maven_surefire_plugin: "maven-plugins:maven-surefire-plugin:2.21.0-lyft202105181621359935-lyft202105181621359297",
       ],
     ]
 
