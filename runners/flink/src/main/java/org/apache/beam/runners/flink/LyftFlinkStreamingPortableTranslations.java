@@ -551,6 +551,18 @@ public class LyftFlinkStreamingPortableTranslations {
       builder = builder.withLookbackHours(lookbackHours.asInt());
     }
 
+     // Add s3 start datetime 
+     JsonNode startDate = userS3Config.get("startDate");
+     if (startDate != null) {
+       builder = builder.withStartDate(startDate.asText());
+     }
+
+      // Add s3 end datetime 
+    JsonNode endDate = userS3Config.get("endDate");
+    if (endDate != null) {
+      builder = builder.withEndDate(endDate.asText());
+    }
+
     return builder.build();
   }
 
