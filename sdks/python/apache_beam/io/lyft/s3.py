@@ -42,6 +42,10 @@ class S3Input(PTransform):
     self.events.append(event)
     return self
 
+  def with_events(self, eventList):
+    self.events = eventList
+    return self
+
   def with_s3_config(self, s3_config):
     self.s3_config = s3_config
     return self
