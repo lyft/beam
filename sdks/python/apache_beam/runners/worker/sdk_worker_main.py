@@ -93,7 +93,7 @@ def main(unused_argv):
       # Send all logs to the runner.
       fn_log_handler = FnApiLogRecordHandler(logging_service_descriptor)
       # TODO(BEAM-5468): This should be picked up from pipeline options.
-      logging.getLogger().setLevel(logging.INFO)
+      logging.getLogger().setLevel(logging.DEBUG)
       logging.getLogger().addHandler(fn_log_handler)
       _LOGGER.info('Logging handler created.')
     except Exception:
