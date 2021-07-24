@@ -689,7 +689,9 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
 
   def create_state_handler(self, api_service_descriptor):
     # type: (endpoints_pb2.ApiServiceDescriptor) -> CachingStateHandler
+    _LOGGER.info('RM in create state handler')
     if not api_service_descriptor or api_service_descriptor == endpoints_pb2.ApiServiceDescriptor():
+      _LOGGER.info('RM...emtpy api service descriptor')
       return self._throwing_state_handler
     url = api_service_descriptor.url
     if url not in self._state_handler_cache:
@@ -705,10 +707,10 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
             grpc_channel = GRPCChannelFactory.insecure_channel(
                 url, options=options)
           else:
-            _LOGGER.info('Creating secure state channel for %s.', url)
+            _LOGGER.info('RM Creating secure state channel for %s.', url)
             grpc_channel = GRPCChannelFactory.secure_channel(
                 url, self._credentials, options=options)
-          _LOGGER.info('State channel established.')
+          _LOGGER.info('RM State channel established.')
           # Add workerId to the grpc channel
           grpc_channel = grpc.intercept_channel(
               grpc_channel, WorkerIdInterceptor())
@@ -720,7 +722,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
 
   def close(self):
     # type: () -> None
-    _LOGGER.info('Closing all cached gRPC state handlers.')
+    _LOGGER.info('RM Closing all cached gRPC state handlers.')
     for _, state_handler in self._state_handler_cache.items():
       state_handler.done()
     self._state_handler_cache.clear()
@@ -731,7 +733,7 @@ class ThrowingStateHandler(StateHandler):
   """A state handler that errors on any requests."""
   def get_raw(self, state_key, coder):
     raise RuntimeError(
-        'Unable to handle state requests for ProcessBundleDescriptor without '
+        'RM Unable to handle state requests for ProcessBundleDescriptor without '
         'state ApiServiceDescriptor for state key %s.' % state_key)
 
   def append_raw(self, state_key, coder, elements):

@@ -95,7 +95,7 @@ def main(unused_argv):
       # TODO(BEAM-5468): This should be picked up from pipeline options.
       logging.getLogger().setLevel(logging.DEBUG)
       logging.getLogger().addHandler(fn_log_handler)
-      _LOGGER.info('Logging handler created.')
+      _LOGGER.info('RM...Logging handler created.')
     except Exception:
       _LOGGER.error(
           "Failed to set up logging handler, continuing without.",
@@ -122,7 +122,7 @@ def main(unused_argv):
   else:
     semi_persistent_directory = None
 
-  _LOGGER.info('semi_persistent_directory: %s', semi_persistent_directory)
+  _LOGGER.info('RM semi_persistent_directory: %s', semi_persistent_directory)
   _worker_id = os.environ.get('WORKER_ID', None)
 
   try:
@@ -156,7 +156,7 @@ def main(unused_argv):
             sdk_pipeline_options),
         profiler_factory=profiler.Profile.factory_from_options(
             sdk_pipeline_options.view_as(ProfilingOptions))).run()
-    _LOGGER.info('Python sdk harness exiting.')
+    _LOGGER.info('RM Python sdk harness exiting.')
   except:  # pylint: disable=broad-except
     _LOGGER.exception('Python sdk harness failed: ')
     raise
