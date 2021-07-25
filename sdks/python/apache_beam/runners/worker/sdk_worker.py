@@ -213,7 +213,7 @@ class SdkHarness(object):
 
     try:
       for work_request in self._control_stub.Control(get_responses()):
-        _LOGGER.debug('Got work %s', work_request.instruction_id)
+        _LOGGER.info('Got work %s', work_request.instruction_id)
         request_type = work_request.WhichOneof('request')
         # Name spacing the request method with 'request_'. The called method
         # will be like self.request_register(request)
@@ -304,8 +304,8 @@ class SdkHarness(object):
           lambda: self.create_worker().do_instruction(request), request)
 
     self._worker_thread_pool.submit(task)
-    _LOGGER.debug(
-        "Currently using %s threads." % len(self._worker_thread_pool._workers))
+    _LOGGER.info(
+        "RM..Currently using %s threads." % len(self._worker_thread_pool._workers))
 
   def create_worker(self):
     return SdkWorker(
@@ -355,6 +355,7 @@ class BundleProcessorCache(object):
     # type: (beam_fn_api_pb2.ProcessBundleDescriptor) -> None
 
     """Register a ``beam_fn_api_pb2.ProcessBundleDescriptor`` by its id."""
+    _LOGGER.info('RM...registering bundle descriptor id [{}]'.format(bundle_descriptor.id))
     self.fns[bundle_descriptor.id] = bundle_descriptor
 
   def get(self, instruction_id, bundle_descriptor_id):
@@ -367,6 +368,9 @@ class BundleProcessorCache(object):
     """
     try:
       # pop() is threadsafe
+      _LOGGER.info('RM...sdk_woker get instruction_id [{}], desc [{}]'.format(instruction_id, bundle_descriptor_id))
+      _LOGGER.info('RM...sdk_woker cached_bundle_processors [{}]'.format(self.cached_bundle_processors.keys()))
+
       processor = self.cached_bundle_processors[bundle_descriptor_id].pop()
     except IndexError:
       processor = bundle_processor.BundleProcessor(
@@ -384,6 +388,7 @@ class BundleProcessorCache(object):
     """
     Return the requested ``BundleProcessor`` from the cache.
     """
+    _LOGGER.info('RM...sdk_worker in lookup [{}]'.format(instruction_id))
     return self.active_bundle_processors.get(instruction_id, (None, None))[-1]
 
   def discard(self, instruction_id):
@@ -392,6 +397,7 @@ class BundleProcessorCache(object):
     """
     Remove the ``BundleProcessor`` from the cache.
     """
+    _LOGGER.info('RM...sdk_worker in discard [{}]'.format(instruction_id))
     self.active_bundle_processors[instruction_id][1].shutdown()
     del self.active_bundle_processors[instruction_id]
 
@@ -404,7 +410,10 @@ class BundleProcessorCache(object):
     Resets the ``BundleProcessor`` and moves it from the active to the
     inactive cache.
     """
+    _LOGGER.info('RM...sdk_worker in releae [{}]'.format(instruction_id))
     descriptor_id, processor = self.active_bundle_processors.pop(instruction_id)
+    _LOGGER.info('RM...sdk_worker in releae for processor [{}]'.format(processor))
+
     processor.reset()
     self.last_access_times[descriptor_id] = time.time()
     self.cached_bundle_processors[descriptor_id].append(processor)
@@ -430,6 +439,7 @@ class BundleProcessorCache(object):
       for descriptor_id, last_access_time in self.last_access_times.items():
         if (time.time() - last_access_time >
             DEFAULT_BUNDLE_PROCESSOR_CACHE_SHUTDOWN_THRESHOLD_S):
+          _LOGGER.info('RM..sdk_worker...shcedule periodic shutdown invoked')
           BundleProcessorCache._shutdown_cached_bundle_processors(
               self.cached_bundle_processors[descriptor_id])
 
@@ -444,6 +454,7 @@ class BundleProcessorCache(object):
     try:
       while True:
         # pop() is threadsafe
+        _LOGGER.info('RM..sdk_worker...in shutdown cache bundle [{}]'.format(cached_bundle_processors))
         bundle_processor = cached_bundle_processors.pop()
         bundle_processor.shutdown()
     except IndexError:
@@ -689,7 +700,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
 
   def create_state_handler(self, api_service_descriptor):
     # type: (endpoints_pb2.ApiServiceDescriptor) -> CachingStateHandler
-    _LOGGER.info('RM in create state handler')
+    _LOGGER.info('RM in create state handler [{}]'.format(api_service_descriptor))
     if not api_service_descriptor or api_service_descriptor == endpoints_pb2.ApiServiceDescriptor():
       _LOGGER.info('RM...emtpy api service descriptor')
       return self._throwing_state_handler

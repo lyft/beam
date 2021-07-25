@@ -911,7 +911,7 @@ class BundleProcessor(object):
       self.state_sampler.start()
       # Start all operations.
       for op in reversed(self.ops.values()):
-        _LOGGER.debug('start %s', op)
+        _LOGGER.info('start %s', op)
         op.execution_context = execution_context
         op.start()
 
@@ -960,7 +960,7 @@ class BundleProcessor(object):
 
       # Finish all operations.
       for op in self.ops.values():
-        _LOGGER.debug('finish %s', op)
+        _LOGGER.info('RM..finish %s', op)
         op.finish()
 
       # Close every timer output stream
@@ -1147,7 +1147,7 @@ class BeamTransformFactory(object):
     # type: (...) -> operations.Operation
     transform_proto = self.descriptor.transforms[transform_id]
     if not transform_proto.unique_name:
-      _LOGGER.debug("No unique name set for transform %s" % transform_id)
+      _LOGGER.info("RM..No unique name set for transform %s" % transform_id)
       transform_proto.unique_name = transform_id
     creator, parameter_type = self._known_urns[transform_proto.spec.urn]
     payload = proto_utils.parse_Bytes(
@@ -1171,6 +1171,8 @@ class BeamTransformFactory(object):
 
   def get_coder(self, coder_id):
     # type: (str) -> coders.Coder
+    _LOGGER.info('RM..get_coder...all coders [{}]'.format(self.descriptor.coders))
+    _LOGGER.info('RM..get_coder... coder id is [{}]'.format(coder_id))
     if coder_id not in self.descriptor.coders:
       raise KeyError("No such coder: %s" % coder_id)
     coder_proto = self.descriptor.coders[coder_id]
@@ -1183,6 +1185,8 @@ class BeamTransformFactory(object):
 
   def get_windowed_coder(self, pcoll_id):
     # type: (str) -> coders.Coder
+    _LOGGER.info('RM..In windowed coder the pcoll_id is [{}]'.format(pcoll_id))
+    _LOGGER.info('RM..In windowed coder the keys [{}]'.format(self.descriptor.pcollections.keys()))
     coder = self.get_coder(self.descriptor.pcollections[pcoll_id].coder_id)
     # TODO(robertwb): Remove this condition once all runners are consistent.
     if not isinstance(coder, WindowedValueCoder):
