@@ -1171,8 +1171,6 @@ class BeamTransformFactory(object):
 
   def get_coder(self, coder_id):
     # type: (str) -> coders.Coder
-    _LOGGER.info('RM..get_coder...all coders [{}]'.format(self.descriptor.coders))
-    _LOGGER.info('RM..get_coder... coder id is [{}]'.format(coder_id))
     if coder_id not in self.descriptor.coders:
       raise KeyError("No such coder: %s" % coder_id)
     coder_proto = self.descriptor.coders[coder_id]
@@ -1185,8 +1183,6 @@ class BeamTransformFactory(object):
 
   def get_windowed_coder(self, pcoll_id):
     # type: (str) -> coders.Coder
-    _LOGGER.info('RM..In windowed coder the pcoll_id is [{}]'.format(pcoll_id))
-    _LOGGER.info('RM..In windowed coder the keys [{}]'.format(self.descriptor.pcollections.keys()))
     coder = self.get_coder(self.descriptor.pcollections[pcoll_id].coder_id)
     # TODO(robertwb): Remove this condition once all runners are consistent.
     if not isinstance(coder, WindowedValueCoder):
@@ -1202,7 +1198,7 @@ class BeamTransformFactory(object):
     return {
         tag: self.get_windowed_coder(pcoll_id)
         for tag,
-        pcoll_id in transform_proto.outputs.items()
+        pcoll_id in transform_proto.outputs.items() if pcoll_id
     }
 
   def get_only_output_coder(self, transform_proto):
@@ -1548,6 +1544,7 @@ def _create_pardo_operation(
       user_state_context = None
   else:
     user_state_context = None
+
 
   output_coders = factory.get_output_coders(transform_proto)
   spec = operation_specs.WorkerDoFn(
