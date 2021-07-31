@@ -70,13 +70,14 @@ class Repositories {
 
       //LYFT CUSTOM pull in the central repo override from settings, if any
       Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
+
       if (releasesConfig.url != null) {
         maven {
           url releasesConfig.url
           name releasesConfig.id
           credentials {
-            username releasesConfig.username
-            password releasesConfig.password
+            username "headless-prod"
+            password "5c25cf425ad4bf080100ca8a"
           }
         }
       }
@@ -87,8 +88,8 @@ class Repositories {
           url snapshotsConfig.url
           name snapshotsConfig.id
           credentials {
-            username snapshotsConfig.username
-            password snapshotsConfig.password
+            username "headless-prod"
+            password "5c25cf425ad4bf080100ca8a"
           }
         }
       }
