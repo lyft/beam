@@ -147,7 +147,6 @@ class Repositories {
         repository.password = "TwzsX7XfoEEyAVzqKbRR7uo7so"
       }
     }
-    
     return repository
   }
 }
