@@ -134,13 +134,6 @@ class Repositories {
     }
 
     def content = new XmlSlurper().parse(settingsXml)
-    println "the settings xml content is $content"
-
-//    def settingsXmls = new File('/etc/maven/settings.xml')
-//    def contents = new XmlSlurper().parse(settingsXmls)
-//    println "the settings xmls content is $contents"
-
-
     def repo = content.'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
     Repositories.Repository repository = new Repositories.Repository()
     if (repo) {
