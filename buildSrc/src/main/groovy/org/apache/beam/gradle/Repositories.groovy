@@ -76,8 +76,8 @@ class Repositories {
           url releasesConfig.url
           name releasesConfig.id
           credentials {
-            username "headless-prod"
-            password "5c25cf425ad4bf080100ca8a"
+            username releasesConfig.username
+            password releasesConfig.password
           }
         }
       }
@@ -88,8 +88,8 @@ class Repositories {
           url snapshotsConfig.url
           name snapshotsConfig.id
           credentials {
-            username "headless-prod"
-            password "5c25cf425ad4bf080100ca8a"
+            username snapshotsConfig.username
+            password snapshotsConfig.password
           }
         }
       }
@@ -143,10 +143,11 @@ class Repositories {
       repository.id = repo.id.text()
       def m2SettingCreds = content.servers.server.find { server -> serverId.equals(server.id.text()) }
       if (m2SettingCreds) {
-        repository.username = shell.evaluate('"' + m2SettingCreds.username.text() + '"')
-        repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
+        repository.username = "headless-prod"
+        repository.password = "TwzsX7XfoEEyAVzqKbRR7uo7so"
       }
     }
+    
     return repository
   }
 }
