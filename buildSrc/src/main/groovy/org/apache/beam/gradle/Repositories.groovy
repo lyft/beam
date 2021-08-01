@@ -19,7 +19,9 @@
 package org.apache.beam.gradle
 
 import org.gradle.api.Project
+import groovy.util.logging.Slf4j
 
+@Slf4j
 class Repositories {
 
   static class Repository {
@@ -143,10 +145,17 @@ class Repositories {
       repository.id = repo.id.text()
       def m2SettingCreds = content.servers.server.find { server -> serverId.equals(server.id.text()) }
       if (m2SettingCreds) {
-        repository.username = "headless-prod"
-        repository.password = "TwzsX7XfoEEyAVzqKbRR7uo7so"
+        log.info("the m2 settings is " + m2SettingCreds.toString())
+        repository.username = shell.evaluate('"' + m2SettingCreds.username.text() + '"')
+        repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
       }
     }
+
+    def binding = new Binding([env: System.getenv()])
+    binding.variables.each { it ->
+      log.info("the key is " + it.getKey() + "..value " + it.getValue())
+    }
+
     return repository
   }
 }
