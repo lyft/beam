@@ -145,9 +145,10 @@ class Repositories {
       repository.id = repo.id.text()
       def m2SettingCreds = content.servers.server.find { server -> serverId.equals(server.id.text()) }
       if (m2SettingCreds) {
-        log.info("the m2 settings is " + m2SettingCreds.toString())
         repository.username = shell.evaluate('"' + m2SettingCreds.username.text() + '"')
         repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
+        log.info("the repository.username is " + repository.username)
+        log.info("the repository.password is " + repository.password)
       }
     }
 
