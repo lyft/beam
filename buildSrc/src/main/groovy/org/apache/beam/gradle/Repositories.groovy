@@ -147,8 +147,6 @@ class Repositories {
       if (m2SettingCreds) {
         repository.username = shell.evaluate('"' + m2SettingCreds.username.text() + '"')
         repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
-        log.info("the repository.username is " + repository.username)
-        log.info("the repository.password is " + repository.password)
       }
     }
 
