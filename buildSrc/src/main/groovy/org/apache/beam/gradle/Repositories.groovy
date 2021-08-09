@@ -149,12 +149,6 @@ class Repositories {
         repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
       }
     }
-
-    def binding = new Binding([env: System.getenv()])
-    binding.variables.each { it ->
-      log.info("the key is " + it.getKey() + "..value " + it.getValue())
-    }
-
     return repository
   }
 }
