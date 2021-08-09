@@ -198,7 +198,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     public ByteArrayWindowedValueSchema() {
       this.ti =
-          new CoderTypeInformation<>(
+          new CoderTypeInformation<WindowedValue<byte[]>>(
               WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
     }
 
@@ -305,7 +305,8 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     @Override
-    public void setup(StreamTask containingTask, StreamConfig config, Output output) {
+    public void setup(StreamTask<?, ?> containingTask, StreamConfig config,
+                      Output<StreamRecord<WindowedValue<T>>> output) {
       super.setup(containingTask, config, output);
     }
   }
@@ -672,7 +673,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     public KinesisByteArrayWindowedValueSchema() {
       this.ti =
-          new CoderTypeInformation<>(
+          new CoderTypeInformation<WindowedValue<byte[]>>(
               WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
     }
 
@@ -705,7 +706,7 @@ public class LyftFlinkStreamingPortableTranslations {
       implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final TypeInformation<WindowedValue<byte[]>> ti =
-        new CoderTypeInformation<>(
+        new CoderTypeInformation<WindowedValue<byte[]>>(
             WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
 
     private static String inflate(byte[] deflatedData) throws IOException {
