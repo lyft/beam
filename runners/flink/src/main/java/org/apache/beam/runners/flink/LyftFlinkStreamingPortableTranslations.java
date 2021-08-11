@@ -84,7 +84,6 @@ import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
 import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
@@ -303,11 +302,6 @@ public class LyftFlinkStreamingPortableTranslations {
       } else {
         super.output.collect(element);
       }
-    }
-
-    @Override
-    public void setup(StreamTask containingTask, StreamConfig config, Output output) {
-      super.setup(containingTask, config, output);
     }
   }
 
