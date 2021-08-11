@@ -60,6 +60,7 @@ import org.apache.beam.runners.flink.FlinkStreamingPortablePipelineTranslator.PT
 import org.apache.beam.runners.flink.FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext;
 import org.apache.beam.runners.flink.translation.types.CoderTypeInformation;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
@@ -161,7 +162,7 @@ public class LyftFlinkStreamingPortableTranslations {
     consumerBuilder.withKafkaProperties(properties);
 
     FlinkKafkaConsumer<WindowedValue<byte[]>> kafkaSource =
-        consumerBuilder.build(topic, new ByteArrayWindowedValueSchema());
+        consumerBuilder.build(topic, new ByteArrayWindowedValueSchema(context));
 
     if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
       kafkaSource.setStartFromTimestamp(
@@ -196,10 +197,10 @@ public class LyftFlinkStreamingPortableTranslations {
 
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
-    public ByteArrayWindowedValueSchema() {
-      this.ti =
-          new CoderTypeInformation<>(
-              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
+    public ByteArrayWindowedValueSchema(StreamingTranslationContext context) {
+      WindowedValue.FullWindowedValueCoder<byte[]> fullCoder = WindowedValue.getFullCoder(ByteArrayCoder.of(),
+              GlobalWindow.Coder.INSTANCE);
+      this.ti = new CoderTypeInformation<>(fullCoder, context.getPipelineOptions());
     }
 
     @Override
@@ -346,11 +347,11 @@ public class LyftFlinkStreamingPortableTranslations {
         case BYTES_ENCODING:
           source =
               FlinkLyftKinesisConsumer.create(
-                  stream, new KinesisByteArrayWindowedValueSchema(), properties);
+                  stream, new KinesisByteArrayWindowedValueSchema(context), properties);
           break;
         case LYFT_BASE64_ZLIB_JSON:
           source =
-              FlinkLyftKinesisConsumer.create(stream, new LyftBase64ZlibJsonSchema(), properties);
+              FlinkLyftKinesisConsumer.create(stream, new LyftBase64ZlibJsonSchema(context), properties);
           source.setPeriodicWatermarkAssigner(
               new WindowedTimestampExtractor<>(Time.milliseconds(maxOutOfOrdernessMillis)));
           break;
@@ -670,11 +671,12 @@ public class LyftFlinkStreamingPortableTranslations {
       implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
-    public KinesisByteArrayWindowedValueSchema() {
+    public KinesisByteArrayWindowedValueSchema(StreamingTranslationContext context) {
       this.ti =
           new CoderTypeInformation<>(
-              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE), context.getPipelineOptions());
     }
+
 
     @Override
     public TypeInformation<WindowedValue<byte[]>> getProducedType() {
@@ -704,9 +706,13 @@ public class LyftFlinkStreamingPortableTranslations {
   static class LyftBase64ZlibJsonSchema
       implements KinesisDeserializationSchema<WindowedValue<byte[]>> {
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static final TypeInformation<WindowedValue<byte[]>> ti =
-        new CoderTypeInformation<>(
-            WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE));
+    private final TypeInformation<WindowedValue<byte[]>> ti;
+
+    public LyftBase64ZlibJsonSchema(StreamingTranslationContext context) {
+      ti = new CoderTypeInformation<>(
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
+              context.getPipelineOptions());
+    }
 
     private static String inflate(byte[] deflatedData) throws IOException {
       Inflater inflater = new Inflater();

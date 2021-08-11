@@ -22,7 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
-import org.apache.beam.runners.fnexecution.GrpcFnServer;
+import org.apache.beam.sdk.fn.server.GrpcFnServer;
 import org.apache.beam.runners.fnexecution.artifact.ArtifactRetrievalService;
 import org.apache.beam.runners.fnexecution.control.ControlClientPool;
 import org.apache.beam.runners.fnexecution.control.FnApiControlClientPoolService;
