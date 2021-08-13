@@ -120,7 +120,7 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
             translator.createTranslationContext(jobInfo, pipelineOptions, confDir, filesToStage),
             fusedPipeline);
 
-    LOG.info("FlinkPipelineRunner prior to execution ", fusedPipeline.);
+    LOG.info("FlinkPipelineRunner prior to execution ");
     final JobExecutionResult result = executor.execute(pipelineOptions.getJobName());
 
     return createPortablePipelineResult(result, pipelineOptions);
