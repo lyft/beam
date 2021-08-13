@@ -20,6 +20,7 @@ package org.apache.beam.runners.flink;
 import static org.apache.beam.runners.core.construction.resources.PipelineResources.detectClassPathResourcesToStage;
 import static org.apache.beam.runners.fnexecution.translation.PipelineTranslatorUtils.hasUnboundedPCollections;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -73,6 +74,7 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
 
   @Override
   public PortablePipelineResult run(final Pipeline pipeline, JobInfo jobInfo) throws Exception {
+    LOG.info("in FlinkPipelineRunner where the job id [%s] and token [%s] ", jobInfo.jobId(), jobInfo.retrievalToken());
     MetricsEnvironment.setMetricsSupported(false);
 
     FlinkPortablePipelineTranslator<?> translator;
@@ -80,7 +82,9 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
       // TODO: Do we need to inspect for unbounded sources before fusing?
       translator = FlinkBatchPortablePipelineTranslator.createTranslator();
     } else {
+      LOG.info("in FlinkPipelineRunner in streaming");
       translator = new FlinkStreamingPortablePipelineTranslator();
+      LOG.info("in FlinkPipelineRunner after streaming");
     }
     return runPipelineWithTranslator(pipeline, jobInfo, translator);
   }
@@ -115,6 +119,8 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
         translator.translate(
             translator.createTranslationContext(jobInfo, pipelineOptions, confDir, filesToStage),
             fusedPipeline);
+
+    LOG.info("FlinkPipelineRunner prior to execution ", fusedPipeline.);
     final JobExecutionResult result = executor.execute(pipelineOptions.getJobName());
 
     return createPortablePipelineResult(result, pipelineOptions);
@@ -171,6 +177,8 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
         "No default job name found. Job name must be set using --base-job-name.");
     Pipeline pipeline = PortablePipelineJarUtils.getPipelineFromClasspath(baseJobName);
     Struct originalOptions = PortablePipelineJarUtils.getPipelineOptionsFromClasspath(baseJobName);
+    LOG.info("in FlinkPipelineRunner with base job name [%s]", baseJobName);
+    LOG.info("in FlinkPipelineRunner the [%s] ", pipeline.toString());
 
     // The retrieval token is only required by the legacy artifact service, which the Flink runner
     // no longer uses.
@@ -179,11 +187,17 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
             .getValueDescriptor()
             .getOptions()
             .getExtension(RunnerApi.beamConstant);
+    
+    LOG.info("in FlinkPipelineRunner the retrieval token is [%s] ", retrievalToken);
 
     FlinkPipelineOptions flinkOptions =
         PipelineOptionsTranslation.fromProto(originalOptions).as(FlinkPipelineOptions.class);
     String invocationId =
         String.format("%s_%s", flinkOptions.getJobName(), UUID.randomUUID().toString());
+
+    LOG.info("in FlinkPipelineRunner the invocationId token is [%s] ", invocationId);
+    LOG.info("in FlinkPipelineRunner the flink confDir token is [%s] ", configuration.flinkConfDir);
+
 
     FlinkPipelineRunner runner =
         new FlinkPipelineRunner(
@@ -191,12 +205,19 @@ public class FlinkPipelineRunner implements PortablePipelineRunner {
             configuration.flinkConfDir,
             detectClassPathResourcesToStage(
                 FlinkPipelineRunner.class.getClassLoader(), flinkOptions));
+
+    LOG.info("in FlinkPipelineRunner the class path [%s] ",
+            Arrays.toString(runner.filesToStage.toArray(new String[0])));
+
+
     JobInfo jobInfo =
         JobInfo.create(
             invocationId,
             flinkOptions.getJobName(),
             retrievalToken,
             PipelineOptionsTranslation.toProto(flinkOptions));
+
+    LOG.info("in FlinkPipelineRunner job info pipelineops [%s] ", jobInfo.pipelineOptions().toString());
     try {
       runner.run(pipeline, jobInfo);
     } catch (Exception e) {
