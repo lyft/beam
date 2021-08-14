@@ -106,7 +106,7 @@ class FlinkKafkaInput(PTransform):
     self.password = password
     return self
 
-@beam.typehints.with_input_types(bytes)
+# @beam.typehints.with_input_types(bytes)
 class FlinkKafkaSink(PTransform):
   """
     Custom transform that wraps a Flink Kafka producer - only works with the
