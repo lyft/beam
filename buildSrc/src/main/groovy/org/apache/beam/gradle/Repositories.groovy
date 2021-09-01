@@ -146,7 +146,7 @@ class Repositories {
         repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
       }
     }
-    println "username: ${repository.getUsername()}"
+    println "username: ${repository.getUsername()} , password: ${repository.getPassword()}"
     return repository
   }
 }
