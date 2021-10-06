@@ -72,11 +72,11 @@ class Repositories {
       Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
       if (releasesConfig.url != null) {
         maven {
-          url releasesConfig.url
-          name releasesConfig.id
+          url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-release"
+          name "lyft-releases"
           credentials {
-            username releasesConfig.username
-            password releasesConfig.password
+            username System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_USERNAME")
+            password System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_PASSWORD")
           }
         }
       }
@@ -84,11 +84,11 @@ class Repositories {
       Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshots")
       if (snapshotsConfig.url != null) {
         maven {
-          url snapshotsConfig.url
-          name snapshotsConfig.id
+          url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-snapshot"
+          name "lyft-snapshots"
           credentials {
-            username snapshotsConfig.username
-            password snapshotsConfig.password
+            username System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_USERNAME")
+            password System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_PASSWORD")
           }
         }
       }
@@ -129,10 +129,7 @@ class Repositories {
    * @return
    */
   static Repository fetchLyftRepositoryConfig(String serverId) {
-    def settingsXml = new File(System.getProperty('user.home'), '.m2/settings.xml')
-    if (!settingsXml.exists()) {
-      settingsXml = new File('/etc/maven/settings.xml')
-    }
+    def settingsXml = new File('/etc/maven/settings.xml')
     def content = new XmlSlurper().parse(settingsXml)
     def repo = content.'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
     Repositories.Repository repository = new Repositories.Repository()
