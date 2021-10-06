@@ -69,27 +69,21 @@ class Repositories {
       }
 
       //LYFT CUSTOM pull in the central repo override from settings, if any
-      Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
-      if (releasesConfig.url != null) {
-        maven {
-          url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-release"
-          name "lyft-releases"
-          credentials {
-            username System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_USERNAME")
-            password System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_PASSWORD")
-          }
+      maven {
+        url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-release"
+        name "lyft-releases"
+        credentials {
+          username project.properties['username']
+          username project.properties['username']
         }
       }
 
-      Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshots")
-      if (snapshotsConfig.url != null) {
-        maven {
-          url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-snapshot"
-          name "lyft-snapshots"
-          credentials {
-            username System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_USERNAME")
-            password System.getenv("CREDENTIALS_MAVEN_LYFT_JFROG_PASSWORD")
-          }
+      maven {
+        url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-snapshot"
+        name "lyft-snapshots"
+        credentials {
+          username project.properties['username']
+          password project.properties['password']
         }
       }
 
