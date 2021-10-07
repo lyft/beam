@@ -19,6 +19,7 @@
 package org.apache.beam.gradle
 
 import org.gradle.api.Project
+import org.gradle.authentication.http.BasicAuthentication
 
 class Repositories {
 
@@ -69,27 +70,27 @@ class Repositories {
       }
 
       //LYFT CUSTOM pull in the central repo override from settings, if any
-      Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
-      if (releasesConfig.url != null) {
-        maven {
-          url releasesConfig.url
-          name releasesConfig.id
-          credentials {
-            username releasesConfig.username
-            password releasesConfig.password
-          }
+      maven {
+        url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-release"
+        name "lyft-releases"
+        credentials {
+          username project.properties['username']
+          password project.properties['password']
+        }
+        authentication {
+          basic(BasicAuthentication)
         }
       }
 
-      Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshots")
-      if (snapshotsConfig.url != null) {
-        maven {
-          url snapshotsConfig.url
-          name snapshotsConfig.id
-          credentials {
-            username snapshotsConfig.username
-            password snapshotsConfig.password
-          }
+      maven {
+        url "https://jarjarflinks.jfrog.io/jarjarflinks/libs-snapshot"
+        name "lyft-snapshots"
+        credentials {
+          username project.properties['username']
+          password project.properties['password']
+        }
+        authentication {
+          basic(BasicAuthentication)
         }
       }
 
