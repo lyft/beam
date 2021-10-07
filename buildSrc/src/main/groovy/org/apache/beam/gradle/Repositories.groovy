@@ -77,9 +77,6 @@ class Repositories {
           username project.properties['username']
           password project.properties['password']
         }
-        authentication {
-          basic(BasicAuthentication)
-        }
       }
 
       maven {
@@ -88,9 +85,6 @@ class Repositories {
         credentials {
           username project.properties['username']
           password project.properties['password']
-        }
-        authentication {
-          basic(BasicAuthentication)
         }
       }
 
