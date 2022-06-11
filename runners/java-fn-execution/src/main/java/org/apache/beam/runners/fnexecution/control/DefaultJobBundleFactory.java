@@ -19,6 +19,12 @@ package org.apache.beam.runners.fnexecution.control;
 
 import com.google.auto.value.AutoValue;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalUnit;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -226,6 +232,10 @@ public class DefaultJobBundleFactory implements JobBundleFactory {
                   });
 
       if (environmentExpirationMillis > 0) {
+        LocalDateTime dateTime = LocalDateTime.now()
+            .plus(Duration.ofMillis(environmentExpirationMillis));
+        LOG.info(String.format("Worker id [%s] will expire at [%s] ",
+            stageIdGenerator.getId(), dateTime.toString()));
         cacheBuilder.expireAfterWrite(environmentExpirationMillis, TimeUnit.MILLISECONDS);
       }
 
