@@ -25,7 +25,6 @@ from __future__ import print_function
 
 import logging
 import math
-import os
 import queue
 import sys
 import threading
@@ -93,7 +92,6 @@ class FnApiLogRecordHandler(logging.Handler):
         name='read_log_control_messages')
     self._reader.daemon = True
     self._reader.start()
-    self._worker_id = os.environ.get('WORKER_ID')
 
   def connect(self):
     # type: () -> Iterable
@@ -116,9 +114,7 @@ class FnApiLogRecordHandler(logging.Handler):
     # type: (logging.LogRecord) -> None
     log_entry = beam_fn_api_pb2.LogEntry()
     log_entry.severity = self.map_log_level(record.levelno)
-    log_entry.message = "[{worker_id}]: {message}".format(
-        worker_id = self._worker_id,
-        message = self.format(record))
+    log_entry.message = self.format(record)
     log_entry.thread = record.threadName
     log_entry.log_location = '%s:%s' % (
         record.pathname or record.module, record.lineno or record.funcName)
