@@ -288,6 +288,21 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     Assert.assertEquals(FlinkKafkaProducer.class, kafkaSinkCaptor.getValue().getClass());
   }
 
+  @Test
+  public void testTranslateAnalyticsEventKafkaConsumerEventBuilder() {
+    String id = "1";
+    String eventName = "foo";
+    runAndAssertAnalyticsEventSource(id, eventName);
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, String eventName, byte[] payload) {
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+            new LyftFlinkStreamingPortableTranslations();
+
+    portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(id, pipeline, streamingContext);
+  }
+
   /**
    * utility method to create payload for tests.
    *

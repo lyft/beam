@@ -184,12 +184,12 @@ dependencies {
     compile "org.apache.flink:flink-connector-kafka_2.11:1.13-lyft20210804"
     compile "com.amazonaws:aws-java-sdk-s3:1.10.6"
     compile "org.apache.hadoop:hadoop-aws:2.8.3"
-    compile "com.lyft:streamingplatform-kinesis:2.2.1-SNAPSHOT"
-    compile("com.lyft:streamingplatform-kafka:2.2.1-SNAPSHOT") {
+    compile "com.lyft:streamingplatform-kinesis:2.3.1-SNAPSHOT"
+    compile("com.lyft:streamingplatform-kafka:2.3.1-SNAPSHOT") {
       exclude group: "org.apache.flink", module: "flink-connector-kafka-0.11_2.11"
       exclude group: "org.apache.flink", module: "flink-streaming-java_2.11"
     }
-    compile("com.lyft:streamingplatform-events-source:2.2.1-SNAPSHOT") {
+    compile("com.lyft:streamingplatform-events-source:2.3.1-SNAPSHOT") {
       exclude group: "com.lyft", module: "streamingplatform-kinesis"
       exclude group: "com.google.guava", module: "guava"
       exclude group: "com.google.protobuf", module: "protobuf-java"
