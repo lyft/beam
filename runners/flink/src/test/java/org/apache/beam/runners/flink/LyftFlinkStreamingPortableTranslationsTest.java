@@ -298,9 +298,10 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   private void runAndAssertAnalyticsEventSource(String id, String eventName, byte[] payload) {
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
     LyftFlinkStreamingPortableTranslations portableTranslations =
-            new LyftFlinkStreamingPortableTranslations();
+        new LyftFlinkStreamingPortableTranslations();
 
-    portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(id, pipeline, streamingContext);
+    portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(
+        id, pipeline, streamingContext);
   }
 
   /**

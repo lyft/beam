@@ -29,6 +29,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
+import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerEventBuilder;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
@@ -73,11 +74,9 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
@@ -101,7 +100,8 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_S3_URN = "lyft:flinkS3Input";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
-  private static final String ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN = "lyft:analyticsEventKafkaConsumerEventBuilder";
+  private static final String ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN =
+      "lyft:analyticsEventKafkaConsumerEventBuilder";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -113,7 +113,8 @@ public class LyftFlinkStreamingPortableTranslations {
           || FLINK_S3_AND_KINESIS_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
-          || ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
+          || ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
 
@@ -125,7 +126,9 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
     translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
     translatorMap.put(FLINK_S3_URN, this::translateS3Inputs);
-    translatorMap.put(ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN, this::translateAnalyticsEventKafkaConsumerEventBuilder);
+    translatorMap.put(
+        ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN,
+        this::translateAnalyticsEventKafkaConsumerEventBuilder);
   }
 
   @VisibleForTesting
@@ -199,8 +202,8 @@ public class LyftFlinkStreamingPortableTranslations {
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
     public ByteArrayWindowedValueSchema(StreamingTranslationContext context) {
-      WindowedValue.FullWindowedValueCoder<byte[]> fullCoder = WindowedValue.getFullCoder(ByteArrayCoder.of(),
-              GlobalWindow.Coder.INSTANCE);
+      WindowedValue.FullWindowedValueCoder<byte[]> fullCoder =
+          WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE);
       this.ti = new CoderTypeInformation<>(fullCoder, context.getPipelineOptions());
     }
 
@@ -308,17 +311,17 @@ public class LyftFlinkStreamingPortableTranslations {
   }
 
   private void translateAnalyticsEventKafkaConsumerEventBuilder(
-    String id,
-    RunnerApi.Pipeline pipeline,
-    FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
 
     AnalyticsEventKafkaConsumerEventBuilder<Event> sourceBuilder =
-      new AnalyticsEventKafkaConsumerEventBuilder<>();
+        new AnalyticsEventKafkaConsumerEventBuilder<>();
 
     try {
       String eventName = params.path("eventName").textValue();
-      List<String> eventNames = params.path("eventNames")
+      List<String> eventNames = params.path("eventNames");
 
       Map<?, ?> consumerProps = mapper.convertValue(params.path("properties"), Map.class);
       properties.putAll(consumerProps);
@@ -327,11 +330,12 @@ public class LyftFlinkStreamingPortableTranslations {
       String startingOffsets = params.path("startingOffsets").textValue();
       String bootstrapServers = params.path("bootstrapServers").textValue();
 
-      sourceBuilder = sourceBuilder
+      sourceBuilder =
+          sourceBuilder
               .setProperties(properties)
               .setStartingOffsets(startingOffsetsTimestamp)
               .setStartingOffsets(startingOffsets)
-              .setBootstrapServers(bootstrapServers)
+              .setBootstrapServers(bootstrapServers);
 
       if (!eventNames.isEmpty()) {
         sourceBuilder = sourceBuilder.setEventNames(eventNames);
@@ -341,13 +345,13 @@ public class LyftFlinkStreamingPortableTranslations {
     } catch (IOException e) {
       throw new RuntimeException("Could not parse Analytics Event Kafka consumer properties.", e);
     }
-    StreamExecutionEnvironment env = context.getExecutionEnvironment()
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
     DataStream<Event> dataStream = sourceBuilder.build(env);
     context.addDataStream(
-            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
-            context
-                    .getExecutionEnvironment()
-                    .addSource(source, FlinkLyftKinesisConsumer.class.getSimpleName()));
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+        context
+            .getExecutionEnvironment()
+            .addSource(source, FlinkLyftKinesisConsumer.class.getSimpleName()));
   }
 
   private void translateKinesisInput(
@@ -390,7 +394,8 @@ public class LyftFlinkStreamingPortableTranslations {
           break;
         case LYFT_BASE64_ZLIB_JSON:
           source =
-              FlinkLyftKinesisConsumer.create(stream, new LyftBase64ZlibJsonSchema(context), properties);
+              FlinkLyftKinesisConsumer.create(
+                  stream, new LyftBase64ZlibJsonSchema(context), properties);
           source.setPeriodicWatermarkAssigner(
               new WindowedTimestampExtractor<>(Time.milliseconds(maxOutOfOrdernessMillis)));
           break;
@@ -713,9 +718,9 @@ public class LyftFlinkStreamingPortableTranslations {
     public KinesisByteArrayWindowedValueSchema(StreamingTranslationContext context) {
       this.ti =
           new CoderTypeInformation<>(
-              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE), context.getPipelineOptions());
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
+              context.getPipelineOptions());
     }
-
 
     @Override
     public TypeInformation<WindowedValue<byte[]>> getProducedType() {
@@ -748,7 +753,8 @@ public class LyftFlinkStreamingPortableTranslations {
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
     public LyftBase64ZlibJsonSchema(StreamingTranslationContext context) {
-      ti = new CoderTypeInformation<>(
+      ti =
+          new CoderTypeInformation<>(
               WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
               context.getPipelineOptions());
     }
