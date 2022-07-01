@@ -316,12 +316,17 @@ public class LyftFlinkStreamingPortableTranslations {
       FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
 
-    AnalyticsEventKafkaConsumerEventBuilder<Event> sourceBuilder =
-        new AnalyticsEventKafkaConsumerEventBuilder<>();
+    AnalyticsEventKafkaConsumerEventBuilder sourceBuilder =
+        new AnalyticsEventKafkaConsumerEventBuilder();
+    Properties properties = new Properties();
+    ObjectMapper mapper = new ObjectMapper();
 
     try {
+      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
+
       String eventName = params.path("eventName").textValue();
-      List<String> eventNames = params.path("eventNames");
+      // List<String> eventNames = params.path("eventNames").textValue().split("");
+      List<String> eventNames = null;
 
       Map<?, ?> consumerProps = mapper.convertValue(params.path("properties"), Map.class);
       properties.putAll(consumerProps);
@@ -349,9 +354,7 @@ public class LyftFlinkStreamingPortableTranslations {
     DataStream<Event> dataStream = sourceBuilder.build(env);
     context.addDataStream(
         Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
-        context
-            .getExecutionEnvironment()
-            .addSource(source, FlinkLyftKinesisConsumer.class.getSimpleName()));
+        dataStream);
   }
 
   private void translateKinesisInput(
