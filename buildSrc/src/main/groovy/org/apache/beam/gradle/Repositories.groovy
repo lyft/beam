@@ -74,10 +74,6 @@ class Repositories {
         maven {
           url releasesConfig.url
           name releasesConfig.id
-          credentials {
-            username releasesConfig.username
-            password releasesConfig.password
-          }
         }
       }
 
@@ -86,10 +82,6 @@ class Repositories {
         maven {
           url snapshotsConfig.url
           name snapshotsConfig.id
-          credentials {
-            username snapshotsConfig.username
-            password snapshotsConfig.password
-          }
         }
       }
 

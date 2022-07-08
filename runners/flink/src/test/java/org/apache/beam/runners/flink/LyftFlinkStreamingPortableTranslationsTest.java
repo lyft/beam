@@ -17,13 +17,6 @@
  */
 package org.apache.beam.runners.flink;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -33,20 +26,6 @@ import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.config.EventConfig;
 import com.lyft.streamingplatform.eventssource.config.KinesisConfig;
 import com.lyft.streamingplatform.eventssource.config.S3Config;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.Serializable;
-import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
-import java.text.SimpleDateFormat;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.TimeZone;
-import java.util.zip.Deflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.flink.LyftFlinkStreamingPortableTranslations.LyftBase64ZlibJsonSchema;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -68,6 +47,28 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.Serializable;
+import java.net.URL;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.TimeZone;
+import java.util.zip.Deflater;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 /** Tests for {@link LyftFlinkStreamingPortableTranslations}. */
 public class LyftFlinkStreamingPortableTranslationsTest {
 
@@ -86,6 +87,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   public void before() {
     MockitoAnnotations.initMocks(this);
     when(streamingContext.getExecutionEnvironment()).thenReturn(streamingEnvironment);
+    when(streamingContext.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
   }
 
   @Test
@@ -97,7 +99,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uLSpKTYlPLAGKKBkZ"
                     + "GFroGhroGpkrGBhYGRlYGRjpWRoYKNXGAgARiA/1");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -112,7 +114,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             .decode(
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uL" + "SpKTYlPLAGJmJqYGBhbGlsYmhlZ1MYCAGYeDek=");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -123,7 +125,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   public void testBeamKinesisSchemaNoTimestamp() throws IOException {
     byte[] message = encode("[{\"event_id\": 1}]");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -140,7 +142,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uLSpKTYlPLAGKKBkZGFroGhroGpkr"
                     + "GBhYGRlYGRjpWRoYKNXqKKBoNSKk1djCytBYz8DAVKk2FgC35B+F");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -159,7 +161,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             + loggedAtMillis / 1000
             + "}]";
     byte[] message = encode(events);
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
