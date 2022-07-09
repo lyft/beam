@@ -325,43 +325,14 @@ public class LyftFlinkStreamingPortableTranslations {
 
     try {
       JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
+      ParamRetriever retriever = new ParamRetriever(params);
 
-      JsonNode eventNameNode = params.get("eventName");
-      JsonNode eventNamesNode = params.get("eventNames");
-      JsonNode propertiesNode = params.get("properties");
-      JsonNode startingOffsetsTimestampNode = params.get("startingOffsetsTimestamp");
-      JsonNode startingOffsetsNode = params.get("startingOffsets");
-      JsonNode bootstrapServersNode = params.get("bootstrapServers");
-
-      String eventName = null;
-      List<String> eventNames = null;
-      Properties properties = new Properties();
-      long startingOffsetsTimestamp = 0;
-      String startingOffsets = null;
-      String bootstrapServers = null;
-
-      if (eventNameNode != null) {
-        eventName = eventNameNode.textValue();
-      }
-      if (eventNamesNode != null) {
-        eventNames = new ArrayList<>();
-        for (JsonNode elem: eventNamesNode) {
-          eventNames.add(elem.textValue());
-        }
-      }
-      if (propertiesNode != null) {
-        Map<?, ?> consumerProps = mapper.convertValue(propertiesNode, Map.class);
-        properties.putAll(consumerProps);
-      }
-      if (startingOffsetsTimestampNode != null) {
-        startingOffsetsTimestamp = startingOffsetsTimestampNode.numberValue().longValue();
-      }
-      if (startingOffsetsNode != null) {
-        startingOffsets = startingOffsetsNode.textValue();
-      }
-      if (bootstrapServersNode != null) {
-        bootstrapServers = bootstrapServersNode.textValue();
-      }
+      String eventName = retriever.getString("eventName");
+      List<String> eventNames = retriever.getStrArray("eventNames");
+      Properties properties = retriever.getProperties();
+      long startingOffsetsTimestamp = retriever.getLong("startingOffsetsTimestamp");
+      String startingOffsets = retriever.getString("startingOffsets");
+      String bootstrapServers = retriever.getString("bootstrapServers");
 
       sourceBuilder =
           sourceBuilder
@@ -372,7 +343,8 @@ public class LyftFlinkStreamingPortableTranslations {
 
       if (eventNames != null) {
         sourceBuilder = sourceBuilder.setEventNames(eventNames);
-      } else {
+      }
+      if (eventNames != null) {
         sourceBuilder = sourceBuilder.setEventName(eventName);
       }
     } catch (IOException e) {
@@ -894,6 +866,75 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public long extractTimestamp(WindowedValue<T> element) {
       return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+    }
+  }
+
+  private class ParamRetriever {
+    private final JsonNode params;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public ParamRetriever(JsonNode params) {
+      this.params = params;
+    }
+
+    public String getString(String fieldName, String defaultValue) {
+      String value = defaultValue;
+      if (params.has(fieldName)) {
+        value = params.get(fieldName).textValue();
+      }
+      return value;
+    }
+
+    public String getString(String fieldName) {
+      return getString(fieldName, null);
+    }
+
+    public long getLong(String fieldName, long defaultValue) {
+      long value = defaultValue;
+      if (params.has(fieldName)) {
+        value = params.get(fieldName).numberValue().longValue();
+      }
+      return value;
+    }
+
+    public long getLong(String fieldName) {
+      return getLong(fieldName, 0L);
+    }
+
+    public List<String> getStrArray(String fieldName, List<String> defaultValue) {
+      List<String> value = defaultValue;
+      if (params.has(fieldName)) {
+        value = new ArrayList<>();
+        for (JsonNode jsonNode: params.get(fieldName)) {
+          value.add(jsonNode.textValue());
+        }
+      }
+      return value;
+    }
+
+    public List<String> getStrArray(String fieldName) {
+      return getStrArray(fieldName, null);
+    }
+
+    public Map<?, ?> getMap(String fieldName, Map<?, ?> defaultValue) {
+      Map<?, ?> value = defaultValue;
+      if (params.has(fieldName)) {
+        value = mapper.convertValue(params.get(fieldName), Map.class);
+      }
+      return value;
+    }
+
+    public Map<?, ?> getMap(String fieldName) {
+      return getMap(fieldName, null);
+    }
+
+    public Properties getProperties() {
+      Properties props = new Properties();
+      Map<?, ?> propsParam = getMap("properties");
+      if (propsParam != null) {
+        props.putAll(propsParam);
+      }
+      return props;
     }
   }
 }

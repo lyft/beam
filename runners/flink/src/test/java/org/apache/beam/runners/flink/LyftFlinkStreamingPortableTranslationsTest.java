@@ -56,6 +56,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
@@ -298,21 +299,80 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
-  public void testTranslateAnalyticsEventKafkaConsumerEventBuilder() throws JsonProcessingException {
+  public void testAnalyticsEventConsumer() throws JsonProcessingException {
     String id = "1";
     String eventName = "foo";
-    Properties properties = new Properties();
-
-    ImmutableMap.Builder<String, Object> builder =
-            ImmutableMap.<String, Object>builder()
-                    .put("eventName", eventName)
-                    .put("properties", properties);
-
-    byte[] payload = new ObjectMapper().writeValueAsBytes(builder.build());
-    runAndAssertAnalyticsEventSource(id, eventName, payload);
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload);
   }
 
-  private void runAndAssertAnalyticsEventSource(String id, String eventName, byte[] payload) {
+  @Test
+  public void testAnalyticsEventConsumerWithMultipleEvents() throws JsonProcessingException {
+    String id = "1";
+    List<String> eventNames = new ArrayList<>();
+    eventNames.add("event1");
+    eventNames.add("event2");
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            null,
+            eventNames,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload);
+  }
+
+
+  @Test(expected = RuntimeException.class)
+  public void testAnalyticsEventConsumerWithoutEvent() throws JsonProcessingException {
+    String id = "1";
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            null,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload);
+  }
+
+  private byte[] createAnalyticsEventKafkaConsumerEventPayload(
+    String eventName,
+    List<String> eventNames,
+    Properties properties,
+    long startingOffsetsTimestamp,
+    String startingOffsets,
+    String bootstrapServers
+  ) throws JsonProcessingException {
+    ImmutableMap.Builder<String, Object> builder =
+        ImmutableMap.<String, Object>builder();
+
+    putIfNotNull(builder, "eventName", eventName);
+    putIfNotNull(builder, "eventNames", eventNames);
+    putIfNotNull(builder, "properties", properties);
+    putIfNotNull(builder, "startingOffsetsTimestamp", startingOffsetsTimestamp);
+    putIfNotNull(builder, "startingOffsets", startingOffsets);
+    putIfNotNull(builder, "bootstrapServers", bootstrapServers);
+
+    return new ObjectMapper().writeValueAsBytes(builder.build());
+  }
+
+  private void putIfNotNull(ImmutableMap.Builder<String, Object> builder, String key, Object value) {
+    if (value != null) {
+      builder.put(key, value);
+    }
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, byte[] payload) {
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
     LyftFlinkStreamingPortableTranslations portableTranslations =
         new LyftFlinkStreamingPortableTranslations();
