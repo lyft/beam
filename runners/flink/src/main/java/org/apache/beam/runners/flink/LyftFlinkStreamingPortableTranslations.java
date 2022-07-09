@@ -17,11 +17,6 @@
  */
 package org.apache.beam.runners.flink;
 
-import static com.lyft.streamingplatform.analytics.EventUtils.BACKUP_DB_DATETIME_FORMATTER;
-import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMATTER;
-import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
-import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -29,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
+import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerEventBuilder;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
@@ -39,20 +35,6 @@ import com.lyft.streamingplatform.eventssource.config.S3Config;
 import com.lyft.streamingplatform.eventssource.config.SourceContext;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.sql.Timestamp;
-import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.time.temporal.TemporalAccessor;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.zip.DataFormatException;
-import java.util.zip.Inflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.core.construction.NativeTransforms;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
@@ -73,11 +55,9 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
@@ -88,6 +68,27 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
+
+import static com.lyft.streamingplatform.analytics.EventUtils.BACKUP_DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
+import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
 
 public class LyftFlinkStreamingPortableTranslations {
 
@@ -101,6 +102,8 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_S3_URN = "lyft:flinkS3Input";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
+  private static final String ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN =
+      "lyft:analyticsEventKafkaConsumerEventBuilder";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -111,7 +114,9 @@ public class LyftFlinkStreamingPortableTranslations {
           || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_AND_KINESIS_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform))
-          || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
+          || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
 
@@ -123,6 +128,9 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
     translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
     translatorMap.put(FLINK_S3_URN, this::translateS3Inputs);
+    translatorMap.put(
+        ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN,
+        this::translateAnalyticsEventKafkaConsumerEventBuilder);
   }
 
   @VisibleForTesting
@@ -302,6 +310,79 @@ public class LyftFlinkStreamingPortableTranslations {
         super.output.collect(element);
       }
     }
+  }
+
+  @VisibleForTesting
+  void translateAnalyticsEventKafkaConsumerEventBuilder(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    AnalyticsEventKafkaConsumerEventBuilder sourceBuilder =
+        new AnalyticsEventKafkaConsumerEventBuilder();
+    ObjectMapper mapper = new ObjectMapper();
+
+    try {
+      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
+
+      JsonNode eventNameNode = params.get("eventName");
+      JsonNode eventNamesNode = params.get("eventNames");
+      JsonNode propertiesNode = params.get("properties");
+      JsonNode startingOffsetsTimestampNode = params.get("startingOffsetsTimestamp");
+      JsonNode startingOffsetsNode = params.get("startingOffsets");
+      JsonNode bootstrapServersNode = params.get("bootstrapServers");
+
+      String eventName = null;
+      List<String> eventNames = null;
+      Properties properties = new Properties();
+      long startingOffsetsTimestamp = 0;
+      String startingOffsets = null;
+      String bootstrapServers = null;
+
+      if (eventNameNode != null) {
+        eventName = eventNameNode.textValue();
+      }
+      if (eventNamesNode != null) {
+        eventNames = new ArrayList<>();
+        for (JsonNode elem: eventNamesNode) {
+          eventNames.add(elem.textValue());
+        }
+      }
+      if (propertiesNode != null) {
+        Map<?, ?> consumerProps = mapper.convertValue(propertiesNode, Map.class);
+        properties.putAll(consumerProps);
+      }
+      if (startingOffsetsTimestampNode != null) {
+        startingOffsetsTimestamp = startingOffsetsTimestampNode.numberValue().longValue();
+      }
+      if (startingOffsetsNode != null) {
+        startingOffsets = startingOffsetsNode.textValue();
+      }
+      if (bootstrapServersNode != null) {
+        bootstrapServers = bootstrapServersNode.textValue();
+      }
+
+      sourceBuilder =
+          sourceBuilder
+              .setProperties(properties)
+              .setStartingOffsets(startingOffsetsTimestamp)
+              .setStartingOffsets(startingOffsets)
+              .setBootstrapServers(bootstrapServers);
+
+      if (eventNames != null) {
+        sourceBuilder = sourceBuilder.setEventNames(eventNames);
+      } else {
+        sourceBuilder = sourceBuilder.setEventName(eventName);
+      }
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse Analytics Event Kafka consumer properties.", e);
+    }
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
+    DataStream<Event> dataStream = sourceBuilder.build(env);
+    context.addDataStream(
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+        dataStream);
   }
 
   private void translateKinesisInput(

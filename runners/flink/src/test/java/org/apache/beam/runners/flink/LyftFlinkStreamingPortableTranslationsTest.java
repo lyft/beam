@@ -50,12 +50,14 @@ import org.mockito.MockitoAnnotations;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
+import java.lang.reflect.Field;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -75,7 +77,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   @Mock
   private FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext streamingContext;
 
-  @Mock private StreamExecutionEnvironment streamingEnvironment;
+  private StreamExecutionEnvironment streamingEnvironment;
 
   @Mock private DataStream dataStream;
 
@@ -84,10 +86,15 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   @Mock private DataStreamSink streamSink;
 
   @Before
-  public void before() {
+  public void before() throws Exception {
     MockitoAnnotations.initMocks(this);
+    streamingEnvironment = new StreamExecutionEnvironment();
     when(streamingContext.getExecutionEnvironment()).thenReturn(streamingEnvironment);
     when(streamingContext.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
+    addEnv("PUB_SUB_BOOTSTRAP_SERVERS", "bootstrap1");
+    addEnv("SERVICE_NAME", "service1");
+    addEnv("APP_NAME", "app1");
+    addEnv("APPLICATION_ENV", "develop");
   }
 
   @Test
@@ -290,6 +297,30 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     Assert.assertEquals(FlinkKafkaProducer.class, kafkaSinkCaptor.getValue().getClass());
   }
 
+  @Test
+  public void testTranslateAnalyticsEventKafkaConsumerEventBuilder() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "foo";
+    Properties properties = new Properties();
+
+    ImmutableMap.Builder<String, Object> builder =
+            ImmutableMap.<String, Object>builder()
+                    .put("eventName", eventName)
+                    .put("properties", properties);
+
+    byte[] payload = new ObjectMapper().writeValueAsBytes(builder.build());
+    runAndAssertAnalyticsEventSource(id, eventName, payload);
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, String eventName, byte[] payload) {
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+        new LyftFlinkStreamingPortableTranslations();
+
+    portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(
+        id, pipeline, streamingContext);
+  }
+
   /**
    * utility method to create payload for tests.
    *
@@ -459,5 +490,20 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     String eventsStr = Resources.toString(url, StandardCharsets.UTF_8);
     JsonNode jsonNode = mapper.readTree(eventsStr);
     return mapper.convertValue(jsonNode, Map.class);
+  }
+
+  private static void addEnv(String key, String value) throws Exception {
+    Class[] klasses = Collections.class.getDeclaredClasses();
+    Map<String, String> env = System.getenv();
+    for (Class klass : klasses) {
+      if ("java.util.Collections$UnmodifiableMap".equals(klass.getName())) {
+        for (Field field : klass.getDeclaredFields()) {
+          if (field.getType().equals(Map.class)) {
+            field.setAccessible(true);
+            ((Map<String, String>) field.get(env)).put(key, value);
+          }
+        }
+      }
+    }
   }
 }
