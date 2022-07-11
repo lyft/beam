@@ -40,6 +40,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
+import org.joda.time.DateTime;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -50,7 +51,6 @@ import org.mockito.MockitoAnnotations;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
-import java.lang.reflect.Field;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -58,7 +58,6 @@ import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -69,6 +68,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -77,8 +77,6 @@ public class LyftFlinkStreamingPortableTranslationsTest {
 
   @Mock
   private FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext streamingContext;
-
-  private StreamExecutionEnvironment streamingEnvironment;
 
   @Mock private DataStream dataStream;
 
@@ -89,13 +87,13 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   @Before
   public void before() throws Exception {
     MockitoAnnotations.initMocks(this);
-    streamingEnvironment = new StreamExecutionEnvironment();
-    when(streamingContext.getExecutionEnvironment()).thenReturn(streamingEnvironment);
+    StreamExecutionEnvironment env = new StreamExecutionEnvironment();
+    when(streamingContext.getExecutionEnvironment()).thenReturn(env);
     when(streamingContext.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
-    addEnv("PUB_SUB_BOOTSTRAP_SERVERS", "bootstrap1");
-    addEnv("SERVICE_NAME", "service1");
-    addEnv("APP_NAME", "app1");
-    addEnv("APPLICATION_ENV", "develop");
+    EnvUtil.addEnv("PUB_SUB_BOOTSTRAP_SERVERS", "bootstrap1");
+    EnvUtil.addEnv("SERVICE_NAME", "service1");
+    EnvUtil.addEnv("APP_NAME", "app1");
+    EnvUtil.addEnv("APPLICATION_ENV", "develop");
   }
 
   @Test
@@ -215,16 +213,20 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   private void runAndAssertKafkaInput(String id, String topicName, byte[] payload) {
 
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context = mock(FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext.class);
+    StreamExecutionEnvironment env = mock(StreamExecutionEnvironment.class);
+    when(context.getExecutionEnvironment()).thenReturn(env);
+    when(context.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
 
     // run
     new LyftFlinkStreamingPortableTranslations()
-        .translateKafkaInput(id, pipeline, streamingContext);
+        .translateKafkaInput(id, pipeline, context);
 
     // assert
     ArgumentCaptor<FlinkKafkaConsumer> kafkaSourceCaptor =
         ArgumentCaptor.forClass(FlinkKafkaConsumer.class);
     ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
-    verify(streamingEnvironment)
+    verify(env)
         .addSource(kafkaSourceCaptor.capture(), kafkaSourceNameCaptor.capture());
     Assert.assertEquals(
         WindowedValue.class, kafkaSourceCaptor.getValue().getProducedType().getTypeClass());
@@ -310,7 +312,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             null,
             null
     );
-    runAndAssertAnalyticsEventSource(id, payload);
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
   }
 
   @Test
@@ -327,7 +329,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             null,
             null
     );
-    runAndAssertAnalyticsEventSource(id, payload);
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
   }
 
 
@@ -342,7 +344,38 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             null,
             null
     );
-    runAndAssertAnalyticsEventSource(id, payload);
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testAnalyticsEventProtoConsumer() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "event1";
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext, true);
+  }
+
+  @Test
+  public void testAnalyticsEventProtoConsumerStartingOffsetTimestamp() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "event1";
+    long timestamp = DateTime.now().getMillis();
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            timestamp,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext, true);
   }
 
   private byte[] createAnalyticsEventKafkaConsumerEventPayload(
@@ -372,13 +405,23 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     }
   }
 
-  private void runAndAssertAnalyticsEventSource(String id, byte[] payload) {
+  private void runAndAssertAnalyticsEventSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    runAndAssertAnalyticsEventSource(id, payload, context, false);
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context, boolean protoBuilder) {
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
     LyftFlinkStreamingPortableTranslations portableTranslations =
         new LyftFlinkStreamingPortableTranslations();
 
-    portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(
-        id, pipeline, streamingContext);
+
+    if (protoBuilder) {
+      portableTranslations.translateAnalyticsEventKafkaConsumerProtoBuilder(
+              id, pipeline, context);
+    } else {
+      portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(
+              id, pipeline, context);
+    }
   }
 
   /**
@@ -482,7 +525,11 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
-  public void testGetEventConfigs() throws IOException {
+  public void testGetEventConfigs() throws Exception {
+    // EventConfig uses idl dependency rather than reflection svc
+    // when service name not indicated. Used for testing.
+    EnvUtil.removeEnv("SERVICE_NAME");
+
     LyftFlinkStreamingPortableTranslations translations =
         new LyftFlinkStreamingPortableTranslations();
     ObjectMapper mapper = new ObjectMapper();
@@ -495,7 +542,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
 
     assertEquals(1, eventConfigs.size());
     EventConfig event = eventConfigs.get(0);
-    assertEquals("test_event", event.eventName);
+    assertEquals("event_pb_events_server_api_events_rideDroppedOff", event.eventName);
     assertEquals(5, event.latenessInSeconds);
     assertEquals(1, event.lookbackInDays);
   }
@@ -550,20 +597,5 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     String eventsStr = Resources.toString(url, StandardCharsets.UTF_8);
     JsonNode jsonNode = mapper.readTree(eventsStr);
     return mapper.convertValue(jsonNode, Map.class);
-  }
-
-  private static void addEnv(String key, String value) throws Exception {
-    Class[] klasses = Collections.class.getDeclaredClasses();
-    Map<String, String> env = System.getenv();
-    for (Class klass : klasses) {
-      if ("java.util.Collections$UnmodifiableMap".equals(klass.getName())) {
-        for (Field field : klass.getDeclaredFields()) {
-          if (field.getType().equals(Map.class)) {
-            field.setAccessible(true);
-            ((Map<String, String>) field.get(env)).put(key, value);
-          }
-        }
-      }
-    }
   }
 }
