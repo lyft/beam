@@ -17,18 +17,16 @@
  */
 package org.apache.beam.runners.flink;
 
-import static com.lyft.streamingplatform.analytics.EventUtils.BACKUP_DB_DATETIME_FORMATTER;
-import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMATTER;
-import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
-import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
+import com.lyft.streamingplatform.LyftKafkaConsumerBuilderV2;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
+import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerEventBuilder;
+import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerProtoBuilder;
 import com.lyft.streamingplatform.analytics.Event;
 import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.KinesisAndS3EventSource;
@@ -39,20 +37,6 @@ import com.lyft.streamingplatform.eventssource.config.S3Config;
 import com.lyft.streamingplatform.eventssource.config.SourceContext;
 import com.lyft.streamingplatform.flink.FlinkLyftKinesisConsumer;
 import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.sql.Timestamp;
-import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.time.temporal.TemporalAccessor;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.zip.DataFormatException;
-import java.util.zip.Inflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.core.construction.NativeTransforms;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
@@ -67,17 +51,18 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
@@ -88,6 +73,27 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
+
+import static com.lyft.streamingplatform.analytics.EventUtils.BACKUP_DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.DB_DATETIME_FORMATTER;
+import static com.lyft.streamingplatform.analytics.EventUtils.GMT;
+import static com.lyft.streamingplatform.analytics.EventUtils.ISO_DATETIME_FORMATTER;
 
 public class LyftFlinkStreamingPortableTranslations {
 
@@ -101,6 +107,12 @@ public class LyftFlinkStreamingPortableTranslations {
   private static final String FLINK_S3_URN = "lyft:flinkS3Input";
   private static final String BYTES_ENCODING = "bytes";
   private static final String LYFT_BASE64_ZLIB_JSON = "lyft-base64-zlib-json";
+  private static final String FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN =
+      "lyft:flinkAnalyticsEventKafkaConsumerEventBuilder";
+  private static final String FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN =
+      "lyft:flinkAnalyticsEventKafkaConsumerProtoBuilder";
+  private static final String FLINK_KAFKA_CONSUMER_BUILDER_URN =
+          "lyft:flinkLyftKafkaConsumerBuilder";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -111,7 +123,13 @@ public class LyftFlinkStreamingPortableTranslations {
           || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_AND_KINESIS_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform))
-          || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform));
+          || FLINK_S3_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_KAFKA_CONSUMER_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
 
@@ -123,6 +141,15 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
     translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
     translatorMap.put(FLINK_S3_URN, this::translateS3Inputs);
+    translatorMap.put(
+            FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN,
+        this::translateAnalyticsEventKafkaConsumerEventBuilder);
+    translatorMap.put(
+            FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN,
+            this::translateAnalyticsEventKafkaConsumerProtoBuilder);
+    translatorMap.put(
+            FLINK_KAFKA_CONSUMER_BUILDER_URN,
+            this::translateKafkaConsumerBuilder);
   }
 
   @VisibleForTesting
@@ -185,7 +212,60 @@ public class LyftFlinkStreamingPortableTranslations {
             .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" + topic));
   }
 
-  /**
+  @VisibleForTesting
+  void translateKafkaConsumerBuilder(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    final Map<String, Object> params;
+    LyftKafkaConsumerBuilderV2<WindowedValue<byte[]>> builder = new LyftKafkaConsumerBuilderV2<WindowedValue<byte[]>>();
+    try {
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+
+      String topic = (String) params.get("topic");
+      String bootstrapServers = (String) params.get("bootstrapServers");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      long maxOutOfOrdernessMillis = ParamParser.getLong(params, "max_out_of_orderness_millis");
+      builder
+              .setProperties(properties)
+              .setTopic(topic)
+              .setBootstrapServers(bootstrapServers)
+              .setStartingOffsets(startingOffsetsTimestamp)
+              .setStartingOffsets(startingOffsets)
+              .setDeserializationSchema(new ByteArrayWindowedValueSchema(context))
+              .setTimestampAssigner(new ByteArrayWindowedValueTimestampAssigner());
+
+      if (maxOutOfOrdernessMillis != 0L) {
+        builder =
+            builder.setWatermarkStrategy(
+                WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+                        Duration.ofMillis(maxOutOfOrdernessMillis))
+                    .withIdleness(Duration.ofMillis(60_000)));
+      }
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse KafkaConsumerBuilder properties.", e);
+    }
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
+    DataStream<WindowedValue<byte[]>> dataStream = builder.build(env);
+    context.addDataStream(
+            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+            dataStream);
+  }
+
+  private static class ByteArrayWindowedValueTimestampAssigner implements SerializableTimestampAssigner<WindowedValue<byte[]>> {
+
+    @Override
+    public long extractTimestamp(WindowedValue<byte[]> element, long recordTimestamp) {
+      return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+    }
+  }
+
+    /**
    * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
    * operators.
    */
@@ -302,6 +382,87 @@ public class LyftFlinkStreamingPortableTranslations {
         super.output.collect(element);
       }
     }
+  }
+
+  @VisibleForTesting
+  void translateAnalyticsEventKafkaConsumerEventBuilder(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    AnalyticsEventKafkaConsumerEventBuilder sourceBuilder =
+        new AnalyticsEventKafkaConsumerEventBuilder();
+    final Map<String, Object> params;
+    try {
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+
+      String eventName = (String) params.get("eventName");
+      List<String> eventNames = (List<String>) params.get("eventNames");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      String bootstrapServers = (String) params.get("bootstrapServers");
+
+      sourceBuilder =
+          sourceBuilder
+              .setProperties(properties)
+              .setStartingOffsets(startingOffsetsTimestamp)
+              .setStartingOffsets(startingOffsets)
+              .setBootstrapServers(bootstrapServers);
+
+      if (eventNames != null) {
+        sourceBuilder = sourceBuilder.setEventNames(eventNames);
+      }
+      if (eventName != null) {
+        sourceBuilder = sourceBuilder.setEventName(eventName);
+      }
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse Analytics Event Kafka consumer properties.", e);
+    }
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
+    DataStream<Event> dataStream = sourceBuilder.build(env);
+    context.addDataStream(
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+        dataStream);
+  }
+
+  @VisibleForTesting
+  void translateAnalyticsEventKafkaConsumerProtoBuilder(
+          String id,
+          RunnerApi.Pipeline pipeline,
+          FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+    AnalyticsEventKafkaConsumerProtoBuilder sourceBuilder =
+            new AnalyticsEventKafkaConsumerProtoBuilder();
+
+    final Map<String, Object> params;
+    try {
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+
+      String eventName = (String) params.get("eventName");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      String bootstrapServers = (String) params.get("bootstrapServers");
+
+      sourceBuilder =
+              sourceBuilder
+                      .setProperties(properties)
+                      .setStartingOffsets(startingOffsetsTimestamp)
+                      .setStartingOffsets(startingOffsets)
+                      .setBootstrapServers(bootstrapServers)
+                      .setEventName(eventName);
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse Analytics Event Kafka Proto consumer properties.", e);
+    }
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
+    SingleOutputStreamOperator<byte[]> dataStream = sourceBuilder.build(env);
+    context.addDataStream(
+            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+            dataStream);
   }
 
   private void translateKinesisInput(
@@ -813,6 +974,24 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public long extractTimestamp(WindowedValue<T> element) {
       return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+    }
+  }
+
+  private static class ParamParser {
+    public static Properties getProperties(Map<String, Object> params) {
+      Properties props = new Properties();
+      if (params.get("properties") != null) {
+        props.putAll((Map) params.get("properties"));
+      }
+      return props;
+    }
+
+    public static long getLong(Map<String, Object> params, String fieldName) {
+      Number number = (Number) params.get("startingOffsetsTimestamp");
+      if (number != null) {
+        return number.longValue();
+      }
+      return 0L;
     }
   }
 }

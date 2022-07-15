@@ -17,13 +17,6 @@
  */
 package org.apache.beam.runners.flink;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -33,20 +26,6 @@ import com.lyft.streamingplatform.analytics.EventField;
 import com.lyft.streamingplatform.eventssource.config.EventConfig;
 import com.lyft.streamingplatform.eventssource.config.KinesisConfig;
 import com.lyft.streamingplatform.eventssource.config.S3Config;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.Serializable;
-import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
-import java.text.SimpleDateFormat;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.TimeZone;
-import java.util.zip.Deflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.flink.LyftFlinkStreamingPortableTranslations.LyftBase64ZlibJsonSchema;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -61,6 +40,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
+import org.joda.time.DateTime;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -68,13 +48,35 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.Serializable;
+import java.net.URL;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.TimeZone;
+import java.util.zip.Deflater;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 /** Tests for {@link LyftFlinkStreamingPortableTranslations}. */
 public class LyftFlinkStreamingPortableTranslationsTest {
 
   @Mock
   private FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext streamingContext;
-
-  @Mock private StreamExecutionEnvironment streamingEnvironment;
 
   @Mock private DataStream dataStream;
 
@@ -83,9 +85,15 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   @Mock private DataStreamSink streamSink;
 
   @Before
-  public void before() {
+  public void before() throws Exception {
     MockitoAnnotations.initMocks(this);
-    when(streamingContext.getExecutionEnvironment()).thenReturn(streamingEnvironment);
+    StreamExecutionEnvironment env = new StreamExecutionEnvironment();
+    when(streamingContext.getExecutionEnvironment()).thenReturn(env);
+    when(streamingContext.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
+    EnvUtil.addEnv("PUB_SUB_BOOTSTRAP_SERVERS", "bootstrap1");
+    EnvUtil.addEnv("SERVICE_NAME", "service1");
+    EnvUtil.addEnv("APP_NAME", "app1");
+    EnvUtil.addEnv("APPLICATION_ENV", "develop");
   }
 
   @Test
@@ -97,7 +105,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uLSpKTYlPLAGKKBkZ"
                     + "GFroGhroGpkrGBhYGRlYGRjpWRoYKNXGAgARiA/1");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -112,7 +120,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             .decode(
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uL" + "SpKTYlPLAGJmJqYGBhbGlsYmhlZ1MYCAGYeDek=");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -123,7 +131,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   public void testBeamKinesisSchemaNoTimestamp() throws IOException {
     byte[] message = encode("[{\"event_id\": 1}]");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -140,7 +148,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
                 "eJyLrlZKLUvNK4nPTFGyUjDUUVDKT04uLSpKTYlPLAGKKBkZGFroGhroGpkr"
                     + "GBhYGRlYGRjpWRoYKNXqKKBoNSKk1djCytBYz8DAVKk2FgC35B+F");
 
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -159,7 +167,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
             + loggedAtMillis / 1000
             + "}]";
     byte[] message = encode(events);
-    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema();
+    LyftBase64ZlibJsonSchema schema = new LyftBase64ZlibJsonSchema(streamingContext);
     WindowedValue<byte[]> value = schema.deserialize(message, "", "", 0, "", "");
 
     Assert.assertArrayEquals(message, value.getValue());
@@ -205,16 +213,20 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   private void runAndAssertKafkaInput(String id, String topicName, byte[] payload) {
 
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context = mock(FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext.class);
+    StreamExecutionEnvironment env = mock(StreamExecutionEnvironment.class);
+    when(context.getExecutionEnvironment()).thenReturn(env);
+    when(context.getPipelineOptions()).thenReturn(FlinkPipelineOptions.defaults());
 
     // run
     new LyftFlinkStreamingPortableTranslations()
-        .translateKafkaInput(id, pipeline, streamingContext);
+        .translateKafkaInput(id, pipeline, context);
 
     // assert
     ArgumentCaptor<FlinkKafkaConsumer> kafkaSourceCaptor =
         ArgumentCaptor.forClass(FlinkKafkaConsumer.class);
     ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
-    verify(streamingEnvironment)
+    verify(env)
         .addSource(kafkaSourceCaptor.capture(), kafkaSourceNameCaptor.capture());
     Assert.assertEquals(
         WindowedValue.class, kafkaSourceCaptor.getValue().getProducedType().getTypeClass());
@@ -286,6 +298,190 @@ public class LyftFlinkStreamingPortableTranslationsTest {
 
     Assert.assertTrue(kafkaSinkNameCaptor.getValue().contains(topicName));
     Assert.assertEquals(FlinkKafkaProducer.class, kafkaSinkCaptor.getValue().getClass());
+  }
+
+  @Test
+  public void testKafkaConsumerBuilder() throws JsonProcessingException {
+    String id = "1";
+    String topic = "foo";
+    String bootstrapServers = "testServer";
+    byte[] payload = createKafkaConsumerBuilderPayload(
+      topic,
+      bootstrapServers,
+      null,
+      0L,
+      null,
+      0L
+    );
+    runAndAssertKafkaBuilderSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testKafkaConsumerBuilderWithCustomOutOfOrderness() throws JsonProcessingException {
+    String id = "1";
+    String topic = "foo";
+    String bootstrapServers = "testServer";
+    byte[] payload = createKafkaConsumerBuilderPayload(
+            topic,
+            bootstrapServers,
+            null,
+            0L,
+            null,
+            10_000
+    );
+    runAndAssertKafkaBuilderSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testAnalyticsEventConsumer() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "foo";
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testAnalyticsEventConsumerWithMultipleEvents() throws JsonProcessingException {
+    String id = "1";
+    List<String> eventNames = new ArrayList<>();
+    eventNames.add("event1");
+    eventNames.add("event2");
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            null,
+            eventNames,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
+  }
+
+
+  @Test(expected = RuntimeException.class)
+  public void testAnalyticsEventConsumerWithoutEvent() throws JsonProcessingException {
+    String id = "1";
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            null,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testAnalyticsEventProtoConsumer() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "event1";
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            0L,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext, true);
+  }
+
+  @Test
+  public void testAnalyticsEventProtoConsumerStartingOffsetTimestamp() throws JsonProcessingException {
+    String id = "1";
+    String eventName = "event1";
+    long timestamp = DateTime.now().getMillis();
+    byte[] payload = createAnalyticsEventKafkaConsumerEventPayload(
+            eventName,
+            null,
+            null,
+            timestamp,
+            null,
+            null
+    );
+    runAndAssertAnalyticsEventSource(id, payload, streamingContext, true);
+  }
+
+  private byte[] createKafkaConsumerBuilderPayload(
+    String topic,
+    String bootstrapServers,
+    Properties properties,
+    long startingOffsetsTimestamp,
+    String startingOffsets,
+    long maxOutOfOrdernessMillis
+  ) throws JsonProcessingException {
+    ImmutableMap.Builder<String, Object> builder =
+            ImmutableMap.<String, Object>builder();
+
+    putIfNotNull(builder, "topic", topic);
+    putIfNotNull(builder, "bootstrapServers", bootstrapServers);
+    putIfNotNull(builder, "properties", properties);
+    putIfNotNull(builder, "startingOffsetsTimestamp", startingOffsetsTimestamp);
+    putIfNotNull(builder, "startingOffsets", startingOffsets);
+    putIfNotNull(builder, "maxOutOfOrdernessMillis", maxOutOfOrdernessMillis);
+
+    return new ObjectMapper().writeValueAsBytes(builder.build());
+  }
+
+  private byte[] createAnalyticsEventKafkaConsumerEventPayload(
+    String eventName,
+    List<String> eventNames,
+    Properties properties,
+    long startingOffsetsTimestamp,
+    String startingOffsets,
+    String bootstrapServers
+  ) throws JsonProcessingException {
+    ImmutableMap.Builder<String, Object> builder =
+        ImmutableMap.<String, Object>builder();
+
+    putIfNotNull(builder, "eventName", eventName);
+    putIfNotNull(builder, "eventNames", eventNames);
+    putIfNotNull(builder, "properties", properties);
+    putIfNotNull(builder, "startingOffsetsTimestamp", startingOffsetsTimestamp);
+    putIfNotNull(builder, "startingOffsets", startingOffsets);
+    putIfNotNull(builder, "bootstrapServers", bootstrapServers);
+
+    return new ObjectMapper().writeValueAsBytes(builder.build());
+  }
+
+  private void putIfNotNull(ImmutableMap.Builder<String, Object> builder, String key, Object value) {
+    if (value != null) {
+      builder.put(key, value);
+    }
+  }
+
+  private void runAndAssertKafkaBuilderSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+            new LyftFlinkStreamingPortableTranslations();
+    portableTranslations.translateKafkaConsumerBuilder(
+            id, pipeline, context);
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    runAndAssertAnalyticsEventSource(id, payload, context, false);
+  }
+
+  private void runAndAssertAnalyticsEventSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context, boolean protoBuilder) {
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+        new LyftFlinkStreamingPortableTranslations();
+
+    if (protoBuilder) {
+      portableTranslations.translateAnalyticsEventKafkaConsumerProtoBuilder(
+              id, pipeline, context);
+    } else {
+      portableTranslations.translateAnalyticsEventKafkaConsumerEventBuilder(
+              id, pipeline, context);
+    }
   }
 
   /**
@@ -389,7 +585,11 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
-  public void testGetEventConfigs() throws IOException {
+  public void testGetEventConfigs() throws Exception {
+    // EventConfig uses idl dependency rather than reflection svc
+    // when service name not indicated. Used for testing.
+    EnvUtil.removeEnv("SERVICE_NAME");
+
     LyftFlinkStreamingPortableTranslations translations =
         new LyftFlinkStreamingPortableTranslations();
     ObjectMapper mapper = new ObjectMapper();
@@ -402,7 +602,7 @@ public class LyftFlinkStreamingPortableTranslationsTest {
 
     assertEquals(1, eventConfigs.size());
     EventConfig event = eventConfigs.get(0);
-    assertEquals("test_event", event.eventName);
+    assertEquals("event_pb_events_server_api_events_rideDroppedOff", event.eventName);
     assertEquals(5, event.latenessInSeconds);
     assertEquals(1, event.lookbackInDays);
   }

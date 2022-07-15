@@ -1,7 +1,7 @@
 {
   "events": [
     {
-      "name": "test_event",
+      "name": "event_pb_events_server_api_events_rideDroppedOff",
       "max_out_of_orderness_millis": 5000,
       "lookback_days": 1
     }
