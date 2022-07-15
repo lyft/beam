@@ -301,6 +301,38 @@ public class LyftFlinkStreamingPortableTranslationsTest {
   }
 
   @Test
+  public void testKafkaConsumerBuilder() throws JsonProcessingException {
+    String id = "1";
+    String topic = "foo";
+    String bootstrapServers = "testServer";
+    byte[] payload = createKafkaConsumerBuilderPayload(
+      topic,
+      bootstrapServers,
+      null,
+      0L,
+      null,
+      0L
+    );
+    runAndAssertKafkaBuilderSource(id, payload, streamingContext);
+  }
+
+  @Test
+  public void testKafkaConsumerBuilderWithCustomOutOfOrderness() throws JsonProcessingException {
+    String id = "1";
+    String topic = "foo";
+    String bootstrapServers = "testServer";
+    byte[] payload = createKafkaConsumerBuilderPayload(
+            topic,
+            bootstrapServers,
+            null,
+            0L,
+            null,
+            10_000
+    );
+    runAndAssertKafkaBuilderSource(id, payload, streamingContext);
+  }
+
+  @Test
   public void testAnalyticsEventConsumer() throws JsonProcessingException {
     String id = "1";
     String eventName = "foo";
@@ -378,6 +410,27 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     runAndAssertAnalyticsEventSource(id, payload, streamingContext, true);
   }
 
+  private byte[] createKafkaConsumerBuilderPayload(
+    String topic,
+    String bootstrapServers,
+    Properties properties,
+    long startingOffsetsTimestamp,
+    String startingOffsets,
+    long maxOutOfOrdernessMillis
+  ) throws JsonProcessingException {
+    ImmutableMap.Builder<String, Object> builder =
+            ImmutableMap.<String, Object>builder();
+
+    putIfNotNull(builder, "topic", topic);
+    putIfNotNull(builder, "bootstrapServers", bootstrapServers);
+    putIfNotNull(builder, "properties", properties);
+    putIfNotNull(builder, "startingOffsetsTimestamp", startingOffsetsTimestamp);
+    putIfNotNull(builder, "startingOffsets", startingOffsets);
+    putIfNotNull(builder, "maxOutOfOrdernessMillis", maxOutOfOrdernessMillis);
+
+    return new ObjectMapper().writeValueAsBytes(builder.build());
+  }
+
   private byte[] createAnalyticsEventKafkaConsumerEventPayload(
     String eventName,
     List<String> eventNames,
@@ -405,6 +458,14 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     }
   }
 
+  private void runAndAssertKafkaBuilderSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+    LyftFlinkStreamingPortableTranslations portableTranslations =
+            new LyftFlinkStreamingPortableTranslations();
+    portableTranslations.translateKafkaConsumerBuilder(
+            id, pipeline, context);
+  }
+
   private void runAndAssertAnalyticsEventSource(String id, byte[] payload, FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
     runAndAssertAnalyticsEventSource(id, payload, context, false);
   }
@@ -413,7 +474,6 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     RunnerApi.Pipeline pipeline = createPipeline(id, payload);
     LyftFlinkStreamingPortableTranslations portableTranslations =
         new LyftFlinkStreamingPortableTranslations();
-
 
     if (protoBuilder) {
       portableTranslations.translateAnalyticsEventKafkaConsumerProtoBuilder(

@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auto.service.AutoService;
 import com.lyft.streamingplatform.LyftKafkaConsumerBuilder;
+import com.lyft.streamingplatform.LyftKafkaConsumerBuilderV2;
 import com.lyft.streamingplatform.LyftKafkaProducerBuilder;
 import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerEventBuilder;
 import com.lyft.streamingplatform.analytics.AnalyticsEventKafkaConsumerProtoBuilder;
@@ -50,6 +51,8 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Iterables;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.eventtime.SerializableTimestampAssigner;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -74,12 +77,12 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.TemporalAccessor;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -108,6 +111,8 @@ public class LyftFlinkStreamingPortableTranslations {
       "lyft:flinkAnalyticsEventKafkaConsumerEventBuilder";
   private static final String FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN =
       "lyft:flinkAnalyticsEventKafkaConsumerProtoBuilder";
+  private static final String FLINK_KAFKA_CONSUMER_BUILDER_URN =
+          "lyft:flinkLyftKafkaConsumerBuilder";
 
   @AutoService(NativeTransforms.IsNativeTransform.class)
   public static class IsFlinkNativeTransform implements NativeTransforms.IsNativeTransform {
@@ -122,6 +127,8 @@ public class LyftFlinkStreamingPortableTranslations {
           || FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_EVENT_BUILDER_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN.equals(
+              PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_KAFKA_CONSUMER_BUILDER_URN.equals(
               PTransformTranslation.urnForTransformOrNull(pTransform));
     }
   }
@@ -140,6 +147,9 @@ public class LyftFlinkStreamingPortableTranslations {
     translatorMap.put(
             FLINK_ANALYTICS_EVENT_KAFKA_CONSUMER_PROTO_BUILDER_URN,
             this::translateAnalyticsEventKafkaConsumerProtoBuilder);
+    translatorMap.put(
+            FLINK_KAFKA_CONSUMER_BUILDER_URN,
+            this::translateKafkaConsumerBuilder);
   }
 
   @VisibleForTesting
@@ -202,7 +212,60 @@ public class LyftFlinkStreamingPortableTranslations {
             .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" + topic));
   }
 
-  /**
+  @VisibleForTesting
+  void translateKafkaConsumerBuilder(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    final Map<String, Object> params;
+    LyftKafkaConsumerBuilderV2<WindowedValue<byte[]>> builder = new LyftKafkaConsumerBuilderV2<WindowedValue<byte[]>>();
+    try {
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+
+      String topic = (String) params.get("topic");
+      String bootstrapServers = (String) params.get("bootstrapServers");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      long maxOutOfOrdernessMillis = ParamParser.getLong(params, "max_out_of_orderness_millis");
+      builder
+              .setProperties(properties)
+              .setTopic(topic)
+              .setBootstrapServers(bootstrapServers)
+              .setStartingOffsets(startingOffsetsTimestamp)
+              .setStartingOffsets(startingOffsets)
+              .setDeserializationSchema(new ByteArrayWindowedValueSchema(context))
+              .setTimestampAssigner(new ByteArrayWindowedValueTimestampAssigner());
+
+      if (maxOutOfOrdernessMillis != 0L) {
+        builder =
+            builder.setWatermarkStrategy(
+                WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+                        Duration.ofMillis(maxOutOfOrdernessMillis))
+                    .withIdleness(Duration.ofMillis(60_000)));
+      }
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse KafkaConsumerBuilder properties.", e);
+    }
+    StreamExecutionEnvironment env = context.getExecutionEnvironment();
+    DataStream<WindowedValue<byte[]>> dataStream = builder.build(env);
+    context.addDataStream(
+            Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+            dataStream);
+  }
+
+  private static class ByteArrayWindowedValueTimestampAssigner implements SerializableTimestampAssigner<WindowedValue<byte[]>> {
+
+    @Override
+    public long extractTimestamp(WindowedValue<byte[]> element, long recordTimestamp) {
+      return element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE;
+    }
+  }
+
+    /**
    * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
    * operators.
    */
@@ -330,18 +393,17 @@ public class LyftFlinkStreamingPortableTranslations {
 
     AnalyticsEventKafkaConsumerEventBuilder sourceBuilder =
         new AnalyticsEventKafkaConsumerEventBuilder();
-    ObjectMapper mapper = new ObjectMapper();
-
+    final Map<String, Object> params;
     try {
-      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
-      ParamRetriever retriever = new ParamRetriever(params);
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
 
-      String eventName = retriever.getString("eventName");
-      List<String> eventNames = retriever.getStrArray("eventNames");
-      Properties properties = retriever.getProperties();
-      long startingOffsetsTimestamp = retriever.getLong("startingOffsetsTimestamp");
-      String startingOffsets = retriever.getString("startingOffsets");
-      String bootstrapServers = retriever.getString("bootstrapServers");
+      String eventName = (String) params.get("eventName");
+      List<String> eventNames = (List<String>) params.get("eventNames");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      String bootstrapServers = (String) params.get("bootstrapServers");
 
       sourceBuilder =
           sourceBuilder
@@ -374,17 +436,17 @@ public class LyftFlinkStreamingPortableTranslations {
     RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
     AnalyticsEventKafkaConsumerProtoBuilder sourceBuilder =
             new AnalyticsEventKafkaConsumerProtoBuilder();
-    ObjectMapper mapper = new ObjectMapper();
 
+    final Map<String, Object> params;
     try {
-      JsonNode params = mapper.readTree(pTransform.getSpec().getPayload().toByteArray());
-      ParamRetriever retriever = new ParamRetriever(params);
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
 
-      String eventName = retriever.getString("eventName");
-      Properties properties = retriever.getProperties();
-      long startingOffsetsTimestamp = retriever.getLong("startingOffsetsTimestamp");
-      String startingOffsets = retriever.getString("startingOffsets");
-      String bootstrapServers = retriever.getString("bootstrapServers");
+      String eventName = (String) params.get("eventName");
+      Properties properties = ParamParser.getProperties(params);
+      long startingOffsetsTimestamp = ParamParser.getLong(params, "startingOffsetsTimestamp");
+      String startingOffsets = (String) params.get("startingOffsets");
+      String bootstrapServers = (String) params.get("bootstrapServers");
 
       sourceBuilder =
               sourceBuilder
@@ -915,72 +977,21 @@ public class LyftFlinkStreamingPortableTranslations {
     }
   }
 
-  private class ParamRetriever {
-    private final JsonNode params;
-    private final ObjectMapper mapper = new ObjectMapper();
-
-    public ParamRetriever(JsonNode params) {
-      this.params = params;
-    }
-
-    public String getString(String fieldName, String defaultValue) {
-      String value = defaultValue;
-      if (params.has(fieldName)) {
-        value = params.get(fieldName).textValue();
-      }
-      return value;
-    }
-
-    public String getString(String fieldName) {
-      return getString(fieldName, null);
-    }
-
-    public long getLong(String fieldName, long defaultValue) {
-      long value = defaultValue;
-      if (params.has(fieldName)) {
-        value = params.get(fieldName).numberValue().longValue();
-      }
-      return value;
-    }
-
-    public long getLong(String fieldName) {
-      return getLong(fieldName, 0L);
-    }
-
-    public List<String> getStrArray(String fieldName, List<String> defaultValue) {
-      List<String> value = defaultValue;
-      if (params.has(fieldName)) {
-        value = new ArrayList<>();
-        for (JsonNode jsonNode: params.get(fieldName)) {
-          value.add(jsonNode.textValue());
-        }
-      }
-      return value;
-    }
-
-    public List<String> getStrArray(String fieldName) {
-      return getStrArray(fieldName, null);
-    }
-
-    public Map<?, ?> getMap(String fieldName, Map<?, ?> defaultValue) {
-      Map<?, ?> value = defaultValue;
-      if (params.has(fieldName)) {
-        value = mapper.convertValue(params.get(fieldName), Map.class);
-      }
-      return value;
-    }
-
-    public Map<?, ?> getMap(String fieldName) {
-      return getMap(fieldName, null);
-    }
-
-    public Properties getProperties() {
+  private static class ParamParser {
+    public static Properties getProperties(Map<String, Object> params) {
       Properties props = new Properties();
-      Map<?, ?> propsParam = getMap("properties");
-      if (propsParam != null) {
-        props.putAll(propsParam);
+      if (params.get("properties") != null) {
+        props.putAll((Map) params.get("properties"));
       }
       return props;
+    }
+
+    public static long getLong(Map<String, Object> params, String fieldName) {
+      Number number = (Number) params.get("startingOffsetsTimestamp");
+      if (number != null) {
+        return number.longValue();
+      }
+      return 0L;
     }
   }
 }
