@@ -183,9 +183,11 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     if (maxOutOfOrdernessMillis != null && idlenessTimeoutMillis != null) {
-      kafkaSource.assignTimestampsAndWatermarks(WatermarkStrategy.forBoundedOutOfOrderness(
+      WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
+          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue())));
+          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+      kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
     } else if (maxOutOfOrdernessMillis != null) {
       kafkaSource.assignTimestampsAndWatermarks(
           new WindowedTimestampExtractor<>(
