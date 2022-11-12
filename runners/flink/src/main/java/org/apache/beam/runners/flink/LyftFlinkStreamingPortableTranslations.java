@@ -42,6 +42,7 @@ import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -169,13 +170,25 @@ public class LyftFlinkStreamingPortableTranslations {
       kafkaSource.setStartFromLatest();
     }
 
+    Number maxOutOfOrdernessMillis = null;
+    Number idlenessTimeoutMillis = null;
+
     if (params.containsKey("max_out_of_orderness_millis")) {
-      Number maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
-      if (maxOutOfOrdernessMillis != null) {
-        kafkaSource.assignTimestampsAndWatermarks(
-            new WindowedTimestampExtractor<>(
-                Time.milliseconds(maxOutOfOrdernessMillis.longValue())));
-      }
+      maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
+    }
+
+    if (params.containsKey("idleness_timeout_millis")) {
+      idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
+    }
+
+    if (maxOutOfOrdernessMillis != null && idlenessTimeoutMillis != null) {
+      kafkaSource.assignTimestampsAndWatermarks(WatermarkStrategy.forBoundedOutOfOrderness(
+              Duration.ofMillis(maxOutOfOrdernessMillis))
+          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis)));
+    } else if (maxOutOfOrdernessMillis != null) {
+      kafkaSource.assignTimestampsAndWatermarks(
+          new WindowedTimestampExtractor<>(
+              Time.milliseconds(maxOutOfOrdernessMillis.longValue())));
     }
 
     context.addDataStream(
