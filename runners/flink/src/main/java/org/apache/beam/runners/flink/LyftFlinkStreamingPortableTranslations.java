@@ -42,7 +42,6 @@ import com.lyft.streamingplatform.flink.InitialRoundRobinKinesisShardAssigner;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.sql.Timestamp;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -183,8 +182,8 @@ public class LyftFlinkStreamingPortableTranslations {
 
     if (maxOutOfOrdernessMillis != null && idlenessTimeoutMillis != null) {
       kafkaSource.assignTimestampsAndWatermarks(WatermarkStrategy.forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis))
-          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis)));
+              Time.milliseconds(maxOutOfOrdernessMillis.longValue()))
+          .withIdleness(Time.milliseconds(idlenessTimeoutMillis.longValue())));
     } else if (maxOutOfOrdernessMillis != null) {
       kafkaSource.assignTimestampsAndWatermarks(
           new WindowedTimestampExtractor<>(
