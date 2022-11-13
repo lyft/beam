@@ -142,11 +142,12 @@ public class LyftFlinkStreamingPortableTranslations {
       throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
     }
 
-    final String topic;
-    Preconditions.checkNotNull(topic = (String) params.get("topic"), "'topic' needs to be set");
+    List<String> topics = (List) params.get("topics");
+    Preconditions.checkNotNull(topics);
+    Preconditions.checkArgument(topics.size() > 0, "'topic' needs to be set");
     Map<String, String> consumerProps = (Map) params.get("properties");
     Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
-    LOG.info("Configuring kafka consumer for topic {} with properties {}", topic, consumerProps);
+    LOG.info("Configuring kafka consumer for topic {} with properties {}", topics, consumerProps);
 
     final String userName = (String) params.get("username");
     final String password = (String) params.get("password");
@@ -162,7 +163,7 @@ public class LyftFlinkStreamingPortableTranslations {
     consumerBuilder.withKafkaProperties(properties);
 
     FlinkKafkaConsumer<WindowedValue<byte[]>> kafkaSource =
-        consumerBuilder.build(topic, new ByteArrayWindowedValueSchema(context));
+        consumerBuilder.build(topics, new ByteArrayWindowedValueSchema(context));
 
     if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
       kafkaSource.setStartFromTimestamp(
@@ -171,7 +172,7 @@ public class LyftFlinkStreamingPortableTranslations {
       kafkaSource.setStartFromLatest();
     }
 
-    Number maxOutOfOrdernessMillis = null;
+    Number maxOutOfOrdernessMillis = 1000;
     Number idlenessTimeoutMillis = null;
 
     if (params.containsKey("max_out_of_orderness_millis")) {
@@ -182,13 +183,13 @@ public class LyftFlinkStreamingPortableTranslations {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
-    if (maxOutOfOrdernessMillis != null && idlenessTimeoutMillis != null) {
+    if (idlenessTimeoutMillis != null) {
       WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
       kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
-    } else if (maxOutOfOrdernessMillis != null) {
+    } else {
       kafkaSource.assignTimestampsAndWatermarks(
           new WindowedTimestampExtractor<>(
               Time.milliseconds(maxOutOfOrdernessMillis.longValue())));

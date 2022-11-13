@@ -12,7 +12,7 @@ class FlinkKafkaInput(PTransform):
   """Custom transform that wraps a Flink Kafka consumer - only works with the
   portable Flink runner."""
   consumer_properties = {'bootstrap.servers': 'localhost:9092'}
-  topic = None
+  topics = list()
   username = None
   password = None
   max_out_of_orderness_millis = None
@@ -33,11 +33,11 @@ class FlinkKafkaInput(PTransform):
   def to_runner_api_parameter(self, _unused_context):
     assert isinstance(self, FlinkKafkaInput), \
       "expected instance of FlinkKafkaInput, but got %s" % self.__class__
-    assert self.topic is not None, "topic not set"
+    assert len(self.topics) > 0, "topic not set"
     assert len(self.consumer_properties) > 0, "consumer properties not set"
 
     return ("lyft:flinkKafkaInput", json.dumps({
-      'topic': self.topic,
+      'topic': self.topics,
       'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
       'start_from_timestamp_millis': self.start_from_timestamp_millis,
       'idleness_timeout_millis': self.idleness_timeout_millis,
@@ -51,7 +51,7 @@ class FlinkKafkaInput(PTransform):
     logging.info("kafka spec: %s", spec_parameter)
     instance = FlinkKafkaInput()
     payload = json.loads(spec_parameter)
-    instance.topic = payload['topic']
+    instance.topics = payload['topics']
     instance.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
     instance.start_from_timestamp_millis = payload['start_from_timestamp_millis']
     instance.idleness_timeout_millis = payload['idleness_timeout_millis']
@@ -61,7 +61,7 @@ class FlinkKafkaInput(PTransform):
     return instance
 
   def with_topic(self, topic):
-    self.topic = topic
+    self.topics.append(topic)
     return self
 
   def set_kafka_consumer_property(self, key, value):
