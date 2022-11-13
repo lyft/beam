@@ -17,6 +17,7 @@ class FlinkKafkaInput(PTransform):
   password = None
   max_out_of_orderness_millis = None
   start_from_timestamp_millis = None
+  idleness_timeout_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -39,6 +40,7 @@ class FlinkKafkaInput(PTransform):
       'topic': self.topic,
       'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
       'start_from_timestamp_millis': self.start_from_timestamp_millis,
+      'idleness_timeout_millis': self.idleness_timeout_millis,
       'properties': self.consumer_properties,
       'username': self.username,
       'password': self.password}))
@@ -52,6 +54,7 @@ class FlinkKafkaInput(PTransform):
     instance.topic = payload['topic']
     instance.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
     instance.start_from_timestamp_millis = payload['start_from_timestamp_millis']
+    instance.idleness_timeout_millis = payload['idleness_timeout_millis']
     instance.consumer_properties = payload['properties']
     instance.username = payload['username']
     instance.password = payload['password']
@@ -90,6 +93,14 @@ class FlinkKafkaInput(PTransform):
     and not the initial timestamp.
     """
     self.start_from_timestamp_millis = start_from_timestamp_millis
+    return self
+
+  def with_idleness_timeout_millis(self, idleness_timeout_millis):
+    """
+    Adds idleness detection to partitions with no data. Used in the watermark
+    strategy to generate watermark during idle partitions.
+    """
+    self.idleness_timeout_millis = idleness_timeout_millis
     return self
 
   def with_username(self, username):
