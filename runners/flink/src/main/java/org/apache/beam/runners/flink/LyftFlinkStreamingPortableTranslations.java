@@ -200,7 +200,8 @@ public class LyftFlinkStreamingPortableTranslations {
         Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
         context
             .getExecutionEnvironment()
-            .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" + Arrays.toString(topics)));
+            .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" +
+                String.join(",", topics)));
   }
 
   /**
