@@ -48,6 +48,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.TemporalAccessor;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -199,7 +200,7 @@ public class LyftFlinkStreamingPortableTranslations {
         Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
         context
             .getExecutionEnvironment()
-            .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" + topic));
+            .addSource(kafkaSource, FlinkKafkaConsumer.class.getSimpleName() + "-" + Arrays.toString(topics)));
   }
 
   /**
