@@ -37,7 +37,7 @@ class FlinkKafkaInput(PTransform):
     assert len(self.consumer_properties) > 0, "consumer properties not set"
 
     return ("lyft:flinkKafkaInput", json.dumps({
-      'topic': self.topics,
+      'topics': self.topics,
       'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
       'start_from_timestamp_millis': self.start_from_timestamp_millis,
       'idleness_timeout_millis': self.idleness_timeout_millis,
