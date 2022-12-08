@@ -18,6 +18,7 @@ class FlinkKafkaInput(PTransform):
   max_out_of_orderness_millis = None
   start_from_timestamp_millis = None
   idleness_timeout_millis = None
+  dlq_enabled = False
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -43,7 +44,8 @@ class FlinkKafkaInput(PTransform):
       'idleness_timeout_millis': self.idleness_timeout_millis,
       'properties': self.consumer_properties,
       'username': self.username,
-      'password': self.password}))
+      'password': self.password,
+      'dlq_enabled': self.dlq_enabled}))
 
   @staticmethod
   @PTransform.register_urn("lyft:flinkKafkaInput", None)
@@ -58,6 +60,7 @@ class FlinkKafkaInput(PTransform):
     instance.consumer_properties = payload['properties']
     instance.username = payload['username']
     instance.password = payload['password']
+    instance.dlq_enabled = payload['dlq_enabled']
     return instance
 
   def with_topic(self, topic):
@@ -114,6 +117,14 @@ class FlinkKafkaInput(PTransform):
     The password/credential to consume data from Kafka.
     """
     self.password = password
+    return self
+
+  def with_dlq(self, is_dlq_enabled):
+    """
+    :param is_dlq_enabled:
+    :return:
+    """
+    self.dlq_enabled = is_dlq_enabled
     return self
 
 @beam.typehints.with_input_types(bytes)

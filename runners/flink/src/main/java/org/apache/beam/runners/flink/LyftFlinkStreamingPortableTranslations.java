@@ -53,6 +53,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.stream.Collectors;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
@@ -152,6 +153,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     final String userName = (String) params.get("username");
     final String password = (String) params.get("password");
+    final boolean isDlqEnabled = (Boolean) params.get("dlq_enabled");
 
     LyftKafkaConsumerBuilder<WindowedValue<byte[]>> consumerBuilder =
         new LyftKafkaConsumerBuilder<>();
@@ -194,6 +196,10 @@ public class LyftFlinkStreamingPortableTranslations {
       kafkaSource.assignTimestampsAndWatermarks(
           new WindowedTimestampExtractor<>(
               Time.milliseconds(maxOutOfOrdernessMillis.longValue())));
+    }
+
+    if (isDlqEnabled) {
+      topics = topics.stream().filter(t -> t.startsWith("dlq")).collect(Collectors.toList());
     }
 
     context.addDataStream(
