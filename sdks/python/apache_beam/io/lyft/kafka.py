@@ -12,7 +12,7 @@ class FlinkKafkaInput(PTransform):
   """Custom transform that wraps a Flink Kafka consumer - only works with the
   portable Flink runner."""
   consumer_properties = {'bootstrap.servers': 'localhost:9092'}
-  topics = list()
+  topics = None
   username = None
   password = None
   max_out_of_orderness_millis = None
@@ -61,6 +61,9 @@ class FlinkKafkaInput(PTransform):
     return instance
 
   def with_topic(self, topic):
+    if not self.topics:
+      self.topics = list()
+
     self.topics.append(topic)
     return self
 
