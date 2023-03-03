@@ -75,6 +75,9 @@ from apache_beam.runners.worker.worker_status import thread_dump
 from apache_beam.utils import thread_pool_executor
 from apache_beam.utils.sentinel import Sentinel
 
+from runners.worker.retry_interceptor import RetryOnRpcErrorClientInterceptor, \
+  ExponentialBackoff
+
 if TYPE_CHECKING:
   # TODO(BEAM-9372): move this out of the TYPE_CHECKING scope when we drop
   #  support for python < 3.5.3
@@ -183,6 +186,8 @@ class SdkHarness(object):
     self._worker_index = 0
     self._worker_id = worker_id
     self._state_cache = StateCache(state_cache_size)
+    _LOGGER.info(f'RM the state cache is {state_cache_size}')
+
     options = [('grpc.max_receive_message_length', -1),
                ('grpc.max_send_message_length', -1)]
     if credentials is None:
@@ -294,8 +299,9 @@ class SdkHarness(object):
         traceback_string = traceback.format_exc()
         print(traceback_string, file=sys.stderr)
         _LOGGER.error(
-            'Error processing instruction %s. Original traceback is\n%s\n',
+            'Error processing instruction %s on %s. Original traceback is\n%s\n',
             request.instruction_id,
+            self._worker_id,
             traceback_string)
         response = beam_fn_api_pb2.InstructionResponse(
             instruction_id=request.instruction_id, error=traceback_string)
@@ -882,7 +888,12 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           _LOGGER.info('State channel established.')
           # Add workerId to the grpc channel
           grpc_channel = grpc.intercept_channel(
-              grpc_channel, WorkerIdInterceptor())
+              grpc_channel, WorkerIdInterceptor(),
+              RetryOnRpcErrorClientInterceptor(
+                  max_attempts=4,
+                  sleeping_policy=ExponentialBackoff(init_backoff_ms=100, max_backoff_ms=1600, multiplier=2),
+                  status_for_retry=(grpc.StatusCode.UNAVAILABLE,),
+              ))
           self._state_handler_cache[url] = CachingStateHandler(
               self._state_cache,
               GrpcStateHandler(
@@ -1074,6 +1085,7 @@ class CachingStateHandler(object):
     self._underlying = underlying_state
     self._state_cache = global_state_cache
     self._context = threading.local()
+    self.counter  = 0
 
   @contextlib.contextmanager
   def process_instruction_id(self, bundle_id, cache_tokens):
@@ -1115,6 +1127,10 @@ class CachingStateHandler(object):
     # type: (...) -> Iterable[Any]
     cache_token = self._get_cache_token(state_key)
     if not cache_token:
+      if self.counter < 100:
+        _LOGGER.info(f'RM no cache token exists {cache_token}')
+        self.counter += 1
+
       # Cache disabled / no cache token. Can't do a lookup/store in the cache.
       # Fall back to lazily materializing the state, one element at a time.
       return self._lazy_iterator(state_key, coder)
