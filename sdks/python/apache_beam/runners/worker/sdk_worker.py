@@ -68,6 +68,8 @@ from apache_beam.runners.worker import data_plane
 from apache_beam.runners.worker import statesampler
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
 from apache_beam.runners.worker.data_plane import PeriodicThread
+from apache_beam.runners.worker.retry_interceptor import RetryOnRpcErrorClientInterceptor
+from apache_beam.runners.worker.retry_interceptor import ExponentialBackoff
 from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.runners.worker.worker_id_interceptor import WorkerIdInterceptor
 from apache_beam.runners.worker.worker_status import FnApiWorkerStatusHandler
@@ -75,8 +77,6 @@ from apache_beam.runners.worker.worker_status import thread_dump
 from apache_beam.utils import thread_pool_executor
 from apache_beam.utils.sentinel import Sentinel
 
-from runners.worker.retry_interceptor import RetryOnRpcErrorClientInterceptor, \
-  ExponentialBackoff
 
 if TYPE_CHECKING:
   # TODO(BEAM-9372): move this out of the TYPE_CHECKING scope when we drop
