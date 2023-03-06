@@ -2,7 +2,7 @@ import abc
 import logging
 import time
 
-from random import randint
+from random import randint, random
 from typing import Tuple, Optional
 
 import grpc
@@ -34,7 +34,8 @@ class ExponentialBackoff(SleepingPolicy):
         time.sleep(sleep_ms / 1000)
 
 class RetryOnRpcErrorClientInterceptor(
-    grpc.UnaryUnaryClientInterceptor, grpc.StreamUnaryClientInterceptor
+    grpc.UnaryUnaryClientInterceptor,
+    grpc.StreamStreamClientInterceptor
 ):
     def __init__(
         self,
@@ -51,6 +52,9 @@ class RetryOnRpcErrorClientInterceptor(
 
         for try_i in range(self.max_attempts):
             response = continuation(client_call_details, request_or_iterator)
+
+            if random.random() < 0.1:
+                _LOGGER.info(f"RM: response {response}")
 
             if isinstance(response, grpc.RpcError):
 
@@ -80,4 +84,11 @@ class RetryOnRpcErrorClientInterceptor(
     def intercept_stream_unary(
         self, continuation, client_call_details, request_iterator
     ):
+        return self._intercept_call(continuation, client_call_details, request_iterator)
+
+    def intercept_stream_unary(self, continuation, client_call_details, request):
+        return self._intercept_call(continuation, client_call_details, request)
+
+    def intercept_stream_stream(
+        self, continuation, client_call_details, request_iterator):
         return self._intercept_call(continuation, client_call_details, request_iterator)
