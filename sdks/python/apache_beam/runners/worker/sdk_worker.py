@@ -890,8 +890,8 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           grpc_channel = grpc.intercept_channel(
               grpc_channel, WorkerIdInterceptor(),
               RetryOnRpcErrorClientInterceptor(
-                  max_attempts=4,
-                  sleeping_policy=ExponentialBackoff(init_backoff_ms=100, max_backoff_ms=1600, multiplier=2),
+                  max_attempts=5,
+                  sleeping_policy=ExponentialBackoff(),
                   status_for_retry=(grpc.StatusCode.UNAVAILABLE,),
               ))
           self._state_handler_cache[url] = CachingStateHandler(

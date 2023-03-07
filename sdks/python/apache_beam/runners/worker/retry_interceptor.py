@@ -9,29 +9,36 @@ import grpc
 
 _LOGGER = logging.getLogger(__name__)
 
+
 class SleepingPolicy(abc.ABC):
 
     @abc.abstractmethod
-    def sleep(self, try_i: int):
+    def sleep(self, attempt: int):
         """
-        How long to sleep in milliseconds.
-        :param try_i: the number of retry (starting from zero)
+        :param attempt: the number of retry (starting from zero)
         """
-        assert try_i >= 0
+        assert attempt >= 0
+
 
 class ExponentialBackoff(SleepingPolicy):
-    def __init__(self, *, init_backoff_ms: int, max_backoff_ms: int, multiplier: int):
+
+    def __init__(self,
+        init_backoff_ms: int = 100,
+        max_backoff_ms: int = 1500,
+        backoff_multiplier: int = 2
+    ):
         self.init_backoff = randint(0, init_backoff_ms)
         self.max_backoff = max_backoff_ms
-        self.multiplier = multiplier
+        self.multiplier = backoff_multiplier
 
-    def sleep(self, try_i: int):
+    def sleep(self, attempt: int):
         sleep_range = min(
-            self.init_backoff * self.multiplier ** try_i, self.max_backoff
+            self.init_backoff * self.multiplier ** attempt, self.max_backoff
         )
         sleep_ms = randint(0, sleep_range)
         _LOGGER.info(f"Sleeping for {sleep_ms}")
         time.sleep(sleep_ms / 1000)
+
 
 class RetryOnRpcErrorClientInterceptor(
     grpc.UnaryUnaryClientInterceptor,
@@ -48,47 +55,39 @@ class RetryOnRpcErrorClientInterceptor(
         self.sleeping_policy = sleeping_policy
         self.status_for_retry = status_for_retry
 
-    def _intercept_call(self, continuation, client_call_details, request_or_iterator):
+    def _intercept(self, continuation, client_call_details,
+        request_or_iterator
+    ):
 
-        for try_i in range(self.max_attempts):
+        for attempt in range(self.max_attempts):
             response = continuation(client_call_details, request_or_iterator)
 
-            if random.random() < 0.1:
+            if random.random() < 0.05:
                 _LOGGER.info(f"RM: response {response}")
 
             if isinstance(response, grpc.RpcError):
 
-
-                # Return if it was last attempt
-                if try_i == (self.max_attempts - 1):
+                if attempt == (self.max_attempts - 1):
                     return response
 
                 _LOGGER.error(f'RM, on worker '
                               f'{client_call_details.metadata.worker_id} '
                               f'timeout {client_call_details.timeout} and '
                               f'error due to {response.code()}')
-                # If status code is not in retryable status codes
                 if (
                     self.status_for_retry
                     and response.code() not in self.status_for_retry
                 ):
                     return response
 
-                self.sleeping_policy.sleep(try_i)
+                self.sleeping_policy.sleep(attempt)
             else:
                 return response
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
-        return self._intercept_call(continuation, client_call_details, request)
-
-    def intercept_stream_unary(
-        self, continuation, client_call_details, request_iterator
-    ):
-        return self._intercept_call(continuation, client_call_details, request_iterator)
-
-    def intercept_stream_unary(self, continuation, client_call_details, request):
-        return self._intercept_call(continuation, client_call_details, request)
+        return self._intercept(continuation, client_call_details, request)
 
     def intercept_stream_stream(
         self, continuation, client_call_details, request_iterator):
-        return self._intercept_call(continuation, client_call_details, request_iterator)
+        return self._intercept(continuation, client_call_details,
+                               request_iterator)
