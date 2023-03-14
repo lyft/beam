@@ -184,7 +184,6 @@ class SdkHarness(object):
     self._worker_index = 0
     self._worker_id = worker_id
     self._state_cache = StateCache(state_cache_size)
-    _LOGGER.info(f'RM the state cache is {state_cache_size}')
 
     options = [('grpc.max_receive_message_length', -1),
                ('grpc.max_send_message_length', -1)]
