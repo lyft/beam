@@ -28,6 +28,7 @@ import abc
 import collections
 import contextlib
 import functools
+import json
 import logging
 import queue
 import sys
@@ -68,15 +69,12 @@ from apache_beam.runners.worker import data_plane
 from apache_beam.runners.worker import statesampler
 from apache_beam.runners.worker.channel_factory import GRPCChannelFactory
 from apache_beam.runners.worker.data_plane import PeriodicThread
-from apache_beam.runners.worker.retry_interceptor import RetryOnRpcErrorClientInterceptor
-from apache_beam.runners.worker.retry_interceptor import ExponentialBackoff
 from apache_beam.runners.worker.statecache import StateCache
 from apache_beam.runners.worker.worker_id_interceptor import WorkerIdInterceptor
 from apache_beam.runners.worker.worker_status import FnApiWorkerStatusHandler
 from apache_beam.runners.worker.worker_status import thread_dump
 from apache_beam.utils import thread_pool_executor
 from apache_beam.utils.sentinel import Sentinel
-
 
 if TYPE_CHECKING:
   # TODO(BEAM-9372): move this out of the TYPE_CHECKING scope when we drop
@@ -856,6 +854,23 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
 
   Caches the created channels by ``state descriptor url``.
   """
+
+  # retry config for ephemeral UNAVAILABLE error.
+  GRPC_RETRY_SERVICE_CONFIG = json.dumps({
+    "methodConfig": [{
+      "name": [{
+        "service": "org.apache.beam.model.fn_execution.v1.BeamFnState"
+      }],
+      "retryPolicy": {
+        "maxAttempts": 10,
+        "initialBackoff": "0.1s",
+        "maxBackoff": "5s",
+        "backoffMultiplier": 2,
+        "retryableStatusCodes": ["UNAVAILABLE"],
+      },
+    }]
+  })
+
   def __init__(self, state_cache, credentials=None):
     # type: (StateCache, Optional[grpc.ChannelCredentials]) -> None
     self._state_handler_cache = {}  # type: Dict[str, CachingStateHandler]
@@ -876,7 +891,11 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           # received or sent over the data plane. The actual buffer size is
           # controlled in a layer above.
           options = [('grpc.max_receive_message_length', -1),
-                     ('grpc.max_send_message_length', -1)]
+                     ('grpc.max_send_message_length', -1),
+                     ('grpc.enable_retries', 1),
+                     ('grpc.service_config',
+                      GrpcStateHandlerFactory.GRPC_RETRY_SERVICE_CONFIG)
+                     ]
           if self._credentials is None:
             _LOGGER.info('Creating insecure state channel for %s.', url)
             grpc_channel = GRPCChannelFactory.insecure_channel(
@@ -888,12 +907,7 @@ class GrpcStateHandlerFactory(StateHandlerFactory):
           _LOGGER.info('State channel established.')
           # Add workerId to the grpc channel
           grpc_channel = grpc.intercept_channel(
-              grpc_channel, WorkerIdInterceptor(),
-              RetryOnRpcErrorClientInterceptor(
-                  max_attempts=5,
-                  sleeping_policy=ExponentialBackoff(),
-                  status_for_retry=(grpc.StatusCode.UNAVAILABLE,),
-              ))
+              grpc_channel, WorkerIdInterceptor())
           self._state_handler_cache[url] = CachingStateHandler(
               self._state_cache,
               GrpcStateHandler(
@@ -1085,7 +1099,6 @@ class CachingStateHandler(object):
     self._underlying = underlying_state
     self._state_cache = global_state_cache
     self._context = threading.local()
-    self.counter  = 0
 
   @contextlib.contextmanager
   def process_instruction_id(self, bundle_id, cache_tokens):
@@ -1127,10 +1140,6 @@ class CachingStateHandler(object):
     # type: (...) -> Iterable[Any]
     cache_token = self._get_cache_token(state_key)
     if not cache_token:
-      if self.counter < 100:
-        _LOGGER.info(f'RM no cache token exists {cache_token}')
-        self.counter += 1
-
       # Cache disabled / no cache token. Can't do a lookup/store in the cache.
       # Fall back to lazily materializing the state, one element at a time.
       return self._lazy_iterator(state_key, coder)
