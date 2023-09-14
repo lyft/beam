@@ -27,10 +27,6 @@ plugins {
 repositories {
   jcenter()
   maven { url = uri("https://plugins.gradle.org/m2/") }
-  maven {
-    url = uri("https://repo.spring.io/plugins-release/")
-    content { includeGroup("io.spring.gradle") }
-  }
 }
 
 // Dependencies on other plugins used when this plugin is invoked
