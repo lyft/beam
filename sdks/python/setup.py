@@ -280,7 +280,7 @@ if __name__ == '__main__':
         #
         # 3. Exclude protobuf 4 versions that leak memory, see:
         # https://github.com/apache/beam/issues/28246
-        'protobuf>=3.20.3,<4.25.0,!=4.0.*,!=4.21.*,!=4.22.0,!=4.23.*,!=4.24.0,!=4.24.1,!=4.24.2',  # pylint: disable=line-too-long
+        'protobuf>=3.20.3,<4.26.0,!=4.0.*,!=4.21.*,!=4.22.0,!=4.23.*,!=4.24.*',  # pylint: disable=line-too-long
         'pydot>=1.2.0,<2',
         'python-dateutil>=2.8.0,<3',
         'pytz>=2018.3',
@@ -288,9 +288,9 @@ if __name__ == '__main__':
         'requests>=2.24.0,<3.0.0',
         'typing-extensions>=3.7.0',
         'zstandard>=0.18.0,<1',
-      # Dynamic dependencies must be specified in a separate list, otherwise
-      # Dependabot won't be able to parse the main list. Any dynamic
-      # dependencies will not receive updates from Dependabot.
+        # Dynamic dependencies must be specified in a separate list, otherwise
+        # Dependabot won't be able to parse the main list. Any dynamic
+        # dependencies will not receive updates from Dependabot.
       ] + [pyarrow_dependency],
       python_requires=python_requires,
       # BEAM-8840: Do NOT use tests_require or setup_requires.
