@@ -430,7 +430,7 @@ class BeamModulePlugin implements Plugin<Project> {
 
     // Automatically use the official release version if we are performing a release
     // otherwise append '-SNAPSHOT'
-    project.version = '2.50.0'
+    project.version = '2.50.0-lyft202311101699645078'
     if (!isRelease(project)) {
       project.version += '-SNAPSHOT'
     }
