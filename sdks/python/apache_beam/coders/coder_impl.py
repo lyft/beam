@@ -283,7 +283,14 @@ class CallbackCoderImpl(CoderImpl):
     return self._encoder(value)
 
   def decode(self, encoded):
-    return self._decoder(encoded)
+    _LOGGER.info(f"Starting decode process. Encoded data length: {len(encoded)} bytes")
+    _LOGGER.info(f"Encoded data (first 20 bytes): {encoded[:20]}")
+
+    try:
+      return self.decode_from_stream(create_InputStream(encoded), False)
+    except Exception as e:
+      _LOGGER.error(f"Error during decode. Data length: {len(encoded)} bytes. Exception: {str(e)}")
+      raise
 
   def estimate_size(self, value, nested=False):
     # type: (Any, bool) -> int
