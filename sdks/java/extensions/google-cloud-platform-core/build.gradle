@@ -19,7 +19,8 @@
 import groovy.json.JsonOutput
 
 plugins { id 'org.apache.beam.module' }
-applyJavaNature()
+applyJavaNature(
+  automaticModuleName: 'org.apache.beam.sdk.extensions.gcp')
 
 description = "Apache Beam :: SDKs :: Java :: Extensions :: Google Cloud Platform Core"
 ext.summary = """Common components used to support multiple
@@ -34,36 +35,37 @@ test {
 }
 
 dependencies {
-  shadow library.java.vendored_guava_20_0
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow library.java.google_http_client_jackson2
-  shadow library.java.google_auth_library_oauth2_http
-  shadow library.java.google_api_client
-  shadow library.java.bigdataoss_gcsio
-  shadow library.java.bigdataoss_util
-  shadow library.java.google_api_services_cloudresourcemanager
-  shadow library.java.google_api_services_storage
-  shadow library.java.google_auth_library_credentials
-  shadow library.java.google_http_client
-  shadow library.java.slf4j_api
-  shadow library.java.joda_time
-  shadow library.java.jackson_annotations
-  shadow library.java.jackson_databind
-  provided library.java.hamcrest_core
-  provided library.java.junit
-  testCompile project(path: ":beam-sdks-java-core", configuration: "shadowTest")
-  testCompile library.java.hamcrest_library
-  testCompile library.java.guava_testlib
-  testCompile library.java.mockito_core
-  testCompile library.java.slf4j_jdk14
+  implementation enforcedPlatform(library.java.google_cloud_platform_libraries_bom)
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation project(path: ":runners:core-java")
+  implementation library.java.google_http_client_jackson2
+  implementation library.java.google_auth_library_oauth2_http
+  implementation library.java.google_api_client
+  implementation library.java.bigdataoss_gcsio
+  implementation library.java.bigdataoss_util
+  implementation library.java.google_api_services_cloudresourcemanager
+  implementation library.java.google_api_services_storage
+  implementation library.java.google_auth_library_credentials
+  implementation library.java.google_http_client
+  implementation library.java.slf4j_api
+  implementation library.java.joda_time
+  implementation library.java.http_core
+  implementation library.java.http_client
+  implementation library.java.jackson_annotations
+  implementation library.java.jackson_databind
+  permitUnusedDeclared library.java.jackson_databind // BEAM-11761
+  testImplementation project(path: ":sdks:java:core", configuration: "shadowTest")
+  testImplementation library.java.mockito_core
+  testRuntimeOnly library.java.slf4j_jdk14
 }
 
 // Note that no runner is specified here, so tests running under this task should not be running
 // pipelines.
-task integrationTest(type: Test) {
+task integrationTestKms(type: Test) {
   group = "Verification"
   def gcpProject = project.findProperty('gcpProject') ?: 'apache-beam-testing'
-  def gcpTempRoot = project.findProperty('gcpTempRoot') ?: 'gs://temp-storage-for-end-to-end-tests'
+  def gcpTempRoot = project.findProperty('gcpTempRootKms') ?: 'gs://temp-storage-for-end-to-end-tests-cmek'
   def dataflowKmsKey = project.findProperty('dataflowKmsKey') ?: "projects/apache-beam-testing/locations/global/keyRings/beam-it/cryptoKeys/test"
   systemProperty "beamTestPipelineOptions", JsonOutput.toJson([
           "--project=${gcpProject}",
@@ -78,11 +80,13 @@ task integrationTest(type: Test) {
   maxParallelForks 4
   classpath = sourceSets.test.runtimeClasspath
   testClassesDirs = sourceSets.test.output.classesDirs
-  useJUnit { }
+  useJUnit {
+    includeCategories "org.apache.beam.sdk.testing.UsesKms"
+  }
 }
 
 task postCommit {
   group = "Verification"
   description = "Integration tests of GCP connectors using the DirectRunner."
-  dependsOn integrationTest
+  dependsOn integrationTestKms
 }

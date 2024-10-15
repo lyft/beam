@@ -17,17 +17,15 @@
  */
 package org.apache.beam.runners.core.metrics;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map.Entry;
+import java.util.Map;
 import java.util.Objects;
-import javax.annotation.Nullable;
+import org.apache.beam.model.pipeline.v1.MetricsApi;
 import org.apache.beam.sdk.metrics.MetricName;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Strings;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Strings;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * An implementation of {@code MetricKey} based on a MonitoringInfo's URN and label to represent the
@@ -36,47 +34,45 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Strings;
  */
 public class MonitoringInfoMetricName extends MetricName {
 
-  private String urn;
-  @Nullable private String name;
-  @Nullable private String namespace;
-  private HashMap<String, String> labels = new HashMap<String, String>();
+  private final String urn;
+  private final Map<String, String> labels;
 
-  private MonitoringInfoMetricName(String urn, HashMap<String, String> labels) {
+  private MonitoringInfoMetricName(String urn, Map<String, String> labels) {
     checkArgument(!Strings.isNullOrEmpty(urn), "MonitoringInfoMetricName urn must be non-empty");
     checkArgument(labels != null, "MonitoringInfoMetricName labels must be non-null");
-    // TODO(ajamato): Move SimpleMonitoringInfoBuilder to beam-runner-core-construction-java
+    // TODO(ajamato): Move SimpleMonitoringInfoBuilder to :runners:core-construction-java
     // and ensure all necessary labels are set for the specific URN.
     this.urn = urn;
-    for (Entry<String, String> entry : labels.entrySet()) {
-      this.labels.put(entry.getKey(), entry.getValue());
-    }
+    this.labels = ImmutableMap.copyOf(labels);
   }
 
-  /** Parse the urn field into a name and namespace field. */
-  private void parseUrn() {
-    if (this.urn.startsWith(SimpleMonitoringInfoBuilder.USER_COUNTER_URN_PREFIX)) {
-      List<String> split = new ArrayList<String>(Arrays.asList(this.getUrn().split(":")));
-      this.name = split.get(split.size() - 1);
-      this.namespace = split.get(split.size() - 2);
-    }
-  }
-
-  /** @return the parsed namespace from the user metric URN, otherwise null. */
   @Override
   public String getNamespace() {
-    if (this.namespace == null) {
-      parseUrn();
+    // User-generated metric
+    String ret = labels.get(MonitoringInfoConstants.Labels.NAMESPACE);
+    if (ret != null) {
+      return ret;
     }
-    return this.namespace;
+    // System-generated metric
+    ret = labels.get(MonitoringInfoConstants.Labels.PCOLLECTION);
+    if (ret != null) {
+      return ret;
+    }
+    // System-generated metric
+    ret = labels.get(MonitoringInfoConstants.Labels.PTRANSFORM);
+    if (ret != null) {
+      return ret;
+    }
+    return urn.split(":", 2)[0];
   }
 
-  /** @return the parsed name from the user metric URN, otherwise null. */
   @Override
   public String getName() {
-    if (this.name == null) {
-      parseUrn();
+    String ret = labels.get(MonitoringInfoConstants.Labels.NAME);
+    if (ret != null) {
+      return ret;
     }
-    return this.name;
+    return urn.split(":", 2)[1];
   }
 
   /** @return the urn of this MonitoringInfo metric. */
@@ -85,11 +81,15 @@ public class MonitoringInfoMetricName extends MetricName {
   }
 
   /** @return The labels associated with this MonitoringInfo. */
-  public HashMap<String, String> getLabels() {
+  public Map<String, String> getLabels() {
     return this.labels;
   }
 
-  public static MonitoringInfoMetricName named(String urn, HashMap<String, String> labels) {
+  public static MonitoringInfoMetricName of(MetricsApi.MonitoringInfo mi) {
+    return new MonitoringInfoMetricName(mi.getUrn(), mi.getLabelsMap());
+  }
+
+  public static MonitoringInfoMetricName named(String urn, Map<String, String> labels) {
     return new MonitoringInfoMetricName(urn, labels);
   }
 
@@ -100,7 +100,7 @@ public class MonitoringInfoMetricName extends MetricName {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(@Nullable Object o) {
     // If the object is compared with itself then return true
     if (o == this) {
       return true;
@@ -113,7 +113,7 @@ public class MonitoringInfoMetricName extends MetricName {
   }
 
   @Override
-  public String toString() {
+  public final String toString() {
     StringBuilder builder = new StringBuilder();
     builder.append(this.urn.toString());
     builder.append(" ");

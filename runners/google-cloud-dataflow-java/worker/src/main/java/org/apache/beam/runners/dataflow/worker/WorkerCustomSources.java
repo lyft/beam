@@ -24,7 +24,7 @@ import static org.apache.beam.runners.dataflow.util.Structs.getString;
 import static org.apache.beam.runners.dataflow.util.Structs.getStrings;
 import static org.apache.beam.sdk.util.SerializableUtils.deserializeFromByteArray;
 import static org.apache.beam.sdk.util.SerializableUtils.serializeToByteArray;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.google.api.client.util.Base64;
 import com.google.api.services.dataflow.model.ApproximateReportedProgress;
@@ -32,6 +32,7 @@ import com.google.api.services.dataflow.model.ApproximateSplitRequest;
 import com.google.api.services.dataflow.model.DerivedSource;
 import com.google.api.services.dataflow.model.DynamicSourceSplit;
 import com.google.api.services.dataflow.model.ReportedParallelism;
+import com.google.api.services.dataflow.model.SourceMetadata;
 import com.google.api.services.dataflow.model.SourceOperationResponse;
 import com.google.api.services.dataflow.model.SourceSplitOptions;
 import com.google.api.services.dataflow.model.SourceSplitRequest;
@@ -45,8 +46,8 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.dataflow.internal.CustomSources;
+import org.apache.beam.runners.dataflow.options.DataflowPipelineDebugOptions;
 import org.apache.beam.runners.dataflow.options.DataflowPipelineOptions;
 import org.apache.beam.runners.dataflow.util.CloudObject;
 import org.apache.beam.runners.dataflow.worker.util.common.worker.NativeReader;
@@ -55,15 +56,17 @@ import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.Source;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.util.BackOff;
 import org.apache.beam.sdk.util.FluentBackoff;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.ValueWithRecordId;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.ByteString;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.ByteString;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.util.concurrent.Uninterruptibles;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
@@ -75,6 +78,10 @@ import org.slf4j.LoggerFactory;
  * <p>Provides a bridge between the high-level {@code Source} API and the low-level {@code
  * CloudSource} class.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class WorkerCustomSources {
   private static final String SERIALIZED_SOURCE = "serialized_source";
   @VisibleForTesting static final String SERIALIZED_SOURCE_SPLITS = "serialized_source_splits";
@@ -133,9 +140,7 @@ public class WorkerCustomSources {
 
   /**
    * Version of {@link CustomSources#serializeToCloudSource(Source, PipelineOptions)} intended for
-   * use on splits of {@link BoundedSource}: the backend only needs the metadata for top-level
-   * sources, so here we bypass computing it (esp. the costly {@link
-   * BoundedSource#getEstimatedSizeBytes(PipelineOptions)}).
+   * use on splits of {@link BoundedSource}.
    */
   private static com.google.api.services.dataflow.model.Source serializeSplitToCloudSource(
       BoundedSource<?> source) throws Exception {
@@ -144,6 +149,20 @@ public class WorkerCustomSources {
     cloudSource.setSpec(CloudObject.forClass(CustomSources.class));
     addString(
         cloudSource.getSpec(), SERIALIZED_SOURCE, encodeBase64String(serializeToByteArray(source)));
+    SourceMetadata metadata = new SourceMetadata();
+    // Size estimation is best effort so we continue even if it fails here.
+    try {
+      long estimatedSize = source.getEstimatedSizeBytes(PipelineOptionsFactory.create());
+      if (estimatedSize >= 0) {
+        metadata.setEstimatedSizeBytes(estimatedSize);
+      } else {
+        LOG.warn(
+            "Ignoring negative estimated size {} produced by source {}", estimatedSize, source);
+      }
+    } catch (Exception e) {
+      LOG.warn("Size estimation of the source failed: " + source, e);
+    }
+    cloudSource.setMetadata(metadata);
     return cloudSource;
   }
 
@@ -228,18 +247,37 @@ public class WorkerCustomSources {
           serializedSize);
     }
 
+    List<BoundedSource<T>> bundlesBeforeCoalesce = bundles;
     int numBundlesBeforeRebundling = bundles.size();
     // To further reduce size of the response and service-side memory usage, coalesce
     // the sources into numBundlesLimit compressed serialized bundles.
-    if (bundles.size() > numBundlesLimit) {
+    while (serializedSize > apiByteLimit || bundles.size() > numBundlesLimit) {
+      // bundle size constrained by API limit, adds 5% allowance
+      int targetBundleSizeApiLimit = (int) (bundles.size() * apiByteLimit / serializedSize * 0.95);
+      // bundle size constrained by numBundlesLimit
+      int targetBundleSizeBundleLimit = Math.min(numBundlesLimit, bundles.size() - 1);
+      int targetBundleSize = Math.min(targetBundleSizeApiLimit, targetBundleSizeBundleLimit);
+
+      if (targetBundleSize <= 1) {
+        String message =
+            String.format(
+                "Unable to coalesce the sources into compressed serialized bundles to satisfy the "
+                    + "allowable limit when splitting %s. With %d bundles, total serialized size "
+                    + "of %d bytes is still larger than the limit %d. For more information, please "
+                    + "check the corresponding FAQ entry at "
+                    + "https://cloud.google.com/dataflow/docs/guides/common-errors#boundedsource-objects-splitintobundles",
+                source, bundles.size(), serializedSize, apiByteLimit);
+        throw new IllegalArgumentException(message);
+      }
+
+      bundles = limitNumberOfBundles(bundlesBeforeCoalesce, targetBundleSize);
+      serializedSize =
+          DataflowApiUtils.computeSerializedSizeBytes(wrapIntoSourceSplitResponse(bundles));
       LOG.warn(
-          "Splitting source {} into bundles of estimated size {} bytes produced {} bundles. "
-              + "Rebundling into {} bundles.",
+          "Re-bundle source {} into bundles of estimated size {} bytes produced {} bundles.",
           source,
-          desiredBundleSizeBytes,
-          bundles.size(),
-          numBundlesLimit);
-      bundles = limitNumberOfBundles(bundles, numBundlesLimit);
+          serializedSize,
+          bundles.size());
     }
 
     SourceOperationResponse response =
@@ -258,7 +296,7 @@ public class WorkerCustomSources {
                   + "it generated %d BoundedSource objects with total serialized size of %d bytes "
                   + "which is larger than the limit %d. "
                   + "For more information, please check the corresponding FAQ entry at "
-                  + "https://cloud.google.com/dataflow/pipelines/troubleshooting-your-pipeline",
+                  + "https://cloud.google.com/dataflow/docs/guides/common-errors#boundedsource-objects-splitintobundles",
               source,
               desiredBundleSizeBytes,
               numBundlesBeforeRebundling,
@@ -417,7 +455,7 @@ public class WorkerCustomSources {
 
       context.setActiveReader(reader);
 
-      return new UnboundedReaderIterator<>(reader, context, started);
+      return new UnboundedReaderIterator<>(reader, context, started, options);
     }
 
     @Override
@@ -618,9 +656,8 @@ public class WorkerCustomSources {
       reader.close();
     }
 
-    @Nullable
     @VisibleForTesting
-    static ReportedParallelism longToParallelism(long value) {
+    static @Nullable ReportedParallelism longToParallelism(long value) {
       if (value >= 0) {
         return new ReportedParallelism().setValue(Double.valueOf(value));
       } else {
@@ -737,34 +774,34 @@ public class WorkerCustomSources {
     }
   }
 
-  // Commit at least once every 10 seconds or 10k records.  This keeps the watermark advancing
-  // smoothly, and ensures that not too much work will have to be reprocessed in the event of
-  // a crash.
-  @VisibleForTesting static int maxUnboundedBundleSize = 10000;
-
-  @VisibleForTesting
-  static final Duration MAX_UNBOUNDED_BUNDLE_READ_TIME = Duration.standardSeconds(10);
-  // Backoff starting at 100ms, for approximately 1s total. 100+150+225+337.5~=1000.
-  private static final FluentBackoff BACKOFF_FACTORY =
-      FluentBackoff.DEFAULT.withMaxRetries(4).withInitialBackoff(Duration.millis(100));
-
   private static class UnboundedReaderIterator<T>
       extends NativeReader.NativeReaderIterator<WindowedValue<ValueWithRecordId<T>>> {
     private final UnboundedSource.UnboundedReader<T> reader;
     private final StreamingModeExecutionContext context;
     private final boolean started;
     private final Instant endTime;
-    private int elemsRead;
+    private final int maxElems;
+    private final FluentBackoff backoffFactory;
+    private int elemsRead = 0;
 
     private UnboundedReaderIterator(
         UnboundedSource.UnboundedReader<T> reader,
         StreamingModeExecutionContext context,
-        boolean started) {
+        boolean started,
+        PipelineOptions options) {
       this.reader = reader;
       this.context = context;
-      this.endTime = Instant.now().plus(MAX_UNBOUNDED_BUNDLE_READ_TIME);
-      this.elemsRead = 0;
       this.started = started;
+      DataflowPipelineDebugOptions debugOptions = options.as(DataflowPipelineDebugOptions.class);
+      this.endTime =
+          Instant.now()
+              .plus(Duration.standardSeconds(debugOptions.getUnboundedReaderMaxReadTimeSec()));
+      this.maxElems = debugOptions.getUnboundedReaderMaxElements();
+      this.backoffFactory =
+          FluentBackoff.DEFAULT
+              .withInitialBackoff(Duration.millis(10))
+              .withMaxCumulativeBackoff(
+                  Duration.millis(debugOptions.getUnboundedReaderMaxWaitForElementsMs()));
     }
 
     @Override
@@ -789,14 +826,16 @@ public class WorkerCustomSources {
 
     @Override
     public boolean advance() throws IOException {
-      if (elemsRead >= maxUnboundedBundleSize
-          || Instant.now().isAfter(endTime)
-          || context.isSinkFullHintSet()) {
-        return false;
-      }
-
-      BackOff backoff = BACKOFF_FACTORY.backoff();
+      // Limits are placed on how much data we allow to return, how long we process the input
+      // before checkpointing and how long we block for input to be available.  This ensures
+      // that there are regular checkpoints and that state does not become too large.
+      BackOff backoff = backoffFactory.backoff();
       while (true) {
+        if (elemsRead >= maxElems
+            || Instant.now().isAfter(endTime)
+            || context.isSinkFullHintSet()) {
+          return false;
+        }
         try {
           if (reader.advance()) {
             elemsRead++;

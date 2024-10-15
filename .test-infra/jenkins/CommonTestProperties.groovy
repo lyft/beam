@@ -16,24 +16,69 @@
  * limitations under the License.
  */
 
+
+
 class CommonTestProperties {
-    enum Runner {
-        DATAFLOW("DataflowRunner", ":beam-runners-google-cloud-dataflow-java"),
-        SPARK("SparkRunner", ":beam-runners-spark"),
-        FLINK("TestFlinkRunner", ":beam-runners-flink_2.11"),
-        DIRECT("DirectRunner", ":beam-runners-direct-java")
+  enum SDK {
+    PYTHON,
+    JAVA,
+    GO,
+  }
 
-        private final String option
-        private final String dependency
+  static String getFlinkVersion() {
+    return "1.15"
+  }
 
-        Runner(String option, String dependency) {
-            this.option = option
-            this.dependency = dependency
-        }
+  static String getSparkVersion() {
+    return "3"
+  }
+
+  enum Runner {
+    DATAFLOW("DataflowRunner"),
+    TEST_DATAFLOW("TestDataflowRunner"),
+    SPARK("SparkRunner"),
+    SPARK_STRUCTURED_STREAMING("SparkStructuredStreamingRunner"),
+    FLINK("FlinkRunner"),
+    DIRECT("DirectRunner"),
+    PORTABLE("PortableRunner")
+
+    def RUNNER_DEPENDENCY_MAP = [
+      JAVA: [
+        DATAFLOW: ":runners:google-cloud-dataflow-java",
+        TEST_DATAFLOW: ":runners:google-cloud-dataflow-java",
+        SPARK: ":runners:spark:${CommonTestProperties.getSparkVersion()}",
+        SPARK_STRUCTURED_STREAMING: ":runners:spark:${CommonTestProperties.getSparkVersion()}",
+        FLINK: ":runners:flink:${CommonTestProperties.getFlinkVersion()}",
+        DIRECT: ":runners:direct-java"
+      ],
+      PYTHON: [
+        DATAFLOW: "DataflowRunner",
+        TEST_DATAFLOW: "TestDataflowRunner",
+        DIRECT: "DirectRunner",
+        PORTABLE: "PortableRunner"
+      ],
+      GO: [
+        DATAFLOW: "DataflowRunner",
+        SPARK: "SparkRunner",
+        FLINK: "FlinkRunner",
+        DIRECT: "DirectRunner",
+        PORTABLE: "PortableRunner",
+      ],
+    ]
+
+    private final String option
+
+    Runner(String option) {
+      this.option = option
     }
 
-    enum TriggeringContext {
-        PR,
-        POST_COMMIT
+    String getDependencyBySDK(SDK sdk) {
+      RUNNER_DEPENDENCY_MAP.get(sdk.toString()).get(this.toString())
     }
+  }
+
+  enum TriggeringContext {
+    PR,
+    POST_COMMIT
+  }
 }

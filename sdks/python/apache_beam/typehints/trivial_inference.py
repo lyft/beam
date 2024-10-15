@@ -19,28 +19,23 @@
 
 For internal use only; no backwards-compatibility guarantees.
 """
-from __future__ import absolute_import
-from __future__ import print_function
+# pytype: skip-file
 
+import builtins
 import collections
 import dis
 import inspect
 import pprint
 import sys
+import traceback
 import types
-from builtins import object
-from builtins import zip
 from functools import reduce
 
+from apache_beam import pvalue
 from apache_beam.typehints import Any
+from apache_beam.typehints import row_type
 from apache_beam.typehints import typehints
-
-# pylint: disable=wrong-import-order, wrong-import-position, ungrouped-imports
-try:                  # Python 2
-  import __builtin__ as builtins
-except ImportError:   # Python 3
-  import builtins
-# pylint: enable=wrong-import-order, wrong-import-position, ungrouped-imports
+from apache_beam.utils import python_callable
 
 
 class TypeInferenceError(ValueError):
@@ -54,28 +49,46 @@ def instance_to_type(o):
   t = type(o)
   if o is None:
     return type(None)
+  elif t == pvalue.Row:
+    return row_type.RowTypeConstraint.from_fields([
+        (name, instance_to_type(value)) for name, value in o.as_dict().items()
+    ])
   elif t not in typehints.DISALLOWED_PRIMITIVE_TYPES:
-    # pylint: disable=deprecated-types-field
-    if sys.version_info[0] == 2 and t == types.InstanceType:
-      return o.__class__
+    # pylint: disable=bad-option-value
     if t == BoundMethod:
       return types.MethodType
     return t
   elif t == tuple:
     return typehints.Tuple[[instance_to_type(item) for item in o]]
   elif t == list:
-    return typehints.List[
-        typehints.Union[[instance_to_type(item) for item in o]]
-    ]
+    if len(o) > 0:
+      return typehints.List[typehints.Union[[
+          instance_to_type(item) for item in o
+      ]]]
+    else:
+      return typehints.List[typehints.Any]
   elif t == set:
-    return typehints.Set[
-        typehints.Union[[instance_to_type(item) for item in o]]
-    ]
+    if len(o) > 0:
+      return typehints.Set[typehints.Union[[
+          instance_to_type(item) for item in o
+      ]]]
+    else:
+      return typehints.Set[typehints.Any]
+  elif t == frozenset:
+    if len(o) > 0:
+      return typehints.FrozenSet[typehints.Union[[
+          instance_to_type(item) for item in o
+      ]]]
+    else:
+      return typehints.FrozenSet[typehints.Any]
   elif t == dict:
-    return typehints.Dict[
-        typehints.Union[[instance_to_type(k) for k, v in o.items()]],
-        typehints.Union[[instance_to_type(v) for k, v in o.items()]],
-    ]
+    if len(o) > 0:
+      return typehints.Dict[
+          typehints.Union[[instance_to_type(k) for k, v in o.items()]],
+          typehints.Union[[instance_to_type(v) for k, v in o.items()]],
+      ]
+    else:
+      return typehints.Dict[typehints.Any, typehints.Any]
   else:
     raise TypeInferenceError('Unknown forbidden type: %s' % t)
 
@@ -86,17 +99,12 @@ def union_list(xs, ys):
 
 
 class Const(object):
-
   def __init__(self, value):
     self.value = value
     self.type = instance_to_type(value)
 
   def __eq__(self, other):
     return isinstance(other, Const) and self.value == other.value
-
-  def __ne__(self, other):
-    # TODO(BEAM-5949): Needed for Python 2 compatibility.
-    return not self == other
 
   def __hash__(self):
     return hash(self.value)
@@ -118,34 +126,39 @@ class Const(object):
 class FrameState(object):
   """Stores the state of the frame at a particular point of execution.
   """
-
-  def __init__(self, f, local_vars=None, stack=()):
+  def __init__(self, f, local_vars=None, stack=(), kw_names=None):
     self.f = f
     self.co = f.__code__
     self.vars = list(local_vars)
     self.stack = list(stack)
+    self.kw_names = kw_names
 
   def __eq__(self, other):
     return isinstance(other, FrameState) and self.__dict__ == other.__dict__
-
-  def __ne__(self, other):
-    # TODO(BEAM-5949): Needed for Python 2 compatibility.
-    return not self == other
 
   def __hash__(self):
     return hash(tuple(sorted(self.__dict__.items())))
 
   def copy(self):
-    return FrameState(self.f, self.vars, self.stack)
+    return FrameState(self.f, self.vars, self.stack, self.kw_names)
 
   def const_type(self, i):
     return Const(self.co.co_consts[i])
 
+  def get_closure(self, i):
+    num_cellvars = len(self.co.co_cellvars)
+    if i < num_cellvars:
+      return self.vars[i]
+    else:
+      return self.f.__closure__[i - num_cellvars].cell_contents
+
   def closure_type(self, i):
-    ncellvars = len(self.co.co_cellvars)
-    if i < ncellvars:
-      return Any
-    return Const(self.f.__closure__[i - ncellvars].cell_contents)
+    """Returns a TypeConstraint or Const."""
+    val = self.get_closure(i)
+    if isinstance(val, typehints.TypeConstraint):
+      return val
+    else:
+      return Const(val)
 
   def get_global(self, i):
     name = self.get_name(i)
@@ -166,8 +179,10 @@ class FrameState(object):
       return other.copy()
     elif other is None:
       return self.copy()
-    return FrameState(self.f, union_list(self.vars, other.vars), union_list(
-        self.stack, other.stack))
+    return FrameState(
+        self.f,
+        union_list(self.vars, other.vars),
+        union_list(self.stack, other.stack))
 
   def __ror__(self, left):
     return self | left
@@ -192,6 +207,20 @@ def union(a, b):
   return typehints.Union[a, b]
 
 
+def finalize_hints(type_hint):
+  """Sets type hint for empty data structures to Any."""
+  def visitor(tc, unused_arg):
+    if isinstance(tc, typehints.DictConstraint):
+      empty_union = typehints.Union[()]
+      if tc.key_type == empty_union:
+        tc.key_type = Any
+      if tc.value_type == empty_union:
+        tc.value_type = Any
+
+  if isinstance(type_hint, typehints.TypeConstraint):
+    type_hint.visit(visitor, None)
+
+
 def element_type(hint):
   """Returns the element type of a composite type.
   """
@@ -200,6 +229,9 @@ def element_type(hint):
     return hint.inner_type
   elif isinstance(hint, typehints.TupleHint.TupleConstraint):
     return typehints.Union[hint.tuple_types]
+  elif isinstance(hint,
+                  typehints.UnionHint.UnionConstraint) and not hint.union_types:
+    return hint
   return Any
 
 
@@ -208,19 +240,24 @@ def key_value_types(kv_type):
   """
   # TODO(robertwb): Unions of tuples, etc.
   # TODO(robertwb): Assert?
-  if (isinstance(kv_type, typehints.TupleHint.TupleConstraint)
-      and len(kv_type.tuple_types) == 2):
+  if (isinstance(kv_type, typehints.TupleHint.TupleConstraint) and
+      len(kv_type.tuple_types) == 2):
     return kv_type.tuple_types
+  elif isinstance(
+      kv_type, typehints.UnionHint.UnionConstraint) and not kv_type.union_types:
+    return kv_type, kv_type
   return Any, Any
 
 
-known_return_types = {len: int, hash: int,}
+known_return_types = {
+    len: int,
+    hash: int,
+}
 
 
 class BoundMethod(object):
   """Used to create a bound method when we only know the type of the instance.
   """
-
   def __init__(self, func, type):
     """Instantiates a bound method object.
 
@@ -270,13 +307,24 @@ def infer_return_type(c, input_types, debug=False, depth=5):
         return {
             list: typehints.List[Any],
             set: typehints.Set[Any],
+            frozenset: typehints.FrozenSet[Any],
             tuple: typehints.Tuple[Any, ...],
             dict: typehints.Dict[Any, Any]
         }[c]
       return c
+    elif (c == getattr and len(input_types) == 2 and
+          isinstance(input_types[1], Const)):
+      from apache_beam.typehints import opcodes
+      return opcodes._getattr(input_types[0], input_types[1].value)
+    elif isinstance(c, python_callable.PythonCallableWithSource):
+      # TODO(BEAM-24755): This can be removed once support for
+      # inference across *args and **kwargs is implemented.
+      return infer_return_type(c._callable, input_types, debug, depth)
     else:
       return Any
   except TypeInferenceError:
+    if debug:
+      traceback.print_exc()
     return Any
   except Exception:
     if debug:
@@ -305,6 +353,10 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
   if debug:
     print()
     print(f, id(f), input_types)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 11):
+      dis.dis(f, show_caches=True)
+    else:
+      dis.dis(f)
   from . import opcodes
   simple_ops = dict((k.upper(), v) for k, v in opcodes.__dict__.items())
 
@@ -312,50 +364,68 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
   code = co.co_code
   end = len(code)
   pc = 0
-  extended_arg = 0
   free = None
 
   yields = set()
   returns = set()
   # TODO(robertwb): Default args via inspect module.
-  local_vars = list(input_types) + [typehints.Union[()]] * (len(co.co_varnames)
-                                                            - len(input_types))
+  local_vars = list(input_types) + [typehints.Union[()]] * (
+      len(co.co_varnames) - len(input_types))
   state = FrameState(f, local_vars)
   states = collections.defaultdict(lambda: None)
   jumps = collections.defaultdict(int)
 
+  # In Python 3, use dis library functions to disassemble bytecode and handle
+  # EXTENDED_ARGs.
+  ofs_table = {}  # offset -> instruction
+  if (sys.version_info.major, sys.version_info.minor) >= (3, 11):
+    dis_ints = dis.get_instructions(f, show_caches=True)
+  else:
+    dis_ints = dis.get_instructions(f)
+
+  for instruction in dis_ints:
+    ofs_table[instruction.offset] = instruction
+
+  # Python 3.6+: 1 byte opcode + 1 byte arg (2 bytes, arg may be ignored).
+  inst_size = 2
+  opt_arg_size = 0
+
+  # Python 3.10: bpo-27129 changes jump offsets to use instruction offsets,
+  # not byte offsets. The offsets were halved (16 bits fro instructions vs 8
+  # bits for bytes), so we have to double the value of arg.
+  if (sys.version_info.major, sys.version_info.minor) >= (3, 10):
+    jump_multiplier = 2
+  else:
+    jump_multiplier = 1
+
   last_pc = -1
-  while pc < end:
+  while pc < end:  # pylint: disable=too-many-nested-blocks
     start = pc
-    if sys.version_info[0] == 2:
-      op = ord(code[pc])
-    else:
-      op = code[pc]
+    instruction = ofs_table[pc]
+    op = instruction.opcode
     if debug:
       print('-->' if pc == last_pc else '    ', end=' ')
       print(repr(pc).rjust(4), end=' ')
       print(dis.opname[op].ljust(20), end=' ')
 
-    pc += 1
+    pc += inst_size
+    arg = None
     if op >= dis.HAVE_ARGUMENT:
-      if sys.version_info[0] == 2:
-        arg = ord(code[pc]) + ord(code[pc + 1]) * 256 + extended_arg
-      elif sys.version_info[0] == 3 and sys.version_info[1] < 6:
-        arg = code[pc] + code[pc + 1] * 256 + extended_arg
-      else:
-        pass # TODO(luke-zhu): Python 3.6 bytecode to wordcode changes
-      extended_arg = 0
-      pc += 2
-      if op == dis.EXTENDED_ARG:
-        extended_arg = arg * 65536
+      arg = instruction.arg
+      pc += opt_arg_size
       if debug:
         print(str(arg).rjust(5), end=' ')
         if op in dis.hasconst:
           print('(' + repr(co.co_consts[arg]) + ')', end=' ')
         elif op in dis.hasname:
-          print('(' + co.co_names[arg] + ')', end=' ')
+          if (sys.version_info.major, sys.version_info.minor) >= (3, 11):
+            # Pre-emptively bit-shift so the print doesn't go out of index
+            print_arg = arg >> 1
+          else:
+            print_arg = arg
+          print('(' + co.co_names[print_arg] + ')', end=' ')
         elif op in dis.hasjrel:
-          print('(to ' + repr(pc + arg) + ')', end=' ')
+          print('(to ' + repr(pc + (arg * jump_multiplier)) + ')', end=' ')
         elif op in dis.haslocal:
           print('(' + co.co_varnames[arg] + ')', end=' ')
         elif op in dis.hascompare:
@@ -363,9 +433,14 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
         elif op in dis.hasfree:
           if free is None:
             free = co.co_cellvars + co.co_freevars
-          print('(' + free[arg] + ')', end=' ')
+          # From 3.11 on the arg is no longer offset by len(co_varnames)
+          # so we adjust it back
+          print_arg = arg
+          if (sys.version_info.major, sys.version_info.minor) >= (3, 11):
+            print_arg = arg - len(co.co_varnames)
+          print('(' + free[print_arg] + ')', end=' ')
 
-    # Acutally emulate the op.
+    # Actually emulate the op.
     if state is None and states[start] is None:
       # No control reaches here (yet).
       if debug:
@@ -376,41 +451,107 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
     opname = dis.opname[op]
     jmp = jmp_state = None
     if opname.startswith('CALL_FUNCTION'):
-      # Each keyword takes up two arguments on the stack (name and value).
-      standard_args = (arg & 0xFF) + 2 * (arg >> 8)
-      var_args = 'VAR' in opname
-      kw_args = 'KW' in opname
-      pop_count = standard_args + var_args + kw_args + 1
-      if depth <= 0:
-        return_type = Any
-      elif arg >> 8:
-        # TODO(robertwb): Handle this case.
-        return_type = Any
-      elif isinstance(state.stack[-pop_count], Const):
-        # TODO(robertwb): Handle this better.
-        if var_args or kw_args:
-          state.stack[-1] = Any
-          state.stack[-var_args - kw_args] = Any
-        return_type = infer_return_type(state.stack[-pop_count].value,
-                                        state.stack[1 - pop_count:],
-                                        debug=debug,
-                                        depth=depth - 1)
+      if opname == 'CALL_FUNCTION':
+        pop_count = arg + 1
+        if depth <= 0:
+          return_type = Any
+        elif isinstance(state.stack[-pop_count], Const):
+          return_type = infer_return_type(
+              state.stack[-pop_count].value,
+              state.stack[1 - pop_count:],
+              debug=debug,
+              depth=depth - 1)
+        else:
+          return_type = Any
+      elif opname == 'CALL_FUNCTION_KW':
+        # TODO(BEAM-24755): Handle keyword arguments. Requires passing them by
+        #   name to infer_return_type.
+        pop_count = arg + 2
+        if isinstance(state.stack[-pop_count], Const):
+          from apache_beam.pvalue import Row
+          if state.stack[-pop_count].value == Row:
+            fields = state.stack[-1].value
+            return_type = row_type.RowTypeConstraint.from_fields(
+                list(
+                    zip(
+                        fields,
+                        Const.unwrap_all(state.stack[-pop_count + 1:-1]))))
+          else:
+            return_type = Any
+        else:
+          return_type = Any
+      elif opname == 'CALL_FUNCTION_EX':
+        # stack[-has_kwargs]: Map of keyword args.
+        # stack[-1 - has_kwargs]: Iterable of positional args.
+        # stack[-2 - has_kwargs]: Function to call.
+        has_kwargs = arg & 1  # type: int
+        pop_count = has_kwargs + 2
+        if has_kwargs:
+          # TODO(BEAM-24755): Unimplemented. Requires same functionality as a
+          #   CALL_FUNCTION_KW implementation.
+          return_type = Any
+        else:
+          args = state.stack[-1]
+          _callable = state.stack[-2]
+          if isinstance(args, typehints.ListConstraint):
+            # Case where there's a single var_arg argument.
+            args = [args]
+          elif isinstance(args, typehints.TupleConstraint):
+            args = list(args._inner_types())
+          elif isinstance(args, typehints.SequenceTypeConstraint):
+            args = [element_type(args)] * len(
+                inspect.getfullargspec(_callable.value).args)
+          return_type = infer_return_type(
+              _callable.value, args, debug=debug, depth=depth - 1)
       else:
-        return_type = Any
+        raise TypeInferenceError('unable to handle %s' % opname)
       state.stack[-pop_count:] = [return_type]
-    elif (opname == 'BINARY_SUBSCR'
-          and isinstance(state.stack[1], Const)
-          and isinstance(state.stack[0], typehints.IndexableTypeConstraint)):
-      if debug:
-        print("Executing special case binary subscript")
-      idx = state.stack.pop()
-      src = state.stack.pop()
-      try:
-        state.stack.append(src._constraint_for_index(idx.value))
-      except Exception as e:
-        if debug:
-          print("Exception {0} during special case indexing".format(e))
-        state.stack.append(Any)
+    elif opname == 'CALL_METHOD':
+      pop_count = 1 + arg
+      # LOAD_METHOD will return a non-Const (Any) if loading from an Any.
+      if isinstance(state.stack[-pop_count], Const) and depth > 0:
+        return_type = infer_return_type(
+            state.stack[-pop_count].value,
+            state.stack[1 - pop_count:],
+            debug=debug,
+            depth=depth - 1)
+      else:
+        return_type = typehints.Any
+      state.stack[-pop_count:] = [return_type]
+    elif opname == 'CALL':
+      pop_count = 1 + arg
+      # Keyword Args case
+      if state.kw_names is not None:
+        if isinstance(state.stack[-pop_count], Const):
+          from apache_beam.pvalue import Row
+          if state.stack[-pop_count].value == Row:
+            fields = state.kw_names
+            return_type = row_type.RowTypeConstraint.from_fields(
+                list(
+                    zip(fields,
+                        Const.unwrap_all(state.stack[-pop_count + 1:]))))
+          else:
+            return_type = Any
+        state.kw_names = None
+      else:
+        # Handle lambdas always having an arg of 0 for CALL
+        # See https://github.com/python/cpython/issues/102403 for context.
+        if pop_count == 1:
+          while pop_count <= len(state.stack):
+            if isinstance(state.stack[-pop_count], Const):
+              break
+            pop_count += 1
+        if depth <= 0 or pop_count > len(state.stack):
+          return_type = Any
+        elif isinstance(state.stack[-pop_count], Const):
+          return_type = infer_return_type(
+              state.stack[-pop_count].value,
+              state.stack[1 - pop_count:],
+              debug=debug,
+              depth=depth - 1)
+        else:
+          return_type = Any
+      state.stack[-pop_count:] = [return_type]
     elif opname in simple_ops:
       if debug:
         print("Executing simple op " + opname)
@@ -421,31 +562,88 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
     elif opname == 'YIELD_VALUE':
       yields.add(state.stack[-1])
     elif opname == 'JUMP_FORWARD':
-      jmp = pc + arg
+      jmp = pc + arg * jump_multiplier
+      jmp_state = state
+      state = None
+    elif opname in ('JUMP_BACKWARD', 'JUMP_BACKWARD_NO_INTERRUPT'):
+      jmp = pc - (arg * jump_multiplier)
       jmp_state = state
       state = None
     elif opname == 'JUMP_ABSOLUTE':
-      jmp = arg
+      jmp = arg * jump_multiplier
       jmp_state = state
       state = None
     elif opname in ('POP_JUMP_IF_TRUE', 'POP_JUMP_IF_FALSE'):
       state.stack.pop()
-      jmp = arg
+      jmp = arg * jump_multiplier
+      jmp_state = state.copy()
+    elif opname in ('POP_JUMP_FORWARD_IF_TRUE', 'POP_JUMP_FORWARD_IF_FALSE'):
+      state.stack.pop()
+      jmp = pc + arg * jump_multiplier
+      jmp_state = state.copy()
+    elif opname in ('POP_JUMP_BACKWARD_IF_TRUE', 'POP_JUMP_BACKWARD_IF_FALSE'):
+      state.stack.pop()
+      jmp = pc - (arg * jump_multiplier)
+      jmp_state = state.copy()
+    elif opname in ('POP_JUMP_FORWARD_IF_NONE', 'POP_JUMP_FORWARD_IF_NOT_NONE'):
+      state.stack.pop()
+      jmp = pc + arg * jump_multiplier
+      jmp_state = state.copy()
+    elif opname in ('POP_JUMP_BACKWARD_IF_NONE',
+                    'POP_JUMP_BACKWARD_IF_NOT_NONE'):
+      state.stack.pop()
+      jmp = pc - (arg * jump_multiplier)
       jmp_state = state.copy()
     elif opname in ('JUMP_IF_TRUE_OR_POP', 'JUMP_IF_FALSE_OR_POP'):
-      jmp = arg
+      # The arg was changed to be a relative delta instead of an absolute
+      # in 3.11
+      if (sys.version_info.major, sys.version_info.minor) >= (3, 11):
+        jmp = pc + arg * jump_multiplier
+      else:
+        jmp = arg * jump_multiplier
       jmp_state = state.copy()
       state.stack.pop()
     elif opname == 'FOR_ITER':
-      jmp = pc + arg
+      jmp = pc + arg * jump_multiplier
       jmp_state = state.copy()
       jmp_state.stack.pop()
       state.stack.append(element_type(state.stack[-1]))
+    elif opname == 'COPY_FREE_VARS':
+      # Helps with calling closures, but since we aren't executing
+      # them we can treat this as a no-op
+      pass
+    elif opname == 'KW_NAMES':
+      tup = co.co_consts[arg]
+      state.kw_names = tup
+    elif opname == 'RESUME':
+      # RESUME is a no-op
+      pass
+    elif opname == 'PUSH_NULL':
+      # We're treating this as a no-op to avoid having to check
+      # for extra None values on the stack when we extract return
+      # values
+      pass
+    elif opname == 'PRECALL':
+      # PRECALL is a no-op.
+      pass
+    elif opname == 'MAKE_CELL':
+      # TODO: see if we need to implement cells like this
+      pass
+    elif opname == 'RETURN_GENERATOR':
+      # TODO: see what this behavior is supposed to be beyond
+      # putting something on the stack to be popped off
+      state.stack.append(None)
+      pass
+    elif opname == 'CACHE':
+      # No-op introduced in 3.11. Without handling this some
+      # instructions have functionally > 2 byte size.
+      pass
+
     else:
       raise TypeInferenceError('unable to handle %s' % opname)
 
     if jmp is not None:
-      # TODO(robertwb): Is this guerenteed to converge?
+      # TODO(robertwb): Is this guaranteed to converge?
       new_state = states[jmp] | jmp_state
       if jmp < pc and new_state != states[jmp] and jumps[pc] < 5:
         jumps[pc] += 1
@@ -461,6 +659,7 @@ def infer_return_type_func(f, input_types, debug=False, depth=0):
     result = typehints.Iterable[reduce(union, Const.unwrap_all(yields))]
   else:
     result = reduce(union, Const.unwrap_all(returns))
+  finalize_hints(result)
 
   if debug:
     print(f, id(f), input_types, '->', result)

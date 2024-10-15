@@ -28,8 +28,9 @@ import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 import org.joda.time.Instant;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -60,6 +61,7 @@ public class SqlQuery5Test {
   @Rule public TestPipeline testPipeline = TestPipeline.create();
 
   @Test
+  @Ignore("https://github.com/apache/beam/issues/19541")
   public void testBids() throws Exception {
     assertEquals(Long.valueOf(config.windowSizeSec), Long.valueOf(config.windowPeriodSec * 2));
 

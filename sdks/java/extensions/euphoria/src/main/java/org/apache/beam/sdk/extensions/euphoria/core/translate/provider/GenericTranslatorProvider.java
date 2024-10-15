@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
-import org.apache.beam.sdk.extensions.euphoria.core.annotation.stability.Experimental;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.CompositeOperator;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.FlatMap;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.Join;
@@ -37,7 +36,7 @@ import org.apache.beam.sdk.extensions.euphoria.core.translate.OperatorTranslator
 import org.apache.beam.sdk.extensions.euphoria.core.translate.ReduceByKeyTranslator;
 import org.apache.beam.sdk.extensions.euphoria.core.translate.TranslatorProvider;
 import org.apache.beam.sdk.extensions.euphoria.core.translate.UnionTranslator;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 
 /**
  * Adjustable {@link TranslatorProvider} that selects first suitable translation for the registered
@@ -47,7 +46,9 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
  * GenericTranslatorProvider.Builder#register(Class, OperatorTranslator) register} method during
  * build. Order of registration is important. Building is started by {@link #newBuilder()}.
  */
-@Experimental
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class GenericTranslatorProvider implements TranslatorProvider {
 
   public static GenericTranslatorProvider createWithDefaultTranslators() {
@@ -164,12 +165,12 @@ public class GenericTranslatorProvider implements TranslatorProvider {
           "At least user defined predicate or class of an operator have to be given.");
 
       @SuppressWarnings("unchecked")
-      OperatorTranslator<?, ?, OperatorT> castedTranslator =
+      OperatorTranslator<?, ?, OperatorT> castTranslator =
           (OperatorTranslator<?, ?, OperatorT>) translator;
 
       this.operatorClass = operatorClass;
       this.userDefinedPredicate = userDefinedPredicate;
-      this.translator = castedTranslator;
+      this.translator = castTranslator;
     }
 
     static <OperatorT extends Operator<?>> TranslationDescriptor<OperatorT> of(

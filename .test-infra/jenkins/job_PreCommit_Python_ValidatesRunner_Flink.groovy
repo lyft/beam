@@ -1,4 +1,3 @@
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,18 +18,29 @@
 
 import PrecommitJobBuilder
 
-// This job runs the suite of ValidatesRunner tests against the Flink runner.
+// This job runs the suite of Python ValidatesRunner tests against the Flink in precommits.
 PrecommitJobBuilder builder = new PrecommitJobBuilder(
-        scope: this,
-        nameBase: 'Python_PVR_Flink',
-        gradleTask: ':beam-sdks-python:flinkValidatesRunner',
-        triggerPathPatterns: [
-                '^model/.*$',
-                '^runners/.*$',
-                '^sdks/python/.*$',
-                '^release/.*$',
-        ]
-)
+    scope: this,
+    nameBase: 'Python_PVR_Flink',
+    gradleTask: ':sdks:python:test-suites:portable:flinkValidatesRunnerPrecommit',
+    triggerPathPatterns: [
+      '^model/.*$',
+      '^runners/core-construction-java/.*$',
+      '^runners/core-java/.*$',
+      '^runners/extensions-java/.*$',
+      '^runners/flink/.*$',
+      '^runners/java-fn-execution/.*$',
+      '^runners/reference/.*$',
+      '^sdks/python/.*$',
+      '^release/.*$',
+      // Test regressions of cross-language KafkaIO test
+      '^sdks/java/io/kafka/.*$',
+    ]
+    )
 builder.build {
-  previousNames('beam_PostCommit_Python_VR_Flink')
+  previousNames('beam_PreCommit_Python_PVR_Flink')
+  // Publish all test results to Jenkins.
+  publishers {
+    archiveJunit('**/pytest*.xml')
+  }
 }

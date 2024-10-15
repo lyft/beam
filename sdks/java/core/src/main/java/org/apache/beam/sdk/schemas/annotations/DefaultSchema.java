@@ -17,8 +17,9 @@
  */
 package org.apache.beam.sdk.schemas.annotations;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
+import java.io.Serializable;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -28,17 +29,15 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.CheckForNull;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.SchemaProvider;
 import org.apache.beam.sdk.schemas.SchemaProviderRegistrar;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * The {@link DefaultSchema} annotation specifies a {@link SchemaProvider} class to handle obtaining
@@ -47,21 +46,24 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
  * <p>For example, if your class is JavaBean, the JavaBeanSchema provider class knows how to vend
  * schemas for this class. You can annotate it as follows:
  *
- * <pre><code>
- *   {@literal @}DefaultSchema(JavaBeanSchema.class)
- *   class MyClass {
- *     public String getFoo();
- *     void setFoo(String foo);
- *           ....
- *   }
- * </code></pre>
+ * <pre>{@code @DefaultSchema(JavaBeanSchema.class)
+ * class MyClass {
+ *   public String getFoo();
+ *   void setFoo(String foo);
+ *         ....
+ * }
+ * }</pre>
  */
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
-@SuppressWarnings("rawtypes")
-@Experimental(Kind.SCHEMAS)
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public @interface DefaultSchema {
+
+  /** The schema provider implementation that knows how to vend schemas for the annotated class. */
   @CheckForNull
   Class<? extends SchemaProvider> value();
 
@@ -70,46 +72,63 @@ public @interface DefaultSchema {
    * delegates to that provider.
    */
   class DefaultSchemaProvider implements SchemaProvider {
-    final Map<TypeDescriptor, SchemaProvider> cachedProviders = Maps.newConcurrentMap();
+    final Map<TypeDescriptor, ProviderAndDescriptor> cachedProviders = Maps.newConcurrentMap();
 
-    @Nullable
-    private SchemaProvider getSchemaProvider(TypeDescriptor<?> typeDescriptor) {
+    private static final class ProviderAndDescriptor implements Serializable {
+      final SchemaProvider schemaProvider;
+      final TypeDescriptor<?> typeDescriptor;
+
+      public ProviderAndDescriptor(
+          SchemaProvider schemaProvider, TypeDescriptor<?> typeDescriptor) {
+        this.schemaProvider = schemaProvider;
+        this.typeDescriptor = typeDescriptor;
+      }
+    }
+
+    private @Nullable ProviderAndDescriptor getSchemaProvider(TypeDescriptor<?> typeDescriptor) {
       return cachedProviders.computeIfAbsent(
           typeDescriptor,
           type -> {
             Class<?> clazz = type.getRawType();
-            DefaultSchema annotation = clazz.getAnnotation(DefaultSchema.class);
-            if (annotation == null) {
-              return null;
-            }
-            Class<? extends SchemaProvider> providerClass = annotation.value();
-            checkArgument(
-                providerClass != null,
-                "Type " + type + " has a @DefaultSchema annotation with a null argument.");
+            do {
+              DefaultSchema annotation = clazz.getAnnotation(DefaultSchema.class);
+              if (annotation != null) {
+                Class<? extends SchemaProvider> providerClass = annotation.value();
+                checkArgument(
+                    providerClass != null,
+                    "Type " + type + " has a @DefaultSchema annotation with a null argument.");
 
-            try {
-              return providerClass.getDeclaredConstructor().newInstance();
-            } catch (NoSuchMethodException
-                | InstantiationException
-                | IllegalAccessException
-                | InvocationTargetException e) {
-              throw new IllegalStateException(
-                  "Failed to create SchemaProvider "
-                      + providerClass.getSimpleName()
-                      + " which was"
-                      + " specified as the default SchemaProvider for type "
-                      + type
-                      + ". Make "
-                      + " sure that this class has a public default constructor.",
-                  e);
-            }
+                try {
+                  return new ProviderAndDescriptor(
+                      providerClass.getDeclaredConstructor().newInstance(),
+                      TypeDescriptor.of(clazz));
+                } catch (NoSuchMethodException
+                    | InstantiationException
+                    | IllegalAccessException
+                    | InvocationTargetException e) {
+                  throw new IllegalStateException(
+                      "Failed to create SchemaProvider "
+                          + providerClass.getSimpleName()
+                          + " which was"
+                          + " specified as the default SchemaProvider for type "
+                          + type
+                          + ". Make "
+                          + " sure that this class has a public default constructor.",
+                      e);
+                }
+              }
+              clazz = clazz.getSuperclass();
+            } while (clazz != null && !clazz.equals(Object.class));
+            return null;
           });
     }
 
     @Override
     public <T> Schema schemaFor(TypeDescriptor<T> typeDescriptor) {
-      SchemaProvider schemaProvider = getSchemaProvider(typeDescriptor);
-      return (schemaProvider != null) ? schemaProvider.schemaFor(typeDescriptor) : null;
+      ProviderAndDescriptor providerAndDescriptor = getSchemaProvider(typeDescriptor);
+      return (providerAndDescriptor != null)
+          ? providerAndDescriptor.schemaProvider.schemaFor(providerAndDescriptor.typeDescriptor)
+          : null;
     }
 
     /**
@@ -118,8 +137,11 @@ public @interface DefaultSchema {
      */
     @Override
     public <T> SerializableFunction<T, Row> toRowFunction(TypeDescriptor<T> typeDescriptor) {
-      SchemaProvider schemaProvider = getSchemaProvider(typeDescriptor);
-      return (schemaProvider != null) ? schemaProvider.toRowFunction(typeDescriptor) : null;
+      ProviderAndDescriptor providerAndDescriptor = getSchemaProvider(typeDescriptor);
+      return (providerAndDescriptor != null)
+          ? providerAndDescriptor.schemaProvider.toRowFunction(
+              (TypeDescriptor<T>) providerAndDescriptor.typeDescriptor)
+          : null;
     }
 
     /**
@@ -128,8 +150,11 @@ public @interface DefaultSchema {
      */
     @Override
     public <T> SerializableFunction<Row, T> fromRowFunction(TypeDescriptor<T> typeDescriptor) {
-      SchemaProvider schemaProvider = getSchemaProvider(typeDescriptor);
-      return (schemaProvider != null) ? schemaProvider.fromRowFunction(typeDescriptor) : null;
+      ProviderAndDescriptor providerAndDescriptor = getSchemaProvider(typeDescriptor);
+      return (providerAndDescriptor != null)
+          ? providerAndDescriptor.schemaProvider.fromRowFunction(
+              (TypeDescriptor<T>) providerAndDescriptor.typeDescriptor)
+          : null;
     }
   }
 

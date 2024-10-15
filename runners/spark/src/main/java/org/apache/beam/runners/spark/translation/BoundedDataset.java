@@ -19,7 +19,6 @@ package org.apache.beam.runners.spark.translation;
 
 import java.util.List;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.spark.coders.CoderHelpers;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
@@ -27,11 +26,12 @@ import org.apache.beam.sdk.transforms.windowing.GlobalWindows;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaRDDLike;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.storage.StorageLevel;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Holds an RDD or values for deferred conversion to an RDD if needed. PCollections are sometimes
@@ -39,13 +39,17 @@ import org.apache.spark.storage.StorageLevel;
  * objects; in which case they do not need to be converted to bytes since they are not transferred
  * across the network until they are broadcast.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class BoundedDataset<T> implements Dataset {
   // only set if creating an RDD from a static collection
-  @Nullable private transient JavaSparkContext jsc;
+  private transient @Nullable JavaSparkContext jsc;
 
   private Iterable<WindowedValue<T>> windowedValues;
   private Coder<T> coder;
   private JavaRDD<WindowedValue<T>> rdd;
+  private List<byte[]> clientBytes;
 
   BoundedDataset(JavaRDD<WindowedValue<T>> rdd) {
     this.rdd = rdd;
@@ -67,6 +71,14 @@ public class BoundedDataset<T> implements Dataset {
               .map(CoderHelpers.fromByteFunction(windowCoder));
     }
     return rdd;
+  }
+
+  List<byte[]> getBytes(WindowedValue.WindowedValueCoder<T> wvCoder) {
+    if (clientBytes == null) {
+      JavaRDDLike<byte[], ?> bytesRDD = rdd.map(CoderHelpers.toByteFunction(wvCoder));
+      clientBytes = bytesRDD.collect();
+    }
+    return clientBytes;
   }
 
   Iterable<WindowedValue<T>> getValues(PCollection<T> pcollection) {
@@ -94,7 +106,7 @@ public class BoundedDataset<T> implements Dataset {
   @SuppressWarnings("unchecked")
   public void cache(String storageLevel, Coder<?> coder) {
     StorageLevel level = StorageLevel.fromString(storageLevel);
-    if (TranslationUtils.avoidRddSerialization(level)) {
+    if (TranslationUtils.canAvoidRddSerialization(level)) {
       // if it is memory only reduce the overhead of moving to bytes
       this.rdd = getRDD().persist(level);
     } else {
@@ -103,9 +115,9 @@ public class BoundedDataset<T> implements Dataset {
       Coder<WindowedValue<T>> windowedValueCoder = (Coder<WindowedValue<T>>) coder;
       this.rdd =
           getRDD()
-              .map(CoderHelpers.toByteFunction(windowedValueCoder))
+              .map(v -> ValueAndCoderLazySerializable.of(v, windowedValueCoder))
               .persist(level)
-              .map(CoderHelpers.fromByteFunction(windowedValueCoder));
+              .map(v -> v.getOrDecode(windowedValueCoder));
     }
   }
 
@@ -117,6 +129,6 @@ public class BoundedDataset<T> implements Dataset {
 
   @Override
   public void setName(String name) {
-    rdd.setName(name);
+    getRDD().setName(name);
   }
 }

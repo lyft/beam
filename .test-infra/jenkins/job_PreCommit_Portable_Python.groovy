@@ -16,17 +16,44 @@
  * limitations under the License.
  */
 
+import CommonJobProperties as commonJobProperties
 import PrecommitJobBuilder
+import static PythonTestProperties.LOWEST_SUPPORTED
+import static PythonTestProperties.HIGHEST_SUPPORTED
 
 PrecommitJobBuilder builder = new PrecommitJobBuilder(
     scope: this,
     nameBase: 'Portable_Python',
-    gradleTask: ':portablePythonPreCommit',
+    gradleTask: ':clean',   // Do nothing here. Add test configs below.
     triggerPathPatterns: [
       '^model/.*$',
-      '^runners/.*$',
+      '^runners/core-construction-java/.*$',
+      '^runners/core-java/.*$',
+      '^runners/extensions-java/.*$',
+      '^runners/flink/.*$',
+      '^runners/java-fn-execution/.*$',
+      '^runners/reference/.*$',
       '^sdks/python/.*$',
       '^release/.*$',
     ]
-)
-builder.build {}
+    )
+
+builder.build {
+  // Due to BEAM-7993, run multiple Python version of portable precommit
+  // tests in parallel could lead python3 container crash. We manually
+  // config gradle steps here to run tests in sequential.
+  def lowestSupported = LOWEST_SUPPORTED.replace('.', '')
+  def highestSupported = HIGHEST_SUPPORTED.replace('.', '')
+  steps {
+    gradle {
+      rootBuildScriptDir(commonJobProperties.checkoutDir)
+      tasks(":sdks:python:test-suites:portable:py${lowestSupported}:preCommitPy${lowestSupported}")
+      commonJobProperties.setGradleSwitches(delegate)
+    }
+    gradle {
+      rootBuildScriptDir(commonJobProperties.checkoutDir)
+      tasks(":sdks:python:test-suites:portable:py${highestSupported}:preCommitPy${highestSupported}")
+      commonJobProperties.setGradleSwitches(delegate)
+    }
+  }
+}

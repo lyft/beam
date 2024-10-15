@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.StringUtils;
 import org.apache.beam.runners.core.construction.SerializablePipelineOptions;
 import org.apache.beam.runners.core.serialization.Base64Serializer;
 import org.apache.beam.runners.samza.SamzaPipelineOptions;
@@ -46,9 +47,8 @@ import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark;
 import org.apache.beam.sdk.io.UnboundedSource.UnboundedReader;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.commons.lang3.StringUtils;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
 import org.apache.samza.Partition;
 import org.apache.samza.SamzaException;
 import org.apache.samza.config.Config;
@@ -70,7 +70,13 @@ import org.slf4j.LoggerFactory;
  * A Samza system that supports reading from a Beam {@link UnboundedSource}. The source is split
  * into partitions. Samza creates the job model by assigning partitions to Samza tasks.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class UnboundedSourceSystem {
+  private static final Logger LOG = LoggerFactory.getLogger(UnboundedSourceSystem.class);
+
   // A dummy message used to force the consumer to wake up immediately and check the
   // lastException field, which will be populated.
   private static final IncomingMessageEnvelope CHECK_LAST_EXCEPTION_ENVELOPE =
@@ -192,13 +198,17 @@ public class UnboundedSourceSystem {
             "Attempted to call start without assigned system stream partitions");
       }
 
+      final FnWithMetricsWrapper metricsWrapper =
+          pipelineOptions.getEnableMetrics()
+              ? new FnWithMetricsWrapper(metricsContainer, stepName)
+              : null;
       readerTask =
           new ReaderTask<>(
               readerToSsp,
               checkpointMarkCoder,
               pipelineOptions.getSystemBufferSize(),
               pipelineOptions.getWatermarkInterval(),
-              new FnWithMetricsWrapper(metricsContainer, stepName));
+              metricsWrapper);
       final Thread thread =
           new Thread(readerTask, "unbounded-source-system-consumer-" + NEXT_ID.getAndIncrement());
       thread.start();
@@ -286,7 +296,7 @@ public class UnboundedSourceSystem {
 
         try {
           for (UnboundedReader reader : readers) {
-            final boolean hasData = metricsWrapper.wrap(reader::start);
+            final boolean hasData = invoke(reader::start);
             if (hasData) {
               available.acquire();
               enqueueMessage(reader);
@@ -296,7 +306,7 @@ public class UnboundedSourceSystem {
           while (running) {
             boolean elementAvailable = false;
             for (UnboundedReader reader : readers) {
-              final boolean hasData = metricsWrapper.wrap(reader::advance);
+              final boolean hasData = invoke(reader::advance);
               if (hasData) {
                 while (!available.tryAcquire(
                     1,
@@ -342,6 +352,14 @@ public class UnboundedSourceSystem {
         }
       }
 
+      private <X> X invoke(FnWithMetricsWrapper.SupplierWithException<X> fn) throws Exception {
+        if (metricsWrapper != null) {
+          return metricsWrapper.wrap(fn, true);
+        } else {
+          return fn.get();
+        }
+      }
+
       private void updateWatermark() throws InterruptedException {
         final long time = System.currentTimeMillis();
         if (time - lastWatermarkTime > watermarkInterval) {
@@ -354,7 +372,13 @@ public class UnboundedSourceSystem {
             final Instant nextWatermark = reader.getWatermark();
             if (currentWatermark.isBefore(nextWatermark)) {
               currentWatermarks.put(ssp, nextWatermark);
-              enqueueWatermark(reader);
+              if (BoundedWindow.TIMESTAMP_MAX_VALUE.isAfter(nextWatermark)) {
+                enqueueWatermark(reader);
+              } else {
+                // Max watermark has been reached for this reader.
+                enqueueMaxWatermarkAndEndOfStream(reader);
+                running = false;
+              }
             }
           }
 
@@ -383,6 +407,37 @@ public class UnboundedSourceSystem {
             new IncomingMessageEnvelope(ssp, getOffset(reader), null, opMessage);
 
         queues.get(ssp).put(envelope);
+      }
+
+      // Send an max watermark message and an end of stream message to the corresponding ssp to
+      // close windows and finish the task.
+      private void enqueueMaxWatermarkAndEndOfStream(UnboundedReader<T> reader) {
+        final SystemStreamPartition ssp = readerToSsp.get(reader);
+        // Send the max watermark to force completion of any open windows.
+        final IncomingMessageEnvelope watermarkEnvelope =
+            IncomingMessageEnvelope.buildWatermarkEnvelope(
+                ssp, BoundedWindow.TIMESTAMP_MAX_VALUE.getMillis());
+        enqueueUninterruptibly(watermarkEnvelope);
+
+        final IncomingMessageEnvelope endOfStreamEnvelope =
+            IncomingMessageEnvelope.buildEndOfStreamEnvelope(ssp);
+        enqueueUninterruptibly(endOfStreamEnvelope);
+      }
+
+      private void enqueueUninterruptibly(IncomingMessageEnvelope envelope) {
+        final BlockingQueue<IncomingMessageEnvelope> queue =
+            queues.get(envelope.getSystemStreamPartition());
+        while (true) {
+          try {
+            queue.put(envelope);
+            return;
+          } catch (InterruptedException e) {
+            // Some events require that we post an envelope to the queue even if the interrupt
+            // flag was set (i.e. during a call to stop) to ensure that the consumer properly
+            // shuts down. Consequently, if we receive an interrupt here we ignore it and retry
+            // the put operation.
+          }
+        }
       }
 
       void stop() {
@@ -420,7 +475,7 @@ public class UnboundedSourceSystem {
           final ByteArrayOutputStream baos = new ByteArrayOutputStream();
           @SuppressWarnings("unchecked")
           final CheckpointMarkT checkpointMark =
-              (CheckpointMarkT) metricsWrapper.wrap(reader::getCheckpointMark);
+              (CheckpointMarkT) invoke(reader::getCheckpointMark);
           checkpointMarkCoder.encode(checkpointMark, baos);
           return Base64.getEncoder().encodeToString(baos.toByteArray());
         } catch (Exception e) {
@@ -448,7 +503,8 @@ public class UnboundedSourceSystem {
 
     @Override
     public SystemProducer getProducer(String systemName, Config config, MetricsRegistry registry) {
-      throw new UnsupportedOperationException("Cannot create a producer for an input system");
+      LOG.info("System " + systemName + " does not have producer.");
+      return null;
     }
 
     @Override
@@ -464,11 +520,6 @@ public class UnboundedSourceSystem {
       final UnboundedSource<T, CheckpointMarkT> source =
           Base64Serializer.deserializeUnchecked(config.get("source"), UnboundedSource.class);
       return source;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> Coder<WindowedValue<T>> getCoder(Config config) {
-      return Base64Serializer.deserializeUnchecked(config.get("coder"), Coder.class);
     }
 
     private static SamzaPipelineOptions getPipelineOptions(Config config) {

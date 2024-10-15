@@ -20,10 +20,9 @@ package org.apache.beam.sdk.io;
 import java.io.IOException;
 import java.util.List;
 import java.util.NoSuchElementException;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Instant;
 
 /**
@@ -99,6 +98,9 @@ public abstract class UnboundedSource<
    * org.apache.beam.sdk.io.UnboundedSource.UnboundedReader}.
    *
    * <p>For example, this could be offsets in a set of files being read.
+   *
+   * <p>Note that: The implementations of this interface should be encodable (have an associated
+   * Coder).
    */
   public interface CheckpointMark {
     /**
@@ -144,7 +146,6 @@ public abstract class UnboundedSource<
    *
    * <p>A given {@code UnboundedReader} object will only be accessed by a single thread at once.
    */
-  @Experimental(Experimental.Kind.SOURCE_SINK)
   public abstract static class UnboundedReader<OutputT> extends Source.Reader<OutputT> {
     private static final byte[] EMPTY = new byte[0];
 

@@ -19,10 +19,10 @@ package org.apache.beam.runners.dataflow.worker;
 
 import static org.apache.beam.runners.dataflow.worker.counters.DataflowCounterUpdateExtractor.longToSplitInt;
 import static org.apache.beam.runners.dataflow.worker.counters.DataflowCounterUpdateExtractor.splitIntToLong;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
 import com.google.api.services.dataflow.model.CounterMetadata;
@@ -46,7 +46,9 @@ import org.apache.beam.runners.core.TimerInternals.TimerData;
 import org.apache.beam.runners.core.metrics.ExecutionStateSampler;
 import org.apache.beam.runners.core.metrics.ExecutionStateTracker;
 import org.apache.beam.runners.core.metrics.ExecutionStateTracker.ExecutionState;
+import org.apache.beam.runners.dataflow.options.DataflowWorkerHarnessOptions;
 import org.apache.beam.runners.dataflow.worker.DataflowExecutionContext.DataflowExecutionStateTracker;
+import org.apache.beam.runners.dataflow.worker.MetricsToCounterUpdateConverter.Kind;
 import org.apache.beam.runners.dataflow.worker.StreamingModeExecutionContext.StreamingModeExecutionState;
 import org.apache.beam.runners.dataflow.worker.StreamingModeExecutionContext.StreamingModeExecutionStateRegistry;
 import org.apache.beam.runners.dataflow.worker.counters.CounterSet;
@@ -61,12 +63,11 @@ import org.apache.beam.sdk.state.TimeDomain;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.util.SerializableUtils;
-import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.PCollectionView;
-import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.ByteString;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.ByteString;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
 import org.hamcrest.Matchers;
+import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.junit.Before;
 import org.junit.Test;
@@ -86,10 +87,12 @@ public class StreamingModeExecutionContextTest {
   private StreamingModeExecutionStateRegistry executionStateRegistry =
       new StreamingModeExecutionStateRegistry(null);
   private StreamingModeExecutionContext executionContext;
+  DataflowWorkerHarnessOptions options;
 
   @Before
   public void setUp() {
     MockitoAnnotations.initMocks(this);
+    options = PipelineOptionsFactory.as(DataflowWorkerHarnessOptions.class);
     CounterSet counterSet = new CounterSet();
     ConcurrentHashMap<String, String> stateNameMap = new ConcurrentHashMap<>();
     stateNameMap.put(NameContextsForTests.nameContextForTest().userName(), "testStateFamily");
@@ -97,9 +100,9 @@ public class StreamingModeExecutionContextTest {
         new StreamingModeExecutionContext(
             counterSet,
             "computationId",
-            new ReaderCache(),
+            new ReaderCache(Duration.standardMinutes(1), Executors.newCachedThreadPool()),
             stateNameMap,
-            new WindmillStateCache().forComputation("comp"),
+            new WindmillStateCache(options.getWorkerCacheMb()).forComputation("comp"),
             StreamingStepMetricsContainer.createRegistry(),
             new DataflowExecutionStateTracker(
                 ExecutionStateSampler.newForTest(),
@@ -110,11 +113,6 @@ public class StreamingModeExecutionContextTest {
                 "test-work-item-id"),
             executionStateRegistry,
             Long.MAX_VALUE);
-  }
-
-  // Helper to aid type inference
-  private static TupleTag<Iterable<WindowedValue<String>>> newStringTag() {
-    return new TupleTag<>();
   }
 
   @Test
@@ -139,7 +137,11 @@ public class StreamingModeExecutionContextTest {
     TimerInternals timerInternals = stepContext.timerInternals();
 
     timerInternals.setTimer(
-        TimerData.of(new StateNamespaceForTest("key"), new Instant(5000), TimeDomain.EVENT_TIME));
+        TimerData.of(
+            new StateNamespaceForTest("key"),
+            new Instant(5000),
+            new Instant(5000),
+            TimeDomain.EVENT_TIME));
     executionContext.flushState();
 
     Windmill.Timer timer = outputBuilder.buildPartial().getOutputTimers(0);
@@ -166,7 +168,7 @@ public class StreamingModeExecutionContextTest {
     // still fire.
     Instant now = Instant.now();
     long offsetMillis = 60 * 1000;
-    Instant timerTimestamp = now.plus(offsetMillis);
+    Instant timerTimestamp = now.plus(Duration.millis(offsetMillis));
     timerBuilder
         .setTag(ByteString.copyFromUtf8("a"))
         .setTimestamp(timerTimestamp.getMillis() * 1000)
@@ -278,7 +280,7 @@ public class StreamingModeExecutionContextTest {
                         .setName(counterName)
                         .setOriginalStepName(originalStepName)
                         .setExecutionStepName(stageName))
-                .setMetadata(new CounterMetadata().setKind("SUM")))
+                .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
         .setCumulative(false)
         .setInteger(longToSplitInt(value));
   }
@@ -292,7 +294,7 @@ public class StreamingModeExecutionContextTest {
                         .setOrigin("SYSTEM")
                         .setName(counterName)
                         .setExecutionStepName(stageName))
-                .setMetadata(new CounterMetadata().setKind("SUM")))
+                .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
         .setCumulative(false)
         .setInteger(longToSplitInt(value));
   }

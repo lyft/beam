@@ -17,13 +17,8 @@
 
 """A PipelineExpansion service.
 """
-from __future__ import absolute_import
-from __future__ import print_function
+# pytype: skip-file
 
-import argparse
-import logging
-import sys
-import time
 import traceback
 
 from apache_beam import pipeline as beam_pipeline
@@ -31,19 +26,20 @@ from apache_beam.portability import python_urns
 from apache_beam.portability.api import beam_expansion_api_pb2
 from apache_beam.portability.api import beam_expansion_api_pb2_grpc
 from apache_beam.runners import pipeline_context
-from apache_beam.runners.portability import portable_runner
+from apache_beam.transforms import environments
 from apache_beam.transforms import external
 from apache_beam.transforms import ptransform
 
 
 class ExpansionServiceServicer(
     beam_expansion_api_pb2_grpc.ExpansionServiceServicer):
-
   def __init__(self, options=None):
     self._options = options or beam_pipeline.PipelineOptions(
-        environment_type=python_urns.EMBEDDED_PYTHON)
+        environment_type=python_urns.EMBEDDED_PYTHON, sdk_location='container')
+    self._default_environment = (
+        environments.Environment.from_options(self._options))
 
-  def Expand(self, request):
+  def Expand(self, request, context=None):
     try:
       pipeline = beam_pipeline.Pipeline(options=self._options)
 
@@ -57,21 +53,32 @@ class ExpansionServiceServicer(
 
       context = pipeline_context.PipelineContext(
           request.components,
-          default_environment=
-          portable_runner.PortableRunner._create_environment(
-              self._options),
+          default_environment=self._default_environment,
           namespace=request.namespace)
       producers = {
           pcoll_id: (context.transforms.get_by_id(t_id), pcoll_tag)
-          for t_id, t_proto in request.components.transforms.items()
-          for pcoll_tag, pcoll_id in t_proto.outputs.items()
+          for t_id,
+          t_proto in request.components.transforms.items() for pcoll_tag,
+          pcoll_id in t_proto.outputs.items()
       }
       transform = with_pipeline(
-          ptransform.PTransform.from_runner_api(
-              request.transform.spec, context))
+          ptransform.PTransform.from_runner_api(request.transform, context))
+      if len(request.output_coder_requests) == 1:
+        output_coder = {
+            k: context.element_type_from_coder_id(v)
+            for k,
+            v in request.output_coder_requests.items()
+        }
+        transform = transform.with_output_types(list(output_coder.values())[0])
+      elif len(request.output_coder_requests) > 1:
+        raise ValueError(
+            'type annotation for multiple outputs is not allowed yet: %s' %
+            request.output_coder_requests)
       inputs = transform._pvaluish_from_dict({
-          tag: with_pipeline(context.pcollections.get_by_id(pcoll_id), pcoll_id)
-          for tag, pcoll_id in request.transform.inputs.items()
+          tag:
+          with_pipeline(context.pcollections.get_by_id(pcoll_id), pcoll_id)
+          for tag,
+          pcoll_id in request.transform.inputs.items()
       })
       if not inputs:
         inputs = pipeline
@@ -93,26 +100,9 @@ class ExpansionServiceServicer(
         del pipeline_proto.components.transforms[transform_id]
       return beam_expansion_api_pb2.ExpansionResponse(
           components=pipeline_proto.components,
-          transform=expanded_transform_proto)
+          transform=expanded_transform_proto,
+          requirements=pipeline_proto.requirements)
 
     except Exception:  # pylint: disable=broad-except
       return beam_expansion_api_pb2.ExpansionResponse(
           error=traceback.format_exc())
-
-
-def main(unused_argv):
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-p', '--port',
-                      type=int,
-                      help='port on which to serve the job api')
-  options = parser.parse_args()
-  expansion_servicer = ExpansionServiceServicer()
-  port = expansion_servicer.start_grpc_server(options.port)
-  while True:
-    logging.info('Listening for expansion requests at %d', port)
-    time.sleep(300)
-
-
-if __name__ == '__main__':
-  logging.getLogger().setLevel(logging.INFO)
-  main(sys.argv)

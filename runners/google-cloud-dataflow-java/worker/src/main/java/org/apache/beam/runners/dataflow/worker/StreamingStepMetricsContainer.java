@@ -18,26 +18,31 @@
 package org.apache.beam.runners.dataflow.worker;
 
 import com.google.api.services.dataflow.model.CounterUpdate;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.util.Map;
 import java.util.Map.Entry;
-import javax.annotation.Nullable;
-import org.apache.beam.runners.core.construction.metrics.MetricKey;
+import javax.annotation.Nonnull;
 import org.apache.beam.runners.core.metrics.DistributionData;
 import org.apache.beam.runners.core.metrics.GaugeCell;
 import org.apache.beam.runners.core.metrics.MetricsMap;
 import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.metrics.Distribution;
 import org.apache.beam.sdk.metrics.Gauge;
+import org.apache.beam.sdk.metrics.MetricKey;
 import org.apache.beam.sdk.metrics.MetricName;
 import org.apache.beam.sdk.metrics.MetricsContainer;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Function;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Predicates;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.FluentIterable;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Function;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Predicates;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.FluentIterable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * For Dataflow Streaming, we want to efficiently support many threads report metric updates, and a
  * single total delta being reported periodically as physical counters.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class StreamingStepMetricsContainer implements MetricsContainer {
 
   private final String stepName;
@@ -86,9 +91,13 @@ public class StreamingStepMetricsContainer implements MetricsContainer {
     return FluentIterable.from(counters.entries())
         .transform(
             new Function<Entry<MetricName, DeltaCounterCell>, CounterUpdate>() {
+
+              @SuppressFBWarnings(
+                  value = "NP_METHOD_PARAMETER_TIGHTENS_ANNOTATION",
+                  justification = "https://github.com/google/guava/issues/920")
               @Override
-              @Nullable
-              public CounterUpdate apply(Map.Entry<MetricName, DeltaCounterCell> entry) {
+              public @Nullable CounterUpdate apply(
+                  @Nonnull Map.Entry<MetricName, DeltaCounterCell> entry) {
                 long value = entry.getValue().getSumAndReset();
                 if (value == 0) {
                   return null;
@@ -105,9 +114,12 @@ public class StreamingStepMetricsContainer implements MetricsContainer {
     return FluentIterable.from(distributions.entries())
         .transform(
             new Function<Entry<MetricName, DeltaDistributionCell>, CounterUpdate>() {
+              @SuppressFBWarnings(
+                  value = "NP_METHOD_PARAMETER_TIGHTENS_ANNOTATION",
+                  justification = "https://github.com/google/guava/issues/920")
               @Override
-              @Nullable
-              public CounterUpdate apply(Map.Entry<MetricName, DeltaDistributionCell> entry) {
+              public @Nullable CounterUpdate apply(
+                  @Nonnull Map.Entry<MetricName, DeltaDistributionCell> entry) {
                 DistributionData value = entry.getValue().getAndReset();
                 if (value.count() == 0) {
                   return null;

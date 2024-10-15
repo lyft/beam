@@ -17,7 +17,6 @@
  */
 package org.apache.beam.sdk.extensions.euphoria.core.client.operator;
 
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.audience.Audience;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.operator.Derived;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.operator.StateComplexity;
@@ -26,13 +25,13 @@ import org.apache.beam.sdk.extensions.euphoria.core.client.functional.UnaryFunct
 import org.apache.beam.sdk.extensions.euphoria.core.client.io.Collector;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Builders;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Operator;
-import org.apache.beam.sdk.extensions.euphoria.core.client.operator.hint.OutputHint;
 import org.apache.beam.sdk.extensions.euphoria.core.client.type.TypeAware;
 import org.apache.beam.sdk.extensions.euphoria.core.client.util.PCollectionLists;
 import org.apache.beam.sdk.extensions.euphoria.core.translate.OperatorTransform;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Simple one-to-one transformation of input elements. It is a special case of {@link FlatMap} with
@@ -51,6 +50,9 @@ import org.apache.beam.sdk.values.TypeDescriptor;
  */
 @Audience(Audience.Type.CLIENT)
 @Derived(state = StateComplexity.ZERO, repartitions = 0)
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class MapElements<InputT, OutputT> extends Operator<OutputT>
     implements CompositeOperator<InputT, OutputT>, TypeAware.Output<OutputT> {
 
@@ -122,10 +124,10 @@ public class MapElements<InputT, OutputT> extends Operator<OutputT>
   private static class Builder<InputT, OutputT>
       implements OfBuilder, UsingBuilder<InputT>, Builders.Output<OutputT> {
 
-    @Nullable private final String name;
+    private final @Nullable String name;
     private PCollection<InputT> input;
     private UnaryFunctionEnv<InputT, OutputT> mapper;
-    @Nullable private TypeDescriptor<OutputT> outputType;
+    private @Nullable TypeDescriptor<OutputT> outputType;
 
     Builder(@Nullable String name) {
       this.name = name;
@@ -134,23 +136,23 @@ public class MapElements<InputT, OutputT> extends Operator<OutputT>
     @Override
     public <T> UsingBuilder<T> of(PCollection<T> input) {
       @SuppressWarnings("unchecked")
-      final Builder<T, ?> casted = (Builder) this;
-      casted.input = input;
-      return casted;
+      final Builder<T, ?> cast = (Builder) this;
+      cast.input = input;
+      return cast;
     }
 
     @Override
     public <T> Builders.Output<T> using(
         UnaryFunctionEnv<InputT, T> mapper, @Nullable TypeDescriptor<T> outputType) {
       @SuppressWarnings("unchecked")
-      final Builder<InputT, T> casted = (Builder) this;
-      casted.mapper = mapper;
-      casted.outputType = outputType;
-      return casted;
+      final Builder<InputT, T> cast = (Builder) this;
+      cast.mapper = mapper;
+      cast.outputType = outputType;
+      return cast;
     }
 
     @Override
-    public PCollection<OutputT> output(OutputHint... outputHints) {
+    public PCollection<OutputT> output() {
       final MapElements<InputT, OutputT> operator = new MapElements<>(name, mapper, outputType);
       return OperatorTransform.apply(operator, PCollectionList.of(input));
     }

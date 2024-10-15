@@ -31,6 +31,8 @@ import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.state.BagState;
 import org.apache.beam.sdk.state.CombiningState;
 import org.apache.beam.sdk.state.MapState;
+import org.apache.beam.sdk.state.MultimapState;
+import org.apache.beam.sdk.state.OrderedListState;
 import org.apache.beam.sdk.state.ReadableState;
 import org.apache.beam.sdk.state.SetState;
 import org.apache.beam.sdk.state.State;
@@ -41,11 +43,15 @@ import org.apache.beam.sdk.transforms.Combine.CombineFn;
 import org.apache.beam.sdk.transforms.CombineWithContext.CombineFnWithContext;
 import org.apache.beam.sdk.transforms.windowing.TimestampCombiner;
 import org.apache.beam.sdk.util.CombineFnUtil;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.HashBasedTable;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Table;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.HashBasedTable;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Table;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Instant;
 
 /** An implementation of {@link StateInternals} for the SparkRunner. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class SparkStateInternals<K> implements StateInternals {
 
   private final K key;
@@ -121,6 +127,22 @@ class SparkStateInternals<K> implements StateInternals {
     }
 
     @Override
+    public <KeyT, ValueT> MultimapState<KeyT, ValueT> bindMultimap(
+        StateTag<MultimapState<KeyT, ValueT>> spec,
+        Coder<KeyT> keyCoder,
+        Coder<ValueT> valueCoder) {
+      throw new UnsupportedOperationException(
+          String.format("%s is not supported", MultimapState.class.getSimpleName()));
+    }
+
+    @Override
+    public <T> OrderedListState<T> bindOrderedList(
+        StateTag<OrderedListState<T>> spec, Coder<T> elemCoder) {
+      throw new UnsupportedOperationException(
+          String.format("%s is not supported", OrderedListState.class.getSimpleName()));
+    }
+
+    @Override
     public <InputT, AccumT, OutputT> CombiningState<InputT, AccumT, OutputT> bindCombiningValue(
         StateTag<CombiningState<InputT, AccumT, OutputT>> address,
         Coder<AccumT> accumCoder,
@@ -175,7 +197,7 @@ class SparkStateInternals<K> implements StateInternals {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
       if (this == o) {
         return true;
       }
@@ -223,7 +245,7 @@ class SparkStateInternals<K> implements StateInternals {
 
     private final TimestampCombiner timestampCombiner;
 
-    public SparkWatermarkHoldState(
+    SparkWatermarkHoldState(
         StateNamespace namespace,
         StateTag<WatermarkHoldState> address,
         TimestampCombiner timestampCombiner) {
@@ -297,8 +319,7 @@ class SparkStateInternals<K> implements StateInternals {
 
     @Override
     public void add(InputT input) {
-      AccumT accum = getAccum();
-      combineFn.addInput(accum, input);
+      AccumT accum = combineFn.addInput(getAccum(), input);
       writeValue(accum);
     }
 

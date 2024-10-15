@@ -21,9 +21,8 @@ import PrecommitJobBuilder
 PrecommitJobBuilder builder = new PrecommitJobBuilder(
     scope: this,
     nameBase: 'Website_Stage_GCS',
-    gradleTask: ':beam-website:stageWebsite',
-    triggerPathPatterns: ['^website/.*$']
-)
+    gradleTask: ':website:stageWebsite',
+    triggerPathPatterns: ['^website/.*$'])
 builder.build {
   publishers {
     buildDescription(/Website published to (http:\/\/.+\/index.html)/)

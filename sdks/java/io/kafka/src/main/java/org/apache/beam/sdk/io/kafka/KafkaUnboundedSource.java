@@ -17,22 +17,26 @@
  */
 package org.apache.beam.sdk.io.kafka;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import org.apache.beam.sdk.coders.AvroCoder;
+import java.util.Map;
+import java.util.regex.Pattern;
 import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.extensions.avro.coders.AvroCoder;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.io.kafka.KafkaIO.Read;
 import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Joiner;
+import org.apache.beam.sdk.util.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Joiner;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +58,8 @@ class KafkaUnboundedSource<K, V> extends UnboundedSource<KafkaRecord<K, V>, Kafk
   public List<KafkaUnboundedSource<K, V>> split(int desiredNumSplits, PipelineOptions options)
       throws Exception {
 
-    List<TopicPartition> partitions = new ArrayList<>(spec.getTopicPartitions());
+    List<TopicPartition> partitions =
+        new ArrayList<>(Preconditions.checkStateNotNull(spec.getTopicPartitions()));
 
     // (a) fetch partitions for each topic
     // (b) sort by <topic, partition>
@@ -62,17 +67,33 @@ class KafkaUnboundedSource<K, V> extends UnboundedSource<KafkaRecord<K, V>, Kafk
 
     if (partitions.isEmpty()) {
       try (Consumer<?, ?> consumer = spec.getConsumerFactoryFn().apply(spec.getConsumerConfig())) {
-        for (String topic : spec.getTopics()) {
-          for (PartitionInfo p : consumer.partitionsFor(topic)) {
-            partitions.add(new TopicPartition(p.topic(), p.partition()));
+        List<String> topics = Preconditions.checkStateNotNull(spec.getTopics());
+        if (topics.isEmpty()) {
+          Pattern pattern = Preconditions.checkStateNotNull(spec.getTopicPattern());
+          for (Map.Entry<String, List<PartitionInfo>> entry : consumer.listTopics().entrySet()) {
+            if (pattern.matcher(entry.getKey()).matches()) {
+              for (PartitionInfo p : entry.getValue()) {
+                partitions.add(new TopicPartition(p.topic(), p.partition()));
+              }
+            }
+          }
+        } else {
+          for (String topic : topics) {
+            List<PartitionInfo> partitionInfoList = consumer.partitionsFor(topic);
+            checkState(
+                partitionInfoList != null,
+                "Could not find any partitions info. Please check Kafka configuration and make sure "
+                    + "that provided topics exist.");
+            for (PartitionInfo p : partitionInfoList) {
+              partitions.add(new TopicPartition(p.topic(), p.partition()));
+            }
           }
         }
       }
     }
 
     partitions.sort(
-        Comparator.comparing(TopicPartition::topic)
-            .thenComparing(Comparator.comparingInt(TopicPartition::partition)));
+        Comparator.comparing(TopicPartition::topic).thenComparingInt(TopicPartition::partition));
 
     checkArgument(desiredNumSplits > 0);
     checkState(
@@ -80,6 +101,10 @@ class KafkaUnboundedSource<K, V> extends UnboundedSource<KafkaRecord<K, V>, Kafk
         "Could not find any partitions. Please check Kafka configuration and topic names");
 
     int numSplits = Math.min(desiredNumSplits, partitions.size());
+    // XXX make all splits have the same # of partitions
+    while (partitions.size() % numSplits > 0) {
+      ++numSplits;
+    }
     List<List<TopicPartition>> assignments = new ArrayList<>(numSplits);
 
     for (int i = 0; i < numSplits; i++) {
@@ -114,7 +139,8 @@ class KafkaUnboundedSource<K, V> extends UnboundedSource<KafkaRecord<K, V>, Kafk
 
   @Override
   public KafkaUnboundedReader<K, V> createReader(
-      PipelineOptions options, KafkaCheckpointMark checkpointMark) {
+      PipelineOptions options, @Nullable KafkaCheckpointMark checkpointMark) {
+    Preconditions.checkStateNotNull(spec.getTopicPartitions());
     if (spec.getTopicPartitions().isEmpty()) {
       LOG.warn("Looks like generateSplits() is not called. Generate single split.");
       try {
@@ -140,14 +166,16 @@ class KafkaUnboundedSource<K, V> extends UnboundedSource<KafkaRecord<K, V>, Kafk
 
   @Override
   public Coder<KafkaRecord<K, V>> getOutputCoder() {
-    return KafkaRecordCoder.of(spec.getKeyCoder(), spec.getValueCoder());
+    Coder<K> keyCoder = Preconditions.checkStateNotNull(spec.getKeyCoder());
+    Coder<V> valueCoder = Preconditions.checkStateNotNull(spec.getValueCoder());
+    return KafkaRecordCoder.of(keyCoder, valueCoder);
   }
 
   /////////////////////////////////////////////////////////////////////////////////////////////
 
   private static final Logger LOG = LoggerFactory.getLogger(KafkaUnboundedSource.class);
 
-  private final Read<K, V> spec; // Contains all the relevant configuratiton of the source.
+  private final Read<K, V> spec; // Contains all the relevant configuration of the source.
   private final int id; // split id, mainly for debugging
 
   public KafkaUnboundedSource(Read<K, V> spec, int id) {

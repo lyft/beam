@@ -19,11 +19,11 @@ package org.apache.beam.runners.dataflow.worker;
 
 import static org.apache.beam.runners.dataflow.worker.counters.DataflowCounterUpdateExtractor.longToSplitInt;
 import static org.apache.beam.runners.dataflow.worker.counters.DataflowCounterUpdateExtractor.splitIntToLong;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.emptyIterable;
 import static org.hamcrest.Matchers.hasItems;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 
 import com.google.api.services.dataflow.model.CounterMetadata;
 import com.google.api.services.dataflow.model.CounterStructuredName;
@@ -34,6 +34,7 @@ import org.apache.beam.runners.core.metrics.ExecutionStateSampler;
 import org.apache.beam.runners.core.metrics.ExecutionStateTracker;
 import org.apache.beam.runners.core.metrics.ExecutionStateTracker.ExecutionState;
 import org.apache.beam.runners.dataflow.worker.BatchModeExecutionContext.BatchModeExecutionState;
+import org.apache.beam.runners.dataflow.worker.MetricsToCounterUpdateConverter.Kind;
 import org.apache.beam.runners.dataflow.worker.counters.NameContext;
 import org.apache.beam.runners.dataflow.worker.profiler.ScopedProfiler.NoopProfileScope;
 import org.apache.beam.runners.dataflow.worker.profiler.ScopedProfiler.ProfileScope;
@@ -78,7 +79,7 @@ public class BatchModeExecutionContextTest {
                             .setOriginNamespace("namespace")
                             .setName("some-counter")
                             .setOriginalStepName("originalName"))
-                    .setMetadata(new CounterMetadata().setKind("SUM")))
+                    .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
             .setCumulative(true)
             .setInteger(longToSplitInt(42));
 
@@ -102,7 +103,7 @@ public class BatchModeExecutionContextTest {
                             .setOriginNamespace("namespace")
                             .setName("uncommitted-counter")
                             .setOriginalStepName("originalName"))
-                    .setMetadata(new CounterMetadata().setKind("SUM")))
+                    .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
             .setCumulative(true)
             .setInteger(longToSplitInt(64));
 
@@ -145,7 +146,7 @@ public class BatchModeExecutionContextTest {
                             .setOriginNamespace("namespace")
                             .setName("some-distribution")
                             .setOriginalStepName("originalName"))
-                    .setMetadata(new CounterMetadata().setKind("DISTRIBUTION")))
+                    .setMetadata(new CounterMetadata().setKind(Kind.DISTRIBUTION.toString())))
             .setCumulative(true)
             .setDistribution(
                 new DistributionUpdate()
@@ -163,7 +164,6 @@ public class BatchModeExecutionContextTest {
         BatchModeExecutionContext.forTesting(PipelineOptionsFactory.create(), "testStage");
 
     MetricsContainer metricsContainer = Mockito.mock(MetricsContainer.class);
-    ProfileScope otherScope = Mockito.mock(ProfileScope.class);
     ProfileScope profileScope = Mockito.mock(ProfileScope.class);
     ExecutionState start1 =
         executionContext.executionStateRegistry.getState(
@@ -232,10 +232,10 @@ public class BatchModeExecutionContextTest {
             .getCounter(
                 MetricName.named(
                     BatchModeExecutionContext.DATASTORE_THROTTLE_TIME_NAMESPACE,
-                    "cumulativeThrottlingSeconds"));
-    counter.inc(12);
-    counter.inc(17);
-    counter.inc(1);
+                    BatchModeExecutionContext.THROTTLE_TIME_COUNTER_NAME));
+    counter.inc(12000);
+    counter.inc(17000);
+    counter.inc(1000);
 
     assertEquals(30L, (long) executionContext.extractThrottleTime());
   }
@@ -249,7 +249,7 @@ public class BatchModeExecutionContextTest {
                         .setOrigin("SYSTEM")
                         .setName(counterName)
                         .setExecutionStepName(stageName))
-                .setMetadata(new CounterMetadata().setKind("SUM")))
+                .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
         .setCumulative(true)
         .setInteger(longToSplitInt(value));
   }
@@ -265,7 +265,7 @@ public class BatchModeExecutionContextTest {
                         .setName(counterName)
                         .setOriginalStepName(originalStepName)
                         .setExecutionStepName(stageName))
-                .setMetadata(new CounterMetadata().setKind("SUM")))
+                .setMetadata(new CounterMetadata().setKind(Kind.SUM.toString())))
         .setCumulative(true)
         .setInteger(longToSplitInt(value));
   }

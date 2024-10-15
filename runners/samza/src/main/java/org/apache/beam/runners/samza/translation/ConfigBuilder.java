@@ -17,37 +17,60 @@
  */
 package org.apache.beam.runners.samza.translation;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.samza.config.JobConfig.JOB_AUTOSIZING_CONTAINER_THREAD_POOL_SIZE;
+import static org.apache.samza.config.JobConfig.JOB_CONTAINER_THREAD_POOL_SIZE;
+import static org.apache.samza.config.JobConfig.JOB_ID;
+import static org.apache.samza.config.JobConfig.JOB_NAME;
+import static org.apache.samza.config.TaskConfig.COMMIT_MS;
+import static org.apache.samza.config.TaskConfig.GROUPER_FACTORY;
+import static org.apache.samza.config.TaskConfig.MAX_CONCURRENCY;
 
 import java.io.File;
-import java.net.URI;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.StringUtils;
 import org.apache.beam.runners.core.construction.SerializablePipelineOptions;
 import org.apache.beam.runners.core.serialization.Base64Serializer;
+import org.apache.beam.runners.samza.SamzaExecutionEnvironment;
 import org.apache.beam.runners.samza.SamzaPipelineOptions;
-import org.apache.beam.runners.samza.SamzaRunnerOverrideConfigs;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.commons.lang3.StringUtils;
+import org.apache.beam.runners.samza.container.BeamContainerRunner;
+import org.apache.beam.runners.samza.container.BeamJobCoordinatorRunner;
+import org.apache.beam.runners.samza.runtime.SamzaStoreStateInternals;
+import org.apache.beam.runners.samza.util.ConfigUtils;
+import org.apache.beam.runners.samza.util.PortableConfigUtils;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
 import org.apache.samza.config.ApplicationConfig;
 import org.apache.samza.config.Config;
-import org.apache.samza.config.ConfigFactory;
-import org.apache.samza.config.JobConfig;
+import org.apache.samza.config.ConfigLoaderFactory;
 import org.apache.samza.config.JobCoordinatorConfig;
 import org.apache.samza.config.MapConfig;
-import org.apache.samza.config.TaskConfig;
-import org.apache.samza.config.factories.PropertiesConfigFactory;
+import org.apache.samza.config.ZkConfig;
+import org.apache.samza.config.loaders.PropertiesConfigLoaderFactory;
 import org.apache.samza.container.grouper.task.SingleContainerGrouperFactory;
+import org.apache.samza.job.yarn.YarnJobFactory;
 import org.apache.samza.runtime.LocalApplicationRunner;
-import org.apache.samza.serializers.ByteSerdeFactory;
-import org.apache.samza.standalone.PassthroughCoordinationUtilsFactory;
+import org.apache.samza.runtime.RemoteApplicationRunner;
 import org.apache.samza.standalone.PassthroughJobCoordinatorFactory;
+import org.apache.samza.storage.kv.RocksDbKeyValueStorageEngineFactory;
+import org.apache.samza.zk.ZkJobCoordinatorFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Builder class to generate configs for BEAM samza runner during runtime. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class ConfigBuilder {
+  private static final Logger LOG = LoggerFactory.getLogger(ConfigBuilder.class);
+
+  private static final String BEAM_STORE_FACTORY = "stores.beamStore.factory";
   private static final String APP_RUNNER_CLASS = "app.runner.class";
+  private static final String YARN_PACKAGE_PATH = "yarn.package.path";
+  private static final String JOB_FACTORY_CLASS = "job.factory.class";
 
   private final Map<String, String> config = new HashMap<>();
   private final SamzaPipelineOptions options;
@@ -64,17 +87,35 @@ public class ConfigBuilder {
     config.putAll(properties);
   }
 
+  /** @return built configuration */
   public Config build() {
     try {
-      config.putAll(systemStoreConfig());
+      // apply framework configs
+      config.putAll(createSystemConfig(options, config));
 
       // apply user configs
       config.putAll(createUserConfig(options));
 
-      config.put(JobConfig.JOB_NAME(), options.getJobName());
+      config.put(ApplicationConfig.APP_NAME, options.getJobName());
+      config.put(ApplicationConfig.APP_ID, options.getJobInstance());
+      config.put(JOB_NAME, options.getJobName());
+      config.put(JOB_ID, options.getJobInstance());
+
+      // bundle-related configs
+      if (!PortableConfigUtils.isPortable(options)) {
+        config.putAll(createBundleConfig(options, config));
+        LOG.info("Set bundle-related configs for classic mode");
+      } else {
+        LOG.info("Skipped bundle-related configs for portable mode");
+      }
+
+      // remove config overrides before serialization (LISAMZA-15259)
+      options.setConfigOverride(new HashMap<>());
       config.put(
           "beamPipelineOptions",
           Base64Serializer.serializeUnchecked(new SerializablePipelineOptions(options)));
+
+      validateConfigs(options, config);
 
       return new MapConfig(config);
     } catch (Exception e) {
@@ -82,49 +123,125 @@ public class ConfigBuilder {
     }
   }
 
-  private static boolean isEmptyUserConfig(Map<String, String> config) {
-    if (config == null) {
-      return true;
+  @VisibleForTesting
+  static Map<String, String> createBundleConfig(
+      SamzaPipelineOptions options, Map<String, String> config) {
+    final ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+    builder.put(MAX_CONCURRENCY, String.valueOf(options.getMaxBundleSize()));
+
+    if (options.getMaxBundleSize() > 1) {
+      final int threadPoolSize = ConfigUtils.asJobConfig(config).getThreadPoolSize();
+      // Since Samza doesn't allow mixing bundle > 1 with multithreading tasks right now,
+      // we disable the task thread pool in both user and autosizing configs.
+      LOG.info("Remove threadPoolSize configs when maxBundleSize > 1");
+      builder.put(JOB_CONTAINER_THREAD_POOL_SIZE, "0");
+      builder.put(JOB_AUTOSIZING_CONTAINER_THREAD_POOL_SIZE, "0");
+
+      if (threadPoolSize > 1 && options.getNumThreadsForProcessElement() <= 1) {
+        // In case the user sets the thread pool through samza config instead options,
+        // set the bundle thread pool size based on container thread pool config
+        // this allows Samza auto-sizing to tune the threads
+        LOG.info("Convert threadPoolSize {} to numThreadsForProcessElement", threadPoolSize);
+        // NumThreadsForProcessElement in option is the source of truth
+        options.setNumThreadsForProcessElement(threadPoolSize);
+      }
     }
-    return config.keySet().stream()
-        .allMatch(key -> key.startsWith(SamzaRunnerOverrideConfigs.BEAM_RUNNER_CONFIG_PREFIX));
+    return builder.build();
   }
 
   private static Map<String, String> createUserConfig(SamzaPipelineOptions options)
       throws Exception {
-    final String configFilePath = options.getConfigFilePath();
     final Map<String, String> config = new HashMap<>();
+
+    // apply user configs
+    final String configFilePath = options.getConfigFilePath();
 
     // If user provides a config file, use it as base configs.
     if (StringUtils.isNoneEmpty(configFilePath)) {
-      final File configFile = new File(configFilePath);
-      final URI configUri = configFile.toURI();
-      final ConfigFactory configFactory =
-          options.getConfigFactory().getDeclaredConstructor().newInstance();
+      LOG.info("configFilePath: " + configFilePath);
+
+      final Config properties = new MapConfig(Collections.singletonMap("path", configFilePath));
+      final ConfigLoaderFactory configLoaderFactory =
+          options.getConfigLoaderFactory().getDeclaredConstructor().newInstance();
+
+      LOG.info("configLoaderFactory: " + configLoaderFactory.getClass().getName());
 
       // Config file must exist for default properties config
       // TODO: add check to all non-empty files once we don't need to
       // pass the command-line args through the containers
-      if (configFactory instanceof PropertiesConfigFactory) {
-        checkArgument(configFile.exists(), "Config file %s does not exist", configFilePath);
+      if (configLoaderFactory instanceof PropertiesConfigLoaderFactory) {
+        checkArgument(
+            new File(configFilePath).exists(), "Config file %s does not exist", configFilePath);
       }
 
-      config.putAll(configFactory.getConfig(configUri));
+      config.putAll(configLoaderFactory.getLoader(properties).getConfig());
     }
-
     // Apply override on top
     if (options.getConfigOverride() != null) {
       config.putAll(options.getConfigOverride());
     }
 
-    // If there is no user specified config, use the default local running mode
-    // we are keeping this work around until https://issues.apache.org/jira/browse/BEAM-5732 is
-    // addressed
-    if (isEmptyUserConfig(options.getConfigOverride())) {
-      config.putAll(localRunConfig());
-    }
-
     return config;
+  }
+
+  private static void validateZKStandAloneRun(Map<String, String> config) {
+    checkArgument(
+        config.containsKey(APP_RUNNER_CLASS),
+        "Config %s not found for %s Deployment",
+        APP_RUNNER_CLASS,
+        SamzaExecutionEnvironment.STANDALONE);
+    checkArgument(
+        config.get(APP_RUNNER_CLASS).equals(LocalApplicationRunner.class.getName()),
+        "Config %s must be set to %s for %s Deployment",
+        APP_RUNNER_CLASS,
+        LocalApplicationRunner.class.getName(),
+        SamzaExecutionEnvironment.STANDALONE);
+    checkArgument(
+        config.containsKey(JobCoordinatorConfig.JOB_COORDINATOR_FACTORY),
+        "Config %s not found for %s Deployment",
+        JobCoordinatorConfig.JOB_COORDINATOR_FACTORY,
+        SamzaExecutionEnvironment.STANDALONE);
+    checkArgument(
+        config
+            .get(JobCoordinatorConfig.JOB_COORDINATOR_FACTORY)
+            .equals(ZkJobCoordinatorFactory.class.getName()),
+        "Config %s must be set to %s for %s Deployment",
+        JobCoordinatorConfig.JOB_COORDINATOR_FACTORY,
+        ZkJobCoordinatorFactory.class.getName(),
+        SamzaExecutionEnvironment.STANDALONE);
+    checkArgument(
+        config.containsKey(ZkConfig.ZK_CONNECT),
+        "Config %s not found for %s Deployment",
+        ZkConfig.ZK_CONNECT,
+        SamzaExecutionEnvironment.STANDALONE);
+  }
+
+  private static void validateYarnRun(Map<String, String> config) {
+    checkArgument(
+        config.containsKey(YARN_PACKAGE_PATH),
+        "Config %s not found for %s Deployment",
+        YARN_PACKAGE_PATH,
+        SamzaExecutionEnvironment.YARN);
+    final String appRunner = config.get(APP_RUNNER_CLASS);
+    checkArgument(
+        appRunner == null
+            || BeamJobCoordinatorRunner.class.getName().equals(appRunner)
+            || RemoteApplicationRunner.class.getName().equals(appRunner)
+            || BeamContainerRunner.class.getName().equals(appRunner),
+        "Config %s must be set to %s for %s Deployment, but found %s",
+        APP_RUNNER_CLASS,
+        String.format(
+            "[%s, %s or %s]",
+            BeamJobCoordinatorRunner.class.getName(),
+            RemoteApplicationRunner.class.getName(),
+            BeamContainerRunner.class.getName()),
+        SamzaExecutionEnvironment.YARN,
+        appRunner);
+    checkArgument(
+        config.containsKey(JOB_FACTORY_CLASS),
+        "Config %s not found for %s Deployment",
+        JOB_FACTORY_CLASS,
+        SamzaExecutionEnvironment.YARN);
   }
 
   @VisibleForTesting
@@ -135,30 +252,109 @@ public class ConfigBuilder {
         .put(
             JobCoordinatorConfig.JOB_COORDINATOR_FACTORY,
             PassthroughJobCoordinatorFactory.class.getName())
-        .put(
-            JobCoordinatorConfig.JOB_COORDINATION_UTILS_FACTORY,
-            PassthroughCoordinationUtilsFactory.class.getName())
-        .put(TaskConfig.GROUPER_FACTORY(), SingleContainerGrouperFactory.class.getName())
-        .put(TaskConfig.COMMIT_MS(), "-1")
+        .put(GROUPER_FACTORY, SingleContainerGrouperFactory.class.getName())
+        .put(COMMIT_MS, "-1")
         .put("processor.id", "1")
         .put(
             // TODO: remove after SAMZA-1531 is resolved
             ApplicationConfig.APP_RUN_ID,
-            String.valueOf(System.currentTimeMillis())
+            System.currentTimeMillis()
                 + "-"
                 // use the most significant bits in UUID (8 digits) to avoid collision
                 + UUID.randomUUID().toString().substring(0, 8))
         .build();
   }
 
-  private static Map<String, String> systemStoreConfig() {
+  public static Map<String, String> yarnRunConfig() {
+    // Default Samza config using yarn deployment
     return ImmutableMap.<String, String>builder()
-        .put(
-            "stores.beamStore.factory",
-            "org.apache.samza.storage.kv.RocksDbKeyValueStorageEngineFactory")
-        .put("stores.beamStore.key.serde", "byteSerde")
-        .put("stores.beamStore.msg.serde", "byteSerde")
-        .put("serializers.registry.byteSerde.class", ByteSerdeFactory.class.getName())
+        .put(APP_RUNNER_CLASS, RemoteApplicationRunner.class.getName())
+        .put(JOB_FACTORY_CLASS, YarnJobFactory.class.getName())
         .build();
+  }
+
+  public static Map<String, String> standAloneRunConfig() {
+    // Default Samza config using stand alone deployment
+    return ImmutableMap.<String, String>builder()
+        .put(APP_RUNNER_CLASS, LocalApplicationRunner.class.getName())
+        .put(JobCoordinatorConfig.JOB_COORDINATOR_FACTORY, ZkJobCoordinatorFactory.class.getName())
+        .build();
+  }
+
+  private static Map<String, String> createSystemConfig(
+      SamzaPipelineOptions options, Map<String, String> config) {
+    final ImmutableMap.Builder<String, String> configBuilder =
+        ImmutableMap.<String, String>builder()
+            .put("stores.beamStore.key.serde", "byteArraySerde")
+            .put("stores.beamStore.msg.serde", "stateValueSerde")
+            .put(
+                "serializers.registry.stateValueSerde.class",
+                SamzaStoreStateInternals.StateValueSerdeFactory.class.getName())
+            .put(
+                "serializers.registry.byteArraySerde.class",
+                SamzaStoreStateInternals.ByteArraySerdeFactory.class.getName());
+
+    // if config does not contain "stores.beamStore.factory" at this moment,
+    // then it is a stateless job.
+    if (!config.containsKey(BEAM_STORE_FACTORY)) {
+      options.setStateDurable(false);
+      configBuilder.put(
+          BEAM_STORE_FACTORY,
+          "org.apache.samza.storage.kv.inmemory.InMemoryKeyValueStorageEngineFactory");
+    }
+
+    LOG.info("Execution environment is " + options.getSamzaExecutionEnvironment());
+    switch (options.getSamzaExecutionEnvironment()) {
+      case YARN:
+        configBuilder.putAll(yarnRunConfig());
+        break;
+      case STANDALONE:
+        configBuilder.putAll(standAloneRunConfig());
+        break;
+      default: // LOCAL
+        configBuilder.putAll(localRunConfig());
+        break;
+    }
+
+    // TODO: remove after we sort out Samza task wrapper
+    configBuilder.put("samza.li.task.wrapper.enabled", "false");
+
+    return configBuilder.build();
+  }
+
+  static Map<String, String> createRocksDBStoreConfig(SamzaPipelineOptions options) {
+    final ImmutableMap.Builder<String, String> configBuilder =
+        ImmutableMap.<String, String>builder()
+            .put(BEAM_STORE_FACTORY, RocksDbKeyValueStorageEngineFactory.class.getName())
+            .put("stores.beamStore.rocksdb.compression", "lz4");
+
+    if (options.getStateDurable()) {
+      LOG.info("stateDurable is enabled");
+      configBuilder.put("stores.beamStore.changelog", getChangelogTopic(options, "beamStore"));
+      configBuilder.put("job.host-affinity.enabled", "true");
+    }
+
+    return configBuilder.build();
+  }
+
+  private static void validateConfigs(SamzaPipelineOptions options, Map<String, String> config) {
+
+    // validate execution environment
+    switch (options.getSamzaExecutionEnvironment()) {
+      case YARN:
+        validateYarnRun(config);
+        break;
+      case STANDALONE:
+        validateZKStandAloneRun(config);
+        break;
+      default:
+        // do nothing
+        break;
+    }
+  }
+
+  static String getChangelogTopic(SamzaPipelineOptions options, String storeName) {
+    return String.format(
+        "%s-%s-%s-changelog", options.getJobName(), options.getJobInstance(), storeName);
   }
 }

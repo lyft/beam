@@ -22,12 +22,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Iterator;
 import java.util.List;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
 
 /** * */
 @RunWith(MockitoJUnitRunner.class)

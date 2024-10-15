@@ -17,8 +17,8 @@
  */
 package org.apache.beam.sdk.io.gcp.testing;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.spy;
@@ -58,7 +58,7 @@ public class BigqueryClientTest {
     when(mockBigqueryClient.jobs()).thenReturn(mockJobs);
     when(mockJobs.query(anyString(), any(QueryRequest.class))).thenReturn(mockQuery);
     PowerMockito.mockStatic(BigqueryClient.class);
-    when(BigqueryClient.getNewBigquerryClient(anyString())).thenReturn(mockBigqueryClient);
+    when(BigqueryClient.getNewBigqueryClient(anyString())).thenReturn(mockBigqueryClient);
     bqClient = spy(new BigqueryClient("test-app"));
   }
 

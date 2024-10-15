@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
 """Integration tests for gcsio module.
 
 Runs tests against Google Cloud Storage service.
@@ -31,18 +32,18 @@ The project's Cloud Storage service account requires Encrypter/Decrypter
 permissions for the key specified in --kms_key_name.
 
 To run these tests manually:
-  ./gradlew beam-sdks-python:integrationTest \
-    -Ptests=apache_beam.io.gcp.gcsio_integration_test:GcsIOIntegrationTest \
-    -PkmsKeyName=KMS_KEY_NAME
+  ./gradlew :sdks:python:test-suites:dataflow:integrationTest \
+    -Dtests=apache_beam.io.gcp.gcsio_integration_test:GcsIOIntegrationTest \
+    -DkmsKeyName=KMS_KEY_NAME
 """
 
-from __future__ import absolute_import
+# pytype: skip-file
 
 import logging
 import unittest
 import uuid
 
-from nose.plugins.attrib import attr
+import pytest
 
 from apache_beam.io.filesystems import FileSystems
 from apache_beam.testing.test_pipeline import TestPipeline
@@ -50,7 +51,7 @@ from apache_beam.testing.test_pipeline import TestPipeline
 try:
   from apache_beam.io.gcp import gcsio
 except ImportError:
-  gcsio = None
+  gcsio = None  # type: ignore
 
 
 @unittest.skipIf(gcsio is None, 'GCP dependencies are not installed')
@@ -58,8 +59,8 @@ class GcsIOIntegrationTest(unittest.TestCase):
 
   INPUT_FILE = 'gs://dataflow-samples/shakespeare/kinglear.txt'
   # Larger than 1MB to test maxBytesRewrittenPerCall.
-  INPUT_FILE_LARGE = (
-      'gs://dataflow-samples/wikipedia_edits/wiki_data-000000000000.json')
+  # Also needs to be in a different region than the dest to take effect.
+  INPUT_FILE_LARGE = 'gs://apache-beam-samples-us-east1/wikipedia_edits/wiki_data-000000000000.json'  # pylint: disable=line-too-long
 
   def setUp(self):
     self.test_pipeline = TestPipeline(is_integration_test=True)
@@ -68,11 +69,11 @@ class GcsIOIntegrationTest(unittest.TestCase):
       # This test doesn't run a pipeline, so it doesn't make sense to try it on
       # different runners. Running with TestDataflowRunner makes sense since
       # it uses GoogleCloudOptions such as 'project'.
-      raise unittest.SkipTest(
-          'This test only runs with TestDataflowRunner.')
+      raise unittest.SkipTest('This test only runs with TestDataflowRunner.')
     self.project = self.test_pipeline.get_option('project')
-    self.gcs_tempdir = (self.test_pipeline.get_option('temp_location') +
-                        '/gcs_it-' + str(uuid.uuid4()))
+    self.gcs_tempdir = (
+        self.test_pipeline.get_option('temp_location') + '/gcs_it-' +
+        str(uuid.uuid4()))
     self.kms_key_name = self.test_pipeline.get_option('kms_key_name')
     self.gcsio = gcsio.GcsIO()
 
@@ -85,10 +86,21 @@ class GcsIOIntegrationTest(unittest.TestCase):
     src_checksum = self.gcsio.checksum(src)
     dst_checksum = self.gcsio.checksum(dst)
     self.assertEqual(src_checksum, dst_checksum)
-    self.assertEqual(self.gcsio.kms_key(dst), dst_kms_key_name)
+    actual_dst_kms_key = self.gcsio.kms_key(dst)
+    if actual_dst_kms_key is None:
+      self.assertEqual(actual_dst_kms_key, dst_kms_key_name)
+    else:
+      self.assertTrue(
+          actual_dst_kms_key.startswith(dst_kms_key_name),
+          "got: %s, wanted startswith: %s" %
+          (actual_dst_kms_key, dst_kms_key_name))
 
-  def _test_copy(self, name, kms_key_name=None,
-                 max_bytes_rewritten_per_call=None, src=None):
+  def _test_copy(
+      self,
+      name,
+      kms_key_name=None,
+      max_bytes_rewritten_per_call=None,
+      src=None):
     src = src or self.INPUT_FILE
     dst = self.gcs_tempdir + '/%s' % name
     extra_kwargs = {}
@@ -99,17 +111,17 @@ class GcsIOIntegrationTest(unittest.TestCase):
     self.gcsio.copy(src, dst, kms_key_name, **extra_kwargs)
     self._verify_copy(src, dst, kms_key_name)
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy(self):
     self._test_copy("test_copy")
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy_kms(self):
     if self.kms_key_name is None:
       raise unittest.SkipTest('--kms_key_name not specified')
     self._test_copy("test_copy_kms", self.kms_key_name)
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy_rewrite_token(self):
     # Tests a multi-part copy (rewrite) operation. This is triggered by a
     # combination of 3 conditions:
@@ -122,18 +134,23 @@ class GcsIOIntegrationTest(unittest.TestCase):
     rewrite_responses = []
     self.gcsio._set_rewrite_response_callback(
         lambda response: rewrite_responses.append(response))
-    self._test_copy("test_copy_rewrite_token", kms_key_name=self.kms_key_name,
-                    max_bytes_rewritten_per_call=50 * 1024 * 1024,
-                    src=self.INPUT_FILE_LARGE)
+    self._test_copy(
+        "test_copy_rewrite_token",
+        kms_key_name=self.kms_key_name,
+        max_bytes_rewritten_per_call=50 * 1024 * 1024,
+        src=self.INPUT_FILE_LARGE)
     # Verify that there was a multi-part rewrite.
-    self.assertTrue(any([not r.done for r in rewrite_responses]))
+    self.assertTrue(any(not r.done for r in rewrite_responses))
 
-  def _test_copy_batch(self, name, kms_key_name=None,
-                       max_bytes_rewritten_per_call=None, src=None):
+  def _test_copy_batch(
+      self,
+      name,
+      kms_key_name=None,
+      max_bytes_rewritten_per_call=None,
+      src=None):
     num_copies = 10
     srcs = [src or self.INPUT_FILE] * num_copies
-    dsts = [self.gcs_tempdir + '/%s_%d' % (name, i)
-            for i in range(num_copies)]
+    dsts = [self.gcs_tempdir + '/%s_%d' % (name, i) for i in range(num_copies)]
     src_dst_pairs = list(zip(srcs, dsts))
     extra_kwargs = {}
     if max_bytes_rewritten_per_call is not None:
@@ -147,17 +164,17 @@ class GcsIOIntegrationTest(unittest.TestCase):
     for _src, _dst in src_dst_pairs:
       self._verify_copy(_src, _dst, kms_key_name)
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy_batch(self):
     self._test_copy_batch("test_copy_batch")
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy_batch_kms(self):
     if self.kms_key_name is None:
       raise unittest.SkipTest('--kms_key_name not specified')
     self._test_copy_batch("test_copy_batch_kms", self.kms_key_name)
 
-  @attr('IT')
+  @pytest.mark.it_postcommit
   def test_copy_batch_rewrite_token(self):
     # Tests a multi-part copy (rewrite) operation. This is triggered by a
     # combination of 3 conditions:
@@ -171,11 +188,12 @@ class GcsIOIntegrationTest(unittest.TestCase):
     self.gcsio._set_rewrite_response_callback(
         lambda response: rewrite_responses.append(response))
     self._test_copy_batch(
-        "test_copy_batch_rewrite_token", kms_key_name=self.kms_key_name,
+        "test_copy_batch_rewrite_token",
+        kms_key_name=self.kms_key_name,
         max_bytes_rewritten_per_call=50 * 1024 * 1024,
         src=self.INPUT_FILE_LARGE)
     # Verify that there was a multi-part rewrite.
-    self.assertTrue(any([not r.done for r in rewrite_responses]))
+    self.assertTrue(any(not r.done for r in rewrite_responses))
 
 
 if __name__ == '__main__':

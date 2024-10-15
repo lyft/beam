@@ -19,19 +19,26 @@ package org.apache.beam.sdk.schemas;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.schemas.annotations.SchemaFieldName;
 import org.apache.beam.sdk.schemas.annotations.SchemaIgnore;
 import org.apache.beam.sdk.schemas.utils.AutoValueUtils;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.DefaultTypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.FieldValueTypeSupplier;
 import org.apache.beam.sdk.schemas.utils.JavaBeanUtils;
 import org.apache.beam.sdk.schemas.utils.ReflectUtils;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** A {@link SchemaProvider} for AutoValue classes. */
+@SuppressWarnings({
+  "nullness", // TODO(https://github.com/apache/beam/issues/20497)
+  "rawtypes"
+})
 public class AutoValueSchema extends GetterBasedSchemaProvider {
   /** {@link FieldValueTypeSupplier} that's based on AutoValue getters. */
   @VisibleForTesting
@@ -40,72 +47,97 @@ public class AutoValueSchema extends GetterBasedSchemaProvider {
 
     @Override
     public List<FieldValueTypeInformation> get(Class<?> clazz) {
+
       // If the generated class is passed in, we want to look at the base class to find the getters.
       Class<?> targetClass = AutoValueUtils.getBaseAutoValueClass(clazz);
-      return ReflectUtils.getMethods(targetClass).stream()
-          .filter(ReflectUtils::isGetter)
-          // All AutoValue getters are marked abstract.
-          .filter(m -> Modifier.isAbstract(m.getModifiers()))
-          .filter(m -> !Modifier.isPrivate(m.getModifiers()))
-          .filter(m -> !Modifier.isProtected(m.getModifiers()))
-          .filter(m -> !m.isAnnotationPresent(SchemaIgnore.class))
-          .map(FieldValueTypeInformation::forGetter)
-          .map(
-              t -> {
-                SchemaFieldName fieldName = t.getMethod().getAnnotation(SchemaFieldName.class);
-                return (fieldName == null) ? t : t.withName(fieldName.value());
-              })
-          .collect(Collectors.toList());
+
+      List<Method> methods =
+          ReflectUtils.getMethods(targetClass).stream()
+              .filter(ReflectUtils::isGetter)
+              // All AutoValue getters are marked abstract.
+              .filter(m -> Modifier.isAbstract(m.getModifiers()))
+              .filter(m -> !Modifier.isPrivate(m.getModifiers()))
+              .filter(m -> !Modifier.isProtected(m.getModifiers()))
+              .filter(m -> !m.isAnnotationPresent(SchemaIgnore.class))
+              .collect(Collectors.toList());
+      List<FieldValueTypeInformation> types = Lists.newArrayListWithCapacity(methods.size());
+      for (int i = 0; i < methods.size(); ++i) {
+        types.add(FieldValueTypeInformation.forGetter(methods.get(i), i));
+      }
+      types.sort(Comparator.comparing(FieldValueTypeInformation::getNumber));
+      validateFieldNumbers(types);
+      return types;
+    }
+  }
+
+  private static void validateFieldNumbers(List<FieldValueTypeInformation> types) {
+    for (int i = 0; i < types.size(); ++i) {
+      FieldValueTypeInformation type = types.get(i);
+      @javax.annotation.Nullable Integer number = type.getNumber();
+      if (number == null) {
+        throw new RuntimeException("Unexpected null number for " + type.getName());
+      }
+      Preconditions.checkState(
+          number == i,
+          "Expected field number "
+              + i
+              + " for field + "
+              + type.getName()
+              + " instead got "
+              + number);
     }
   }
 
   @Override
-  FieldValueGetterFactory fieldValueGetterFactory() {
-    return (Class<?> targetClass, Schema schema) ->
-        JavaBeanUtils.getGetters(targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
+  public List<FieldValueGetter> fieldValueGetters(Class<?> targetClass, Schema schema) {
+    return JavaBeanUtils.getGetters(
+        targetClass,
+        schema,
+        AbstractGetterTypeSupplier.INSTANCE,
+        new DefaultTypeConversionsFactory());
   }
 
   @Override
-  FieldValueTypeInformationFactory fieldValueTypeInformationFactory() {
-    return (Class<?> targetClass, Schema schema) ->
-        JavaBeanUtils.getFieldTypes(targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
+  public List<FieldValueTypeInformation> fieldValueTypeInformations(
+      Class<?> targetClass, Schema schema) {
+    return JavaBeanUtils.getFieldTypes(targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
   }
 
   @Override
-  UserTypeCreatorFactory schemaTypeCreatorFactory() {
-    return (Class<?> targetClass, Schema schema) -> {
-      // If a static method is marked with @SchemaCreate, use that.
-      Method annotated = ReflectUtils.getAnnotatedCreateMethod(targetClass);
-      if (annotated != null) {
-        return JavaBeanUtils.getStaticCreator(
-            targetClass, annotated, schema, AbstractGetterTypeSupplier.INSTANCE);
-      }
+  public SchemaUserTypeCreator schemaTypeCreator(Class<?> targetClass, Schema schema) {
+    // If a static method is marked with @SchemaCreate, use that.
+    Method annotated = ReflectUtils.getAnnotatedCreateMethod(targetClass);
+    if (annotated != null) {
+      return JavaBeanUtils.getStaticCreator(
+          targetClass,
+          annotated,
+          schema,
+          AbstractGetterTypeSupplier.INSTANCE,
+          new DefaultTypeConversionsFactory());
+    }
 
-      // Try to find a generated builder class. If one exists, use that to generate a
-      // SchemaTypeCreator for creating AutoValue objects.
-      SchemaUserTypeCreator creatorFactory =
-          AutoValueUtils.getBuilderCreator(
-              targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
-      if (creatorFactory != null) {
-        return creatorFactory;
-      }
-
-      // If there is no builder, there should be a package-private constructor in the generated
-      // class. Use that for creating AutoValue objects.
-      creatorFactory =
-          AutoValueUtils.getConstructorCreator(
-              targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
-      if (creatorFactory == null) {
-        throw new RuntimeException("Could not find a way to create AutoValue class " + targetClass);
-      }
-
+    // Try to find a generated builder class. If one exists, use that to generate a
+    // SchemaTypeCreator for creating AutoValue objects.
+    SchemaUserTypeCreator creatorFactory =
+        AutoValueUtils.getBuilderCreator(targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
+    if (creatorFactory != null) {
       return creatorFactory;
-    };
+    }
+
+    // If there is no builder, there should be a package-private constructor in the generated
+    // class. Use that for creating AutoValue objects.
+    creatorFactory =
+        AutoValueUtils.getConstructorCreator(
+            targetClass, schema, AbstractGetterTypeSupplier.INSTANCE);
+    if (creatorFactory == null) {
+      throw new RuntimeException("Could not find a way to create AutoValue class " + targetClass);
+    }
+
+    return creatorFactory;
   }
 
-  @Nullable
   @Override
-  public <T> Schema schemaFor(TypeDescriptor<T> typeDescriptor) {
+  public <T> @Nullable Schema schemaFor(TypeDescriptor<T> typeDescriptor) {
     return JavaBeanUtils.schemaFromJavaBeanClass(
         typeDescriptor.getRawType(), AbstractGetterTypeSupplier.INSTANCE);
   }

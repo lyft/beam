@@ -17,18 +17,16 @@
  */
 package org.apache.beam.sdk.io;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkNotNull;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.sdk.io.FileBasedSource.Mode.SINGLE_FILE_OR_SUBRANGE;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
-import java.io.ByteArrayInputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.ObjectStreamException;
-import java.io.PushbackInputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -36,15 +34,14 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.WeakHashMap;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import org.apache.avro.Schema;
-import org.apache.avro.file.CodecFactory;
 import org.apache.avro.file.DataFileConstants;
+import org.apache.avro.file.DataFileReader;
+import org.apache.avro.file.SeekableInput;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryDecoder;
@@ -53,7 +50,6 @@ import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.reflect.ReflectData;
 import org.apache.avro.reflect.ReflectDatumReader;
 import org.apache.beam.sdk.PipelineRunner;
-import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.AvroCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
@@ -62,14 +58,10 @@ import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.util.VarInt;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects;
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.snappy.SnappyCompressorInputStream;
-import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
-import org.apache.commons.compress.utils.CountingInputStream;
-import org.apache.commons.compress.utils.IOUtils;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 // CHECKSTYLE.OFF: JavadocStyle
 /**
@@ -126,14 +118,31 @@ import org.apache.commons.compress.utils.IOUtils;
  * details.
  *
  * @param <T> The type of records to be read from the source.
+ * @deprecated Avro related classes are deprecated in module <code>beam-sdks-java-core</code> and
+ *     will be eventually removed. Please, migrate to a new module <code>
+ *     beam-sdks-java-extensions-avro</code> by importing <code>
+ *     org.apache.beam.sdk.extensions.avro.io.AvroSource</code> instead of this one.
  */
 // CHECKSTYLE.ON: JavadocStyle
-@Experimental(Experimental.Kind.SOURCE_SINK)
+
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
+@Deprecated
 public class AvroSource<T> extends BlockBasedSource<T> {
   // Default minimum bundle size (chosen as two default-size Avro blocks to attempt to
   // ensure that every source has at least one block of records).
   // The default sync interval is 64k.
   private static final long DEFAULT_MIN_BUNDLE_SIZE = 2L * DataFileConstants.DEFAULT_SYNC_INTERVAL;
+
+  @FunctionalInterface
+  public interface DatumReaderFactory<T> extends Serializable {
+    DatumReader<T> apply(Schema writer, Schema reader);
+  }
+
+  private static final DatumReaderFactory<?> GENERIC_DATUM_READER_FACTORY = GenericDatumReader::new;
+
+  private static final DatumReaderFactory<?> REFLECT_DATUM_READER_FACTORY = ReflectDatumReader::new;
 
   // Use cases of AvroSource are:
   // 1) AvroSource<GenericRecord> Reading GenericRecord records with a specified schema.
@@ -145,25 +154,30 @@ public class AvroSource<T> extends BlockBasedSource<T> {
   // readerSchemaString  |    non-null   |   non-null  |     null      |
   // parseFn             |      null     |     null    |   non-null    |
   // outputCoder         |      null     |     null    |   non-null    |
+  // readerFactory       |     either    |    either   |    either     |
   private static class Mode<T> implements Serializable {
     private final Class<?> type;
 
     // The JSON schema used to decode records.
-    @Nullable private String readerSchemaString;
+    private @Nullable String readerSchemaString;
 
-    @Nullable private final SerializableFunction<GenericRecord, T> parseFn;
+    private final @Nullable SerializableFunction<GenericRecord, T> parseFn;
 
-    @Nullable private final Coder<T> outputCoder;
+    private final @Nullable Coder<T> outputCoder;
+
+    private final @Nullable DatumReaderFactory<?> readerFactory;
 
     private Mode(
         Class<?> type,
         @Nullable String readerSchemaString,
         @Nullable SerializableFunction<GenericRecord, T> parseFn,
-        @Nullable Coder<T> outputCoder) {
+        @Nullable Coder<T> outputCoder,
+        @Nullable DatumReaderFactory<?> readerFactory) {
       this.type = type;
       this.readerSchemaString = internSchemaString(readerSchemaString);
       this.parseFn = parseFn;
       this.outputCoder = outputCoder;
+      this.readerFactory = readerFactory;
     }
 
     private void readObject(ObjectInputStream is) throws IOException, ClassNotFoundException {
@@ -186,19 +200,38 @@ public class AvroSource<T> extends BlockBasedSource<T> {
             "schema must be specified using withSchema() when not using a parse fn");
       }
     }
+
+    private Mode<T> withReaderFactory(DatumReaderFactory<?> factory) {
+      return new Mode<>(type, readerSchemaString, parseFn, outputCoder, factory);
+    }
+
+    private DatumReader<?> createReader(Schema writerSchema, Schema readerSchema) {
+      DatumReaderFactory<?> factory = this.readerFactory;
+      if (factory == null) {
+        factory =
+            (type == GenericRecord.class)
+                ? GENERIC_DATUM_READER_FACTORY
+                : REFLECT_DATUM_READER_FACTORY;
+      }
+      return factory.apply(writerSchema, readerSchema);
+    }
   }
 
-  private static Mode<GenericRecord> readGenericRecordsWithSchema(String schema) {
-    return new Mode<>(GenericRecord.class, schema, null, null);
+  private static Mode<GenericRecord> readGenericRecordsWithSchema(
+      String schema, @Nullable DatumReaderFactory<?> factory) {
+    return new Mode<>(GenericRecord.class, schema, null, null, factory);
   }
 
-  private static <T> Mode<T> readGeneratedClasses(Class<T> clazz) {
-    return new Mode<>(clazz, ReflectData.get().getSchema(clazz).toString(), null, null);
+  private static <T> Mode<T> readGeneratedClasses(
+      Class<T> clazz, @Nullable DatumReaderFactory<?> factory) {
+    return new Mode<>(clazz, ReflectData.get().getSchema(clazz).toString(), null, null, factory);
   }
 
   private static <T> Mode<T> parseGenericRecords(
-      SerializableFunction<GenericRecord, T> parseFn, Coder<T> outputCoder) {
-    return new Mode<>(GenericRecord.class, null, parseFn, outputCoder);
+      SerializableFunction<GenericRecord, T> parseFn,
+      Coder<T> outputCoder,
+      @Nullable DatumReaderFactory<?> factory) {
+    return new Mode<>(GenericRecord.class, null, parseFn, outputCoder, factory);
   }
 
   private final Mode<T> mode;
@@ -212,7 +245,16 @@ public class AvroSource<T> extends BlockBasedSource<T> {
         fileNameOrPattern,
         EmptyMatchTreatment.DISALLOW,
         DEFAULT_MIN_BUNDLE_SIZE,
-        readGenericRecordsWithSchema(null /* will need to be specified in withSchema */));
+        readGenericRecordsWithSchema(null /* will need to be specified in withSchema */, null));
+  }
+
+  public static AvroSource<GenericRecord> from(Metadata metadata) {
+    return new AvroSource<>(
+        metadata,
+        DEFAULT_MIN_BUNDLE_SIZE,
+        0,
+        metadata.sizeBytes(),
+        readGenericRecordsWithSchema(null /* will need to be specified in withSchema */, null));
   }
 
   /** Like {@link #from(ValueProvider)}. */
@@ -232,7 +274,7 @@ public class AvroSource<T> extends BlockBasedSource<T> {
         getFileOrPatternSpecProvider(),
         getEmptyMatchTreatment(),
         getMinBundleSize(),
-        readGenericRecordsWithSchema(schema));
+        readGenericRecordsWithSchema(schema, mode.readerFactory));
   }
 
   /** Like {@link #withSchema(String)}. */
@@ -244,11 +286,19 @@ public class AvroSource<T> extends BlockBasedSource<T> {
   /** Reads files containing records of the given class. */
   public <X> AvroSource<X> withSchema(Class<X> clazz) {
     checkArgument(clazz != null, "clazz can not be null");
+    if (getMode() == SINGLE_FILE_OR_SUBRANGE) {
+      return new AvroSource<>(
+          getSingleFileMetadata(),
+          getMinBundleSize(),
+          getStartOffset(),
+          getEndOffset(),
+          readGeneratedClasses(clazz, mode.readerFactory));
+    }
     return new AvroSource<>(
         getFileOrPatternSpecProvider(),
         getEmptyMatchTreatment(),
         getMinBundleSize(),
-        readGeneratedClasses(clazz));
+        readGeneratedClasses(clazz, mode.readerFactory));
   }
 
   /**
@@ -259,11 +309,19 @@ public class AvroSource<T> extends BlockBasedSource<T> {
       SerializableFunction<GenericRecord, X> parseFn, Coder<X> coder) {
     checkArgument(parseFn != null, "parseFn can not be null");
     checkArgument(coder != null, "coder can not be null");
+    if (getMode() == SINGLE_FILE_OR_SUBRANGE) {
+      return new AvroSource<>(
+          getSingleFileMetadata(),
+          getMinBundleSize(),
+          getStartOffset(),
+          getEndOffset(),
+          parseGenericRecords(parseFn, coder, mode.readerFactory));
+    }
     return new AvroSource<>(
         getFileOrPatternSpecProvider(),
         getEmptyMatchTreatment(),
         getMinBundleSize(),
-        parseGenericRecords(parseFn, coder));
+        parseGenericRecords(parseFn, coder, mode.readerFactory));
   }
 
   /**
@@ -271,8 +329,22 @@ public class AvroSource<T> extends BlockBasedSource<T> {
    * minBundleSize} and its use.
    */
   public AvroSource<T> withMinBundleSize(long minBundleSize) {
+    if (getMode() == SINGLE_FILE_OR_SUBRANGE) {
+      return new AvroSource<>(
+          getSingleFileMetadata(), minBundleSize, getStartOffset(), getEndOffset(), mode);
+    }
     return new AvroSource<>(
         getFileOrPatternSpecProvider(), getEmptyMatchTreatment(), minBundleSize, mode);
+  }
+
+  public AvroSource<T> withDatumReaderFactory(DatumReaderFactory<?> factory) {
+    Mode<T> newMode = mode.withReaderFactory(factory);
+    if (getMode() == SINGLE_FILE_OR_SUBRANGE) {
+      return new AvroSource<>(
+          getSingleFileMetadata(), getMinBundleSize(), getStartOffset(), getEndOffset(), newMode);
+    }
+    return new AvroSource<>(
+        getFileOrPatternSpecProvider(), getEmptyMatchTreatment(), getMinBundleSize(), newMode);
   }
 
   /** Constructor for FILEPATTERN mode. */
@@ -448,7 +520,7 @@ public class AvroSource<T> extends BlockBasedSource<T> {
     return schema;
   }
 
-  private static synchronized Schema internOrParseSchemaString(String schemaString) {
+  static synchronized Schema internOrParseSchemaString(String schemaString) {
     Schema schema = schemaLogicalReferenceCache.get(schemaString);
     if (schema != null) {
       return schema;
@@ -482,74 +554,25 @@ public class AvroSource<T> extends BlockBasedSource<T> {
    *
    * @param <T> The type of records stored in the block.
    */
-  @Experimental(Experimental.Kind.SOURCE_SINK)
   static class AvroBlock<T> extends Block<T> {
-    private final Mode<T> mode;
-
-    // The number of records in the block.
-    private final long numRecords;
 
     // The current record in the block. Initialized in readNextRecord.
-    @Nullable private T currentRecord;
+    private @Nullable T currentRecord;
 
     // The index of the current record in the block.
     private long currentRecordIndex = 0;
 
-    // A DatumReader to read records from the block.
-    private final DatumReader<?> reader;
+    private final Iterator<?> iterator;
 
-    // A BinaryDecoder used by the reader to decode records.
-    private final BinaryDecoder decoder;
+    private final SerializableFunction<GenericRecord, T> parseFn;
 
-    /**
-     * Decodes a byte array as an InputStream. The byte array may be compressed using some codec.
-     * Reads from the returned stream will result in decompressed bytes.
-     *
-     * <p>This supports the same codecs as Avro's {@link CodecFactory}, namely those defined in
-     * {@link DataFileConstants}.
-     *
-     * <ul>
-     *   <li>"snappy" : Google's Snappy compression
-     *   <li>"deflate" : deflate compression
-     *   <li>"bzip2" : Bzip2 compression
-     *   <li>"xz" : xz compression
-     *   <li>"null" (the string, not the value): Uncompressed data
-     * </ul>
-     */
-    private static InputStream decodeAsInputStream(byte[] data, String codec) throws IOException {
-      ByteArrayInputStream byteStream = new ByteArrayInputStream(data);
-      switch (codec) {
-        case DataFileConstants.SNAPPY_CODEC:
-          return new SnappyCompressorInputStream(byteStream, 1 << 16 /* Avro uses 64KB blocks */);
-        case DataFileConstants.DEFLATE_CODEC:
-          // nowrap == true: Do not expect ZLIB header or checksum, as Avro does not write them.
-          Inflater inflater = new Inflater(true);
-          return new InflaterInputStream(byteStream, inflater);
-        case DataFileConstants.XZ_CODEC:
-          return new XZCompressorInputStream(byteStream);
-        case DataFileConstants.BZIP2_CODEC:
-          return new BZip2CompressorInputStream(byteStream);
-        case DataFileConstants.NULL_CODEC:
-          return byteStream;
-        default:
-          throw new IllegalArgumentException("Unsupported codec: " + codec);
-      }
-    }
+    private final long numRecordsInBlock;
 
-    AvroBlock(byte[] data, long numRecords, Mode<T> mode, String writerSchemaString, String codec)
-        throws IOException {
-      this.mode = mode;
-      this.numRecords = numRecords;
-      checkNotNull(writerSchemaString, "writerSchemaString");
-      Schema writerSchema = internOrParseSchemaString(writerSchemaString);
-      Schema readerSchema =
-          internOrParseSchemaString(
-              MoreObjects.firstNonNull(mode.readerSchemaString, writerSchemaString));
-      this.reader =
-          (mode.type == GenericRecord.class)
-              ? new GenericDatumReader<T>(writerSchema, readerSchema)
-              : new ReflectDatumReader<T>(writerSchema, readerSchema);
-      this.decoder = DecoderFactory.get().binaryDecoder(decodeAsInputStream(data, codec), null);
+    AvroBlock(
+        Iterator<?> iter, SerializableFunction<GenericRecord, T> parseFn, long numRecordsInBlock) {
+      this.iterator = iter;
+      this.parseFn = parseFn;
+      this.numRecordsInBlock = numRecordsInBlock;
     }
 
     @Override
@@ -558,20 +581,20 @@ public class AvroSource<T> extends BlockBasedSource<T> {
     }
 
     @Override
-    public boolean readNextRecord() throws IOException {
-      if (currentRecordIndex >= numRecords) {
+    public boolean readNextRecord() {
+      if (currentRecordIndex >= numRecordsInBlock) {
         return false;
       }
-      Object record = reader.read(null, decoder);
-      currentRecord =
-          (mode.parseFn == null) ? ((T) record) : mode.parseFn.apply((GenericRecord) record);
+
+      Object record = iterator.next();
+      currentRecord = (parseFn == null) ? ((T) record) : parseFn.apply((GenericRecord) record);
       currentRecordIndex++;
       return true;
     }
 
     @Override
     public double getFractionOfBlockConsumed() {
-      return ((double) currentRecordIndex) / numRecords;
+      return ((double) currentRecordIndex) / numRecordsInBlock;
     }
   }
 
@@ -585,14 +608,49 @@ public class AvroSource<T> extends BlockBasedSource<T> {
    *
    * @param <T> The type of records contained in the block.
    */
-  @Experimental(Experimental.Kind.SOURCE_SINK)
   public static class AvroReader<T> extends BlockBasedReader<T> {
-    // Initialized in startReading.
-    @Nullable private AvroMetadata metadata;
+
+    private static class SeekableChannelInput implements SeekableInput {
+
+      private final SeekableByteChannel channel;
+      private final InputStream input;
+
+      SeekableChannelInput(SeekableByteChannel channel) {
+        this.channel = channel;
+        this.input = Channels.newInputStream(channel);
+      }
+
+      @Override
+      public void seek(long p) throws IOException {
+        channel.position(p);
+      }
+
+      @Override
+      public long tell() throws IOException {
+        return channel.position();
+      }
+
+      @Override
+      public long length() throws IOException {
+        return channel.size();
+      }
+
+      @Override
+      public int read(byte[] b, int off, int len) throws IOException {
+        return input.read(b, off, len);
+      }
+
+      @Override
+      public void close() throws IOException {
+        channel.close();
+      }
+    }
 
     // The current block.
     // Initialized in readNextRecord.
-    @Nullable private AvroBlock<T> currentBlock;
+    private @Nullable AvroBlock<T> currentBlock;
+
+    private @Nullable DataFileReader<?> dataFileReader;
 
     // A lock used to synchronize block offsets for getRemainingParallelism
     private final Object progressLock = new Object();
@@ -604,20 +662,6 @@ public class AvroSource<T> extends BlockBasedSource<T> {
     // Size of the current block.
     @GuardedBy("progressLock")
     private long currentBlockSizeBytes = 0;
-
-    // Stream used to read from the underlying file.
-    // A pushback stream is used to restore bytes buffered during seeking.
-    // Initialized in startReading.
-    @Nullable private PushbackInputStream stream;
-
-    // Counts the number of bytes read. Used only to tell how many bytes are taken up in
-    // a block's variable-length header.
-    // Initialized in startReading.
-    @Nullable private CountingInputStream countStream;
-
-    // Caches the Avro DirectBinaryDecoder used to decode binary-encoded values from the buffer.
-    // Initialized in readNextBlock.
-    @Nullable private BinaryDecoder decoder;
 
     /** Reads Avro records of type {@code T} from the specified source. */
     public AvroReader(AvroSource<T> source) {
@@ -635,71 +679,25 @@ public class AvroSource<T> extends BlockBasedSource<T> {
     //
     // Postcondition: same as above, but for the new current (formerly next) block.
     @Override
-    public boolean readNextBlock() throws IOException {
-      long startOfNextBlock;
-      synchronized (progressLock) {
-        startOfNextBlock = currentBlockOffset + currentBlockSizeBytes;
-      }
-
-      // Before reading the variable-sized block header, record the current number of bytes read.
-      long preHeaderCount = countStream.getBytesRead();
-      decoder = DecoderFactory.get().directBinaryDecoder(countStream, decoder);
-      long numRecords;
-      try {
-        numRecords = decoder.readLong();
-      } catch (EOFException e) {
-        // Expected for the last block, at which the start position is the EOF. The way to detect
-        // stream ending is to try reading from it.
+    public boolean readNextBlock() {
+      if (!dataFileReader.hasNext()) {
         return false;
       }
-      long blockSize = decoder.readLong();
 
-      // Mark header size as the change in the number of bytes read.
-      long headerSize = countStream.getBytesRead() - preHeaderCount;
+      long headerLength =
+          (long) VarInt.getLength(dataFileReader.getBlockCount())
+              + VarInt.getLength(dataFileReader.getBlockSize())
+              + DataFileConstants.SYNC_SIZE;
 
-      // Create the current block by reading blockSize bytes. Block sizes permitted by the Avro
-      // specification are [32, 2^30], so the cast is safe.
-      byte[] data = new byte[(int) blockSize];
-      int bytesRead = IOUtils.readFully(stream, data);
-      checkState(
-          blockSize == bytesRead,
-          "Only able to read %s/%s bytes in the block before EOF reached.",
-          bytesRead,
-          blockSize);
       currentBlock =
           new AvroBlock<>(
-              data,
-              numRecords,
-              getCurrentSource().mode,
-              metadata.getSchemaString(),
-              metadata.getCodec());
-
-      // Read the end of this block, which MUST be a sync marker for correctness.
-      byte[] syncMarker = metadata.getSyncMarker();
-      byte[] readSyncMarker = new byte[syncMarker.length];
-      long syncMarkerOffset = startOfNextBlock + headerSize + blockSize;
-      bytesRead = IOUtils.readFully(stream, readSyncMarker);
-      checkState(
-          bytesRead == syncMarker.length,
-          "Only able to read %s/%s bytes of Avro sync marker at position %s before EOF reached.",
-          bytesRead,
-          syncMarker.length,
-          syncMarkerOffset);
-      if (!Arrays.equals(syncMarker, readSyncMarker)) {
-        throw new IllegalStateException(
-            String.format(
-                "Expected the bytes [%d,%d) in file %s to be a sync marker, but found %s",
-                syncMarkerOffset,
-                syncMarkerOffset + syncMarker.length,
-                getCurrentSource().getFileOrPatternSpec(),
-                Arrays.toString(readSyncMarker)));
-      }
+              dataFileReader, getCurrentSource().mode.parseFn, dataFileReader.getBlockCount());
 
       // Atomically update both the position and offset of the new block.
       synchronized (progressLock) {
-        currentBlockOffset = startOfNextBlock;
+        currentBlockOffset = dataFileReader.previousSync();
         // Total block size includes the header, block content, and trailing sync marker.
-        currentBlockSizeBytes = headerSize + blockSize + syncMarker.length;
+        currentBlockSizeBytes = dataFileReader.getBlockSize() + headerLength;
       }
 
       return true;
@@ -738,123 +736,37 @@ public class AvroSource<T> extends BlockBasedSource<T> {
       return super.getSplitPointsRemaining();
     }
 
-    /**
-     * Creates a {@link PushbackInputStream} that has a large enough pushback buffer to be able to
-     * push back the syncBuffer.
-     */
-    private PushbackInputStream createStream(ReadableByteChannel channel) {
-      return new PushbackInputStream(
-          Channels.newInputStream(channel), metadata.getSyncMarker().length);
-    }
-
     // Postcondition: the stream is positioned at the beginning of the first block after the start
     // of the current source, and currentBlockOffset is that position. Additionally,
     // currentBlockSizeBytes will be set to 0 indicating that the previous block was empty.
     @Override
     protected void startReading(ReadableByteChannel channel) throws IOException {
-      try {
-        metadata = readMetadataFromFile(getCurrentSource().getSingleFileMetadata().resourceId());
-      } catch (IOException e) {
-        throw new RuntimeException(
-            "Error reading metadata from file " + getCurrentSource().getSingleFileMetadata(), e);
+      SeekableChannelInput seekableChannelInput =
+          new SeekableChannelInput((SeekableByteChannel) channel);
+      // the channel needs to be at the beginning of the file in order for the DataFileReader to
+      // read the header, etc, we'll seek it back to where it should be after creating the DFR.
+      seekableChannelInput.seek(0);
+
+      Schema readerSchema = null;
+      String readerSchemaString = this.getCurrentSource().getReaderSchemaString();
+      if (readerSchemaString != null) {
+        readerSchema = AvroSource.internOrParseSchemaString(readerSchemaString);
       }
+      // the DataFileReader will call setSchema with the writer schema when created.
+      DatumReader<?> reader = this.getCurrentSource().mode.createReader(readerSchema, readerSchema);
+
+      dataFileReader = new DataFileReader<>(seekableChannelInput, reader);
 
       long startOffset = getCurrentSource().getStartOffset();
-      byte[] syncMarker = metadata.getSyncMarker();
-      long syncMarkerLength = syncMarker.length;
-
       if (startOffset != 0) {
-        // Rewind order to find the sync marker ending the previous block.
-        long position = Math.max(0, startOffset - syncMarkerLength);
-        ((SeekableByteChannel) channel).position(position);
-        startOffset = position;
+        // the start offset may be in the middle of a sync marker, by rewinding SYNC_SIZE bytes we
+        // ensure that we won't miss the block if so.
+        dataFileReader.sync(Math.max(0, startOffset - DataFileConstants.SYNC_SIZE));
       }
 
-      // Satisfy the post condition.
-      stream = createStream(channel);
-      countStream = new CountingInputStream(stream);
       synchronized (progressLock) {
-        currentBlockOffset = startOffset + advancePastNextSyncMarker(stream, syncMarker);
+        currentBlockOffset = dataFileReader.previousSync();
         currentBlockSizeBytes = 0;
-      }
-    }
-
-    /**
-     * Advances to the first byte after the next occurrence of the sync marker in the stream when
-     * reading from the current offset. Returns the number of bytes consumed from the stream. Note
-     * that this method requires a PushbackInputStream with a buffer at least as big as the marker
-     * it is seeking for.
-     */
-    static long advancePastNextSyncMarker(PushbackInputStream stream, byte[] syncMarker)
-        throws IOException {
-      Seeker seeker = new Seeker(syncMarker);
-      byte[] syncBuffer = new byte[syncMarker.length];
-      long totalBytesConsumed = 0;
-      // Seek until either a sync marker is found or we reach the end of the file.
-      int mark = -1; // Position of the last byte in the sync marker.
-      int read; // Number of bytes read.
-      do {
-        read = stream.read(syncBuffer);
-        if (read >= 0) {
-          mark = seeker.find(syncBuffer, read);
-          // Update the currentOffset with the number of bytes read.
-          totalBytesConsumed += read;
-        }
-      } while (mark < 0 && read > 0);
-
-      // If the sync marker was found, unread block data and update the current offsets.
-      if (mark >= 0) {
-        // The current offset after this call should be just past the sync marker, so we should
-        // unread the remaining buffer contents and update the currentOffset accordingly.
-        stream.unread(syncBuffer, mark + 1, read - (mark + 1));
-        totalBytesConsumed = totalBytesConsumed - (read - (mark + 1));
-      }
-      return totalBytesConsumed;
-    }
-
-    /**
-     * A {@link Seeker} looks for a given marker within a byte buffer. Uses naive string matching
-     * with a sliding window, as sync markers are small and random.
-     */
-    static class Seeker {
-      // The marker to search for.
-      private byte[] marker;
-
-      // Buffer used for the sliding window.
-      private byte[] searchBuffer;
-
-      // Number of bytes available to be matched in the buffer.
-      private int available = 0;
-
-      /** Create a {@link Seeker} that looks for the given marker. */
-      public Seeker(byte[] marker) {
-        this.marker = marker;
-        this.searchBuffer = new byte[marker.length];
-      }
-
-      /**
-       * Find the marker in the byte buffer. Returns the index of the end of the marker in the
-       * buffer. If the marker is not found, returns -1.
-       *
-       * <p>State is maintained between calls. If the marker was partially matched, a subsequent
-       * call to find will resume matching the marker.
-       *
-       * @param buffer
-       * @return the index of the end of the marker within the buffer, or -1 if the buffer was not
-       *     found.
-       */
-      public int find(byte[] buffer, int length) {
-        for (int i = 0; i < length; i++) {
-          System.arraycopy(searchBuffer, 1, searchBuffer, 0, searchBuffer.length - 1);
-          searchBuffer[searchBuffer.length - 1] = buffer[i];
-          available = Math.min(available + 1, searchBuffer.length);
-          if (ByteBuffer.wrap(searchBuffer, searchBuffer.length - available, available)
-              .equals(ByteBuffer.wrap(marker))) {
-            available = 0;
-            return i;
-          }
-        }
-        return -1;
       }
     }
   }

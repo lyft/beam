@@ -16,9 +16,28 @@
 package primitives
 
 import (
-	"github.com/apache/beam/sdks/go/pkg/beam"
-	"github.com/apache/beam/sdks/go/pkg/beam/testing/passert"
+	"flag"
+	"fmt"
+
+	"github.com/apache/beam/sdks/v2/go/pkg/beam"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/register"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/testing/passert"
 )
+
+func init() {
+	register.Function4x0(emit3Fn)
+	register.Function2x1(sumValuesFn)
+	register.Function2x1(sumKVValuesFn)
+	register.Function1x2(splitStringPair)
+	register.Function3x2(asymJoinFn)
+	register.Function5x0(splitByName)
+	register.Function2x0(emitPipelineOptions)
+
+	register.Iter1[int]()
+	register.Iter2[int, int]()
+	register.Emitter1[string]()
+	register.Emitter1[int]()
+}
 
 func emit3Fn(elm int, emit, emit2, emit3 func(int)) {
 	emit(elm + 1)
@@ -53,7 +72,8 @@ func ParDoSideInput() *beam.Pipeline {
 	p, s := beam.NewPipelineWithRoot()
 
 	in := beam.Create(s, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-	out := beam.ParDo(s, sumValuesFn, beam.Impulse(s), beam.SideInput{Input: in})
+	sub := s.Scope("subscope") // Ensure scoping works with side inputs. See: BEAM-5354
+	out := beam.ParDo(sub, sumValuesFn, beam.Impulse(s), beam.SideInput{Input: in})
 	passert.Sum(s, out, "out", 1, 45)
 
 	return p
@@ -79,4 +99,96 @@ func ParDoKVSideInput() *beam.Pipeline {
 	passert.Sum(s, out, "out", 1, 45)
 
 	return p
+}
+
+type stringPair struct {
+	K, V string
+}
+
+func splitStringPair(e stringPair) (string, string) {
+	return e.K, e.V
+}
+
+var emailSlice = []stringPair{
+	{"amy", "amy@example.com"},
+	{"james", "james@email.com"},
+	{"carl", "carl@example.com"},
+	{"julia", "julia@example.com"},
+	{"carl", "carl@email.com"},
+	{"james", "james@example.com"},
+}
+
+var phoneSlice = []stringPair{
+	{"amy", "111-222-3333"},
+	{"james", "222-333-4444"},
+}
+
+// CreateAndSplit makes a KV PCollection from a list of stringPair types
+func CreateAndSplit(s beam.Scope, input []stringPair) beam.PCollection {
+	initial := beam.CreateList(s, input)
+	return beam.ParDo(s, splitStringPair, initial)
+}
+
+// ParDoMultiMapSideInput checks that the multimap side input access pattern
+// works correctly, properly producing the correct output with an asymmetric join.
+func ParDoMultiMapSideInput() *beam.Pipeline {
+	beam.Init()
+	p, s := beam.NewPipelineWithRoot()
+	emailsKV := CreateAndSplit(s.Scope("CreateEmails"), emailSlice)
+	phonesKV := CreateAndSplit(s.Scope("CreatePhones"), phoneSlice)
+	output := beam.ParDo(s, asymJoinFn, phonesKV, beam.SideInput{Input: emailsKV})
+	passert.Count(s, output, "post-join", 2)
+	amyOut, jamesOut, noMatch := beam.ParDo3(s, splitByName, output)
+	passert.Equals(s, amyOut, "amy@example.com", "111-222-3333")
+	passert.Equals(s, jamesOut, "james@email.com", "james@example.com", "222-333-4444")
+	passert.Empty(s, noMatch)
+	return p
+}
+
+func asymJoinFn(k, v string, mapSide func(string) func(*string) bool) (string, []string) {
+	var out string
+	results := []string{v}
+	iter := mapSide(k)
+	for iter(&out) {
+		results = append(results, out)
+	}
+	return k, results
+}
+
+func splitByName(key string, vals []string, a, j, d func(string)) {
+	var emitter func(string)
+	switch key {
+	case "amy":
+		emitter = a
+	case "james":
+		emitter = j
+	default:
+		emitter = d
+	}
+	for _, val := range vals {
+		emitter(val)
+	}
+}
+
+// ParDoPipelineOptions creates a pipeline with flag options to validate
+// that a DoFn can access them as PipelineOptions.
+func ParDoPipelineOptions() *beam.Pipeline {
+	// Setup some fake flags
+	flag.String("A", "", "Flag for testing.")
+	flag.String("B", "", "Flag for testing.")
+	flag.String("C", "", "Flag for testing.")
+	flag.CommandLine.Parse([]string{"--A=123", "--B=456", "--C=789"})
+
+	p, s := beam.NewPipelineWithRoot()
+
+	emitted := beam.ParDo(s, emitPipelineOptions, beam.Impulse(s))
+	passert.Equals(s, emitted, "A: 123", "B: 456", "C: 789")
+
+	return p
+}
+
+func emitPipelineOptions(_ []byte, emit func(string)) {
+	emit(fmt.Sprintf("%s: %s", "A", beam.PipelineOptions.Get("A")))
+	emit(fmt.Sprintf("%s: %s", "B", beam.PipelineOptions.Get("B")))
+	emit(fmt.Sprintf("%s: %s", "C", beam.PipelineOptions.Get("C")))
 }

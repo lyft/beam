@@ -20,7 +20,6 @@ package org.apache.beam.sdk.extensions.euphoria.core.client.operator;
 import static java.util.Objects.requireNonNull;
 
 import java.util.Optional;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.audience.Audience;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.operator.Basic;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.operator.StateComplexity;
@@ -29,12 +28,15 @@ import org.apache.beam.sdk.extensions.euphoria.core.client.functional.UnaryFunct
 import org.apache.beam.sdk.extensions.euphoria.core.client.io.Collector;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Builders;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Operator;
-import org.apache.beam.sdk.extensions.euphoria.core.client.operator.hint.OutputHint;
 import org.apache.beam.sdk.extensions.euphoria.core.client.type.TypeAware;
 import org.apache.beam.sdk.extensions.euphoria.core.translate.OperatorTransform;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.joda.time.Duration;
 
 /**
  * A transformation of a dataset from one type into another allowing user code to generate zero,
@@ -80,6 +82,9 @@ import org.apache.beam.sdk.values.TypeDescriptor;
  */
 @Audience(Audience.Type.CLIENT)
 @Basic(state = StateComplexity.ZERO, repartitions = 0)
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class FlatMap<InputT, OutputT> extends Operator<OutputT>
     implements TypeAware.Output<OutputT> {
 
@@ -153,7 +158,22 @@ public class FlatMap<InputT, OutputT> extends Operator<OutputT>
      * @param eventTimeFn the event time extraction function
      * @return the next builder to complete the setup of the {@link FlatMap} operator
      */
-    Builders.Output<OutputT> eventTimeBy(ExtractEventTime<InputT> eventTimeFn);
+    default Builders.Output<OutputT> eventTimeBy(ExtractEventTime<InputT> eventTimeFn) {
+      // allowed timestamp shifts to infitive past
+      return eventTimeBy(eventTimeFn, null);
+    }
+
+    /**
+     * Specifies a function to derive the input element's event time. Processing of the input stream
+     * continues then to proceed with this event time.
+     *
+     * @param eventTimeFn the event time extraction function
+     * @param timestampSkew allowed skew in milliseconds of already assigned timestamps and the
+     *     newly assigned (see {@link DoFn#getAllowedTimestampSkew}
+     * @return the next builder to complete the setup of the {@link FlatMap} operator
+     */
+    Builders.Output<OutputT> eventTimeBy(
+        ExtractEventTime<InputT> eventTimeFn, @Nullable Duration timestampSkew);
   }
 
   /** Builder of {@link FlatMap}. */
@@ -163,11 +183,12 @@ public class FlatMap<InputT, OutputT> extends Operator<OutputT>
           EventTimeBuilder<InputT, OutputT>,
           Builders.Output<OutputT> {
 
-    @Nullable private final String name;
+    private final @Nullable String name;
     private PCollection<InputT> input;
     private UnaryFunctor<InputT, OutputT> functor;
-    @Nullable private TypeDescriptor<OutputT> outputType;
-    @Nullable private ExtractEventTime<InputT> evtTimeFn;
+    private @Nullable TypeDescriptor<OutputT> outputType;
+    private @Nullable ExtractEventTime<InputT> evtTimeFn;
+    private Duration allowedTimestampSkew = Duration.millis(Long.MAX_VALUE);
 
     Builder(@Nullable String name) {
       this.name = name;
@@ -176,9 +197,9 @@ public class FlatMap<InputT, OutputT> extends Operator<OutputT>
     @Override
     public <InputLocalT> UsingBuilder<InputLocalT> of(PCollection<InputLocalT> input) {
       @SuppressWarnings("unchecked")
-      Builder<InputLocalT, ?> casted = (Builder) this;
-      casted.input = requireNonNull(input);
-      return casted;
+      Builder<InputLocalT, ?> cast = (Builder) this;
+      cast.input = requireNonNull(input);
+      return cast;
     }
 
     @Override
@@ -191,36 +212,44 @@ public class FlatMap<InputT, OutputT> extends Operator<OutputT>
     public <OutputLocalT> EventTimeBuilder<InputT, OutputLocalT> using(
         UnaryFunctor<InputT, OutputLocalT> functor, TypeDescriptor<OutputLocalT> outputType) {
       @SuppressWarnings("unchecked")
-      Builder<InputT, OutputLocalT> casted = (Builder) this;
-      casted.functor = requireNonNull(functor);
-      casted.outputType = outputType;
-      return casted;
+      Builder<InputT, OutputLocalT> cast = (Builder) this;
+      cast.functor = requireNonNull(functor);
+      cast.outputType = outputType;
+      return cast;
     }
 
     @Override
-    public Builders.Output<OutputT> eventTimeBy(ExtractEventTime<InputT> eventTimeFn) {
+    public Builders.Output<OutputT> eventTimeBy(
+        ExtractEventTime<InputT> eventTimeFn, @Nullable Duration timestampSkew) {
       this.evtTimeFn = requireNonNull(eventTimeFn);
+      this.allowedTimestampSkew =
+          MoreObjects.firstNonNull(timestampSkew, Duration.millis(Long.MAX_VALUE));
       return this;
     }
 
     @Override
-    public PCollection<OutputT> output(OutputHint... outputHints) {
+    public PCollection<OutputT> output() {
       return OperatorTransform.apply(
-          new FlatMap<>(name, functor, outputType, evtTimeFn), PCollectionList.of(input));
+          new FlatMap<>(name, functor, outputType, evtTimeFn, allowedTimestampSkew),
+          PCollectionList.of(input));
     }
   }
 
   private final UnaryFunctor<InputT, OutputT> functor;
-  @Nullable private final ExtractEventTime<InputT> eventTimeFn;
+  private final @Nullable ExtractEventTime<InputT> eventTimeFn;
+  private final Duration allowedTimestampSkew;
 
   private FlatMap(
       @Nullable String name,
       UnaryFunctor<InputT, OutputT> functor,
       @Nullable TypeDescriptor<OutputT> outputType,
-      @Nullable ExtractEventTime<InputT> evtTimeFn) {
+      @Nullable ExtractEventTime<InputT> evtTimeFn,
+      Duration allowedTimestampSkew) {
+
     super(name, outputType);
     this.functor = functor;
     this.eventTimeFn = evtTimeFn;
+    this.allowedTimestampSkew = requireNonNull(allowedTimestampSkew);
   }
 
   /**
@@ -239,5 +268,14 @@ public class FlatMap<InputT, OutputT> extends Operator<OutputT>
    */
   public Optional<ExtractEventTime<InputT>> getEventTimeExtractor() {
     return Optional.ofNullable(eventTimeFn);
+  }
+
+  /**
+   * Retrieves maximal allowed timestamp skew.
+   *
+   * @return the user supplied maximal allowed timestamp skew
+   */
+  public Duration getAllowedTimestampSkew() {
+    return allowedTimestampSkew;
   }
 }

@@ -19,7 +19,7 @@ package org.apache.beam.sdk.io.kinesis;
 
 import static java.lang.Integer.parseInt;
 import static java.lang.Math.min;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists.transform;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists.transform;
 import static org.apache.commons.lang.builder.HashCodeBuilder.reflectionHashCode;
 
 import com.amazonaws.AmazonWebServiceRequest;
@@ -37,8 +37,12 @@ import com.amazonaws.services.kinesis.model.DecreaseStreamRetentionPeriodRequest
 import com.amazonaws.services.kinesis.model.DecreaseStreamRetentionPeriodResult;
 import com.amazonaws.services.kinesis.model.DeleteStreamRequest;
 import com.amazonaws.services.kinesis.model.DeleteStreamResult;
+import com.amazonaws.services.kinesis.model.DeregisterStreamConsumerRequest;
+import com.amazonaws.services.kinesis.model.DeregisterStreamConsumerResult;
 import com.amazonaws.services.kinesis.model.DescribeLimitsRequest;
 import com.amazonaws.services.kinesis.model.DescribeLimitsResult;
+import com.amazonaws.services.kinesis.model.DescribeStreamConsumerRequest;
+import com.amazonaws.services.kinesis.model.DescribeStreamConsumerResult;
 import com.amazonaws.services.kinesis.model.DescribeStreamRequest;
 import com.amazonaws.services.kinesis.model.DescribeStreamResult;
 import com.amazonaws.services.kinesis.model.DescribeStreamSummaryRequest;
@@ -53,6 +57,11 @@ import com.amazonaws.services.kinesis.model.GetShardIteratorRequest;
 import com.amazonaws.services.kinesis.model.GetShardIteratorResult;
 import com.amazonaws.services.kinesis.model.IncreaseStreamRetentionPeriodRequest;
 import com.amazonaws.services.kinesis.model.IncreaseStreamRetentionPeriodResult;
+import com.amazonaws.services.kinesis.model.LimitExceededException;
+import com.amazonaws.services.kinesis.model.ListShardsRequest;
+import com.amazonaws.services.kinesis.model.ListShardsResult;
+import com.amazonaws.services.kinesis.model.ListStreamConsumersRequest;
+import com.amazonaws.services.kinesis.model.ListStreamConsumersResult;
 import com.amazonaws.services.kinesis.model.ListStreamsRequest;
 import com.amazonaws.services.kinesis.model.ListStreamsResult;
 import com.amazonaws.services.kinesis.model.ListTagsForStreamRequest;
@@ -64,6 +73,8 @@ import com.amazonaws.services.kinesis.model.PutRecordResult;
 import com.amazonaws.services.kinesis.model.PutRecordsRequest;
 import com.amazonaws.services.kinesis.model.PutRecordsResult;
 import com.amazonaws.services.kinesis.model.Record;
+import com.amazonaws.services.kinesis.model.RegisterStreamConsumerRequest;
+import com.amazonaws.services.kinesis.model.RegisterStreamConsumerResult;
 import com.amazonaws.services.kinesis.model.RemoveTagsFromStreamRequest;
 import com.amazonaws.services.kinesis.model.RemoveTagsFromStreamResult;
 import com.amazonaws.services.kinesis.model.Shard;
@@ -74,24 +85,26 @@ import com.amazonaws.services.kinesis.model.StartStreamEncryptionRequest;
 import com.amazonaws.services.kinesis.model.StartStreamEncryptionResult;
 import com.amazonaws.services.kinesis.model.StopStreamEncryptionRequest;
 import com.amazonaws.services.kinesis.model.StopStreamEncryptionResult;
-import com.amazonaws.services.kinesis.model.StreamDescription;
 import com.amazonaws.services.kinesis.model.UpdateShardCountRequest;
 import com.amazonaws.services.kinesis.model.UpdateShardCountResult;
+import com.amazonaws.services.kinesis.model.UpdateStreamModeRequest;
+import com.amazonaws.services.kinesis.model.UpdateStreamModeResult;
 import com.amazonaws.services.kinesis.producer.IKinesisProducer;
 import com.amazonaws.services.kinesis.producer.KinesisProducerConfiguration;
 import com.amazonaws.services.kinesis.waiters.AmazonKinesisWaiters;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Splitter;
+import java.util.stream.IntStream;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Splitter;
 import org.apache.commons.lang.builder.EqualsBuilder;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Instant;
 import org.mockito.Mockito;
 
-/** Mock implemenation of {@link AmazonKinesis} for testing. */
+/** Mock implementation of {@link AmazonKinesis} for testing. */
 class AmazonKinesisMock implements AmazonKinesis {
 
   static class TestData implements Serializable {
@@ -122,7 +135,7 @@ class AmazonKinesisMock implements AmazonKinesis {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       return EqualsBuilder.reflectionEquals(this, obj);
     }
 
@@ -151,18 +164,31 @@ class AmazonKinesisMock implements AmazonKinesis {
     private final List<List<TestData>> shardedData;
     private final int numberOfRecordsPerGet;
 
+    private boolean expectedListShardsLimitExceededException;
+
     public Provider(List<List<TestData>> shardedData, int numberOfRecordsPerGet) {
       this.shardedData = shardedData;
       this.numberOfRecordsPerGet = numberOfRecordsPerGet;
     }
 
+    /** Simulate limit exceeded exception for ListShards. */
+    public Provider withExpectedListShardsLimitExceededException() {
+      expectedListShardsLimitExceededException = true;
+      return this;
+    }
+
     @Override
     public AmazonKinesis getKinesisClient() {
-      return new AmazonKinesisMock(
-          shardedData.stream()
-              .map(testDatas -> transform(testDatas, TestData::convertToRecord))
-              .collect(Collectors.toList()),
-          numberOfRecordsPerGet);
+      AmazonKinesisMock client =
+          new AmazonKinesisMock(
+              shardedData.stream()
+                  .map(testData -> transform(testData, TestData::convertToRecord))
+                  .collect(Collectors.toList()),
+              numberOfRecordsPerGet);
+      if (expectedListShardsLimitExceededException) {
+        client = client.withExpectedListShardsLimitExceededException();
+      }
+      return client;
     }
 
     @Override
@@ -179,9 +205,16 @@ class AmazonKinesisMock implements AmazonKinesis {
   private final List<List<Record>> shardedData;
   private final int numberOfRecordsPerGet;
 
+  private boolean expectedListShardsLimitExceededException;
+
   public AmazonKinesisMock(List<List<Record>> shardedData, int numberOfRecordsPerGet) {
     this.shardedData = shardedData;
     this.numberOfRecordsPerGet = numberOfRecordsPerGet;
+  }
+
+  public AmazonKinesisMock withExpectedListShardsLimitExceededException() {
+    this.expectedListShardsLimitExceededException = true;
+    return this;
   }
 
   @Override
@@ -217,27 +250,7 @@ class AmazonKinesisMock implements AmazonKinesis {
 
   @Override
   public DescribeStreamResult describeStream(String streamName, String exclusiveStartShardId) {
-    int nextShardId = 0;
-    if (exclusiveStartShardId != null) {
-      nextShardId = parseInt(exclusiveStartShardId) + 1;
-    }
-    boolean hasMoreShards = nextShardId + 1 < shardedData.size();
-
-    List<Shard> shards = new ArrayList<>();
-    if (nextShardId < shardedData.size()) {
-      shards.add(new Shard().withShardId(Integer.toString(nextShardId)));
-    }
-
-    HttpResponse response = new HttpResponse(null, null);
-    response.setStatusCode(200);
-    DescribeStreamResult result = new DescribeStreamResult();
-    result.setSdkHttpMetadata(SdkHttpMetadata.from(response));
-    result.withStreamDescription(
-        new StreamDescription()
-            .withHasMoreShards(hasMoreShards)
-            .withShards(shards)
-            .withStreamName(streamName));
-    return result;
+    throw new RuntimeException("Not implemented");
   }
 
   @Override
@@ -278,6 +291,12 @@ class AmazonKinesisMock implements AmazonKinesis {
   }
 
   @Override
+  public DeregisterStreamConsumerResult deregisterStreamConsumer(
+      DeregisterStreamConsumerRequest deregisterStreamConsumerRequest) {
+    throw new RuntimeException("Not implemented");
+  }
+
+  @Override
   public DescribeLimitsResult describeLimits(DescribeLimitsRequest describeLimitsRequest) {
     throw new RuntimeException("Not implemented");
   }
@@ -295,6 +314,12 @@ class AmazonKinesisMock implements AmazonKinesis {
   @Override
   public DescribeStreamResult describeStream(
       String streamName, Integer limit, String exclusiveStartShardId) {
+    throw new RuntimeException("Not implemented");
+  }
+
+  @Override
+  public DescribeStreamConsumerResult describeStreamConsumer(
+      DescribeStreamConsumerRequest describeStreamConsumerRequest) {
     throw new RuntimeException("Not implemented");
   }
 
@@ -331,6 +356,33 @@ class AmazonKinesisMock implements AmazonKinesis {
   @Override
   public IncreaseStreamRetentionPeriodResult increaseStreamRetentionPeriod(
       IncreaseStreamRetentionPeriodRequest increaseStreamRetentionPeriodRequest) {
+    throw new RuntimeException("Not implemented");
+  }
+
+  @Override
+  public ListShardsResult listShards(ListShardsRequest listShardsRequest) {
+    if (expectedListShardsLimitExceededException) {
+      throw new LimitExceededException("ListShards rate limit exceeded");
+    }
+
+    ListShardsResult result = new ListShardsResult();
+
+    List<Shard> shards =
+        IntStream.range(0, shardedData.size())
+            .boxed()
+            .map(i -> new Shard().withShardId(Integer.toString(i)))
+            .collect(Collectors.toList());
+    result.setShards(shards);
+
+    HttpResponse response = new HttpResponse(null, null);
+    response.setStatusCode(200);
+    result.setSdkHttpMetadata(SdkHttpMetadata.from(response));
+    return result;
+  }
+
+  @Override
+  public ListStreamConsumersResult listStreamConsumers(
+      ListStreamConsumersRequest listStreamConsumersRequest) {
     throw new RuntimeException("Not implemented");
   }
 
@@ -393,6 +445,12 @@ class AmazonKinesisMock implements AmazonKinesis {
   }
 
   @Override
+  public RegisterStreamConsumerResult registerStreamConsumer(
+      RegisterStreamConsumerRequest registerStreamConsumerRequest) {
+    throw new RuntimeException("Not implemented");
+  }
+
+  @Override
   public RemoveTagsFromStreamResult removeTagsFromStream(
       RemoveTagsFromStreamRequest removeTagsFromStreamRequest) {
     throw new RuntimeException("Not implemented");
@@ -423,6 +481,11 @@ class AmazonKinesisMock implements AmazonKinesis {
 
   @Override
   public UpdateShardCountResult updateShardCount(UpdateShardCountRequest updateShardCountRequest) {
+    throw new RuntimeException("Not implemented");
+  }
+
+  @Override
+  public UpdateStreamModeResult updateStreamMode(UpdateStreamModeRequest updateStreamModeRequest) {
     throw new RuntimeException("Not implemented");
   }
 

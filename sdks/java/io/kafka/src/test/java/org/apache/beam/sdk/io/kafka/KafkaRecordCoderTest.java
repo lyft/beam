@@ -51,7 +51,7 @@ public class KafkaRecordCoderTest {
 
   @Test
   public void testKafkaRecordSerializableWithoutHeaders() throws IOException {
-    ConsumerRecord consumerRecord = new ConsumerRecord<>("", 0, 0L, "", "");
+    ConsumerRecord<String, String> consumerRecord = new ConsumerRecord<>("", 0, 0L, "", "");
     verifySerialization(consumerRecord.headers());
   }
 
@@ -61,7 +61,7 @@ public class KafkaRecordCoderTest {
             "topic", 0, 0, 0, KafkaTimestampType.CREATE_TIME, headers, "key", "value");
 
     ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-    KafkaRecordCoder kafkaRecordCoder =
+    KafkaRecordCoder<String, String> kafkaRecordCoder =
         KafkaRecordCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of());
 
     kafkaRecordCoder.encode(kafkaRecord, outputStream);

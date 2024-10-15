@@ -39,12 +39,11 @@ import org.apache.beam.runners.samza.SamzaPipelineOptions;
 import org.apache.beam.runners.samza.metrics.FnWithMetricsWrapper;
 import org.apache.beam.runners.samza.metrics.SamzaMetricsContainer;
 import org.apache.beam.runners.samza.runtime.OpMessage;
-import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
 import org.apache.samza.Partition;
 import org.apache.samza.SamzaException;
 import org.apache.samza.config.Config;
@@ -67,7 +66,11 @@ import org.slf4j.LoggerFactory;
  * the job is restarted the bounded source will be consumed from the beginning.
  */
 // TODO: instrumentation for the consumer
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class BoundedSourceSystem {
+  private static final Logger LOG = LoggerFactory.getLogger(BoundedSourceSystem.class);
 
   private static <T> List<BoundedSource<T>> split(
       BoundedSource<T> source, SamzaPipelineOptions pipelineOptions) throws Exception {
@@ -100,7 +103,8 @@ public class BoundedSourceSystem {
     @Override
     public Map<SystemStreamPartition, String> getOffsetsAfter(
         Map<SystemStreamPartition, String> offsets) {
-      return offsets.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, null));
+      // BEAM checkpoints the next offset so here we just need to return the map itself
+      return offsets;
     }
 
     @Override
@@ -180,10 +184,12 @@ public class BoundedSourceSystem {
             "Attempted to call start without assigned system stream partitions");
       }
 
-      int capacity = pipelineOptions.getSystemBufferSize();
-      readerTask =
-          new ReaderTask<>(
-              readerToSsp, capacity, new FnWithMetricsWrapper(metricsContainer, stepName));
+      final int capacity = pipelineOptions.getSystemBufferSize();
+      final FnWithMetricsWrapper metricsWrapper =
+          pipelineOptions.getEnableMetrics()
+              ? new FnWithMetricsWrapper(metricsContainer, stepName)
+              : null;
+      readerTask = new ReaderTask<>(readerToSsp, capacity, metricsWrapper);
       final Thread thread =
           new Thread(readerTask, "bounded-source-system-consumer-" + NEXT_ID.getAndIncrement());
       thread.start();
@@ -255,7 +261,7 @@ public class BoundedSourceSystem {
         final Set<BoundedReader<T>> availableReaders = new HashSet<>(readerToSsp.keySet());
         try {
           for (BoundedReader<T> reader : readerToSsp.keySet()) {
-            boolean hasData = metricsWrapper.wrap(reader::start);
+            boolean hasData = invoke(reader::start);
             if (hasData) {
               enqueueMessage(reader);
             } else {
@@ -269,7 +275,7 @@ public class BoundedSourceSystem {
             final Iterator<BoundedReader<T>> iter = availableReaders.iterator();
             while (iter.hasNext()) {
               final BoundedReader<T> reader = iter.next();
-              final boolean hasData = metricsWrapper.wrap(reader::advance);
+              final boolean hasData = invoke(reader::advance);
               if (hasData) {
                 enqueueMessage(reader);
               } else {
@@ -294,6 +300,14 @@ public class BoundedSourceSystem {
                       "Reader task failed to close reader for ssp {}", readerToSsp.get(reader), e);
                 }
               });
+        }
+      }
+
+      private <X> X invoke(FnWithMetricsWrapper.SupplierWithException<X> fn) throws Exception {
+        if (metricsWrapper != null) {
+          return metricsWrapper.wrap(fn, true);
+        } else {
+          return fn.get();
         }
       }
 
@@ -407,7 +421,8 @@ public class BoundedSourceSystem {
 
     @Override
     public SystemProducer getProducer(String systemName, Config config, MetricsRegistry registry) {
-      throw new UnsupportedOperationException("Cannot create a producer for an input system");
+      LOG.info("System " + systemName + " does not have producer.");
+      return null;
     }
 
     @Override
@@ -421,11 +436,6 @@ public class BoundedSourceSystem {
       final BoundedSource<T> source =
           Base64Serializer.deserializeUnchecked(config.get("source"), BoundedSource.class);
       return source;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> Coder<WindowedValue<T>> getCoder(Config config) {
-      return Base64Serializer.deserializeUnchecked(config.get("coder"), Coder.class);
     }
 
     private static SamzaPipelineOptions getPipelineOptions(Config config) {

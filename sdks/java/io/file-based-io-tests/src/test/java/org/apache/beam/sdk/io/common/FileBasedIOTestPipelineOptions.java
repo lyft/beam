@@ -17,10 +17,10 @@
  */
 package org.apache.beam.sdk.io.common;
 
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.Validation;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Pipeline options for all file based IOITs. */
 public interface FileBasedIOTestPipelineOptions extends IOTestPipelineOptions {
@@ -43,15 +43,21 @@ public interface FileBasedIOTestPipelineOptions extends IOTestPipelineOptions {
 
   void setNumberOfShards(@Nullable Integer value);
 
-  @Description("BigQuery dataset to publish results to.")
-  @Nullable
-  String getBigQueryDataset();
+  @Description("Option to report GCS performance metrics")
+  @Default.Boolean(false)
+  boolean getReportGcsPerformanceMetrics();
 
-  void setBigQueryDataset(@Nullable String dataset);
+  void setReportGcsPerformanceMetrics(boolean performanceMetrics);
 
-  @Description("BigQuery table to publish results to.")
-  @Nullable
-  String getBigQueryTable();
+  @Validation.Required
+  @Description(
+      "Precomputed hashcode to assert IO test pipeline content identity after writing and reading back the dataset")
+  String getExpectedHash();
 
-  void setBigQueryTable(@Nullable String tableName);
+  void setExpectedHash(String hash);
+
+  @Description("Size of data saved on the target filesystem (bytes)")
+  Integer getDatasetSize();
+
+  void setDatasetSize(Integer size);
 }

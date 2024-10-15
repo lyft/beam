@@ -21,18 +21,20 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
-import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.annotations.Experimental.Kind;
-import org.apache.beam.sdk.schemas.annotations.SchemaFieldName;
+import javax.annotation.Nullable;
 import org.apache.beam.sdk.schemas.annotations.SchemaIgnore;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.DefaultTypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.FieldValueTypeSupplier;
 import org.apache.beam.sdk.schemas.utils.POJOUtils;
 import org.apache.beam.sdk.schemas.utils.ReflectUtils;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
 
 /**
  * A {@link SchemaProvider} for Java POJO objects.
@@ -47,7 +49,7 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleF
  * <p>TODO: Validate equals() method is provided, and if not generate a "slow" equals method based
  * on the schema.
  */
-@Experimental(Kind.SCHEMAS)
+@SuppressWarnings({"nullness", "rawtypes"})
 public class JavaFieldSchema extends GetterBasedSchemaProvider {
   /** {@link FieldValueTypeSupplier} that's based on public fields. */
   @VisibleForTesting
@@ -56,16 +58,16 @@ public class JavaFieldSchema extends GetterBasedSchemaProvider {
 
     @Override
     public List<FieldValueTypeInformation> get(Class<?> clazz) {
-      List<FieldValueTypeInformation> types =
+      List<Field> fields =
           ReflectUtils.getFields(clazz).stream()
-              .filter(f -> !f.isAnnotationPresent(SchemaIgnore.class))
-              .map(FieldValueTypeInformation::forField)
-              .map(
-                  t -> {
-                    SchemaFieldName fieldName = t.getField().getAnnotation(SchemaFieldName.class);
-                    return (fieldName != null) ? t.withName(fieldName.value()) : t;
-                  })
+              .filter(m -> !m.isAnnotationPresent(SchemaIgnore.class))
               .collect(Collectors.toList());
+      List<FieldValueTypeInformation> types = Lists.newArrayListWithCapacity(fields.size());
+      for (int i = 0; i < fields.size(); ++i) {
+        types.add(FieldValueTypeInformation.forField(fields.get(i), i));
+      }
+      types.sort(Comparator.comparing(FieldValueTypeInformation::getNumber));
+      validateFieldNumbers(types);
 
       // If there are no creators registered, then make sure none of the schema fields are final,
       // as we (currently) have no way of creating classes in this case.
@@ -89,6 +91,24 @@ public class JavaFieldSchema extends GetterBasedSchemaProvider {
     }
   }
 
+  private static void validateFieldNumbers(List<FieldValueTypeInformation> types) {
+    for (int i = 0; i < types.size(); ++i) {
+      FieldValueTypeInformation type = types.get(i);
+      @Nullable Integer number = type.getNumber();
+      if (number == null) {
+        throw new RuntimeException("Unexpected null number for " + type.getName());
+      }
+      Preconditions.checkState(
+          number == i,
+          "Expected field number "
+              + i
+              + " for field + "
+              + type.getName()
+              + " instead got "
+              + number);
+    }
+  }
+
   @Override
   public <T> Schema schemaFor(TypeDescriptor<T> typeDescriptor) {
     return POJOUtils.schemaFromPojoClass(
@@ -96,35 +116,42 @@ public class JavaFieldSchema extends GetterBasedSchemaProvider {
   }
 
   @Override
-  public FieldValueGetterFactory fieldValueGetterFactory() {
-    return (Class<?> targetClass, Schema schema) ->
-        POJOUtils.getGetters(targetClass, schema, JavaFieldTypeSupplier.INSTANCE);
+  public List<FieldValueGetter> fieldValueGetters(Class<?> targetClass, Schema schema) {
+    return POJOUtils.getGetters(
+        targetClass, schema, JavaFieldTypeSupplier.INSTANCE, new DefaultTypeConversionsFactory());
   }
 
   @Override
-  public FieldValueTypeInformationFactory fieldValueTypeInformationFactory() {
-    return (Class<?> targetClass, Schema schema) ->
-        POJOUtils.getFieldTypes(targetClass, schema, JavaFieldTypeSupplier.INSTANCE);
+  public List<FieldValueTypeInformation> fieldValueTypeInformations(
+      Class<?> targetClass, Schema schema) {
+    return POJOUtils.getFieldTypes(targetClass, schema, JavaFieldTypeSupplier.INSTANCE);
   }
 
   @Override
-  UserTypeCreatorFactory schemaTypeCreatorFactory() {
-    return (Class<?> targetClass, Schema schema) -> {
-      // If a static method is marked with @SchemaCreate, use that.
-      Method annotated = ReflectUtils.getAnnotatedCreateMethod(targetClass);
-      if (annotated != null) {
-        return POJOUtils.getStaticCreator(
-            targetClass, annotated, schema, JavaFieldTypeSupplier.INSTANCE);
-      }
+  public SchemaUserTypeCreator schemaTypeCreator(Class<?> targetClass, Schema schema) {
+    // If a static method is marked with @SchemaCreate, use that.
+    Method annotated = ReflectUtils.getAnnotatedCreateMethod(targetClass);
+    if (annotated != null) {
+      return POJOUtils.getStaticCreator(
+          targetClass,
+          annotated,
+          schema,
+          JavaFieldTypeSupplier.INSTANCE,
+          new DefaultTypeConversionsFactory());
+    }
 
-      // If a Constructor was tagged with @SchemaCreate, invoke that constructor.
-      Constructor<?> constructor = ReflectUtils.getAnnotatedConstructor(targetClass);
-      if (constructor != null) {
-        return POJOUtils.getConstructorCreator(
-            targetClass, constructor, schema, JavaFieldTypeSupplier.INSTANCE);
-      }
+    // If a Constructor was tagged with @SchemaCreate, invoke that constructor.
+    Constructor<?> constructor = ReflectUtils.getAnnotatedConstructor(targetClass);
+    if (constructor != null) {
+      return POJOUtils.getConstructorCreator(
+          targetClass,
+          constructor,
+          schema,
+          JavaFieldTypeSupplier.INSTANCE,
+          new DefaultTypeConversionsFactory());
+    }
 
-      return POJOUtils.getSetFieldCreator(targetClass, schema, JavaFieldTypeSupplier.INSTANCE);
-    };
+    return POJOUtils.getSetFieldCreator(
+        targetClass, schema, JavaFieldTypeSupplier.INSTANCE, new DefaultTypeConversionsFactory());
   }
 }

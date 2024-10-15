@@ -17,15 +17,30 @@
  */
 package org.apache.beam.sdk.transforms;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.anEmptyMap;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.fail;
 
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import org.apache.beam.sdk.state.StateSpec;
 import org.apache.beam.sdk.state.StateSpecs;
 import org.apache.beam.sdk.state.ValueState;
@@ -37,6 +52,8 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -45,65 +62,15 @@ import org.junit.runners.JUnit4;
 
 /** Tests that {@link ParDo} exercises {@link DoFn} methods in the appropriate sequence. */
 @RunWith(JUnit4.class)
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  // TODO(https://github.com/apache/beam/issues/21230): Remove when new version of
+  // errorprone is released (2.11.0)
+  "unused"
+})
 public class ParDoLifecycleTest implements Serializable {
 
   @Rule public final transient TestPipeline p = TestPipeline.create();
-
-  private static class CallSequenceEnforcingDoFn<T> extends DoFn<T, T> {
-    private boolean setupCalled = false;
-    private int startBundleCalls = 0;
-    private int finishBundleCalls = 0;
-    private boolean teardownCalled = false;
-
-    @Setup
-    public void setup() {
-      assertThat("setup should not be called twice", setupCalled, is(false));
-      assertThat("setup should be called before startBundle", startBundleCalls, equalTo(0));
-      assertThat("setup should be called before finishBundle", finishBundleCalls, equalTo(0));
-      assertThat("setup should be called before teardown", teardownCalled, is(false));
-      setupCalled = true;
-    }
-
-    @StartBundle
-    public void startBundle() {
-      assertThat("setup should have been called", setupCalled, is(true));
-      assertThat(
-          "Even number of startBundle and finishBundle calls in startBundle",
-          startBundleCalls,
-          equalTo(finishBundleCalls));
-      assertThat("teardown should not have been called", teardownCalled, is(false));
-      startBundleCalls++;
-    }
-
-    @ProcessElement
-    public void processElement(ProcessContext c) throws Exception {
-      assertThat("startBundle should have been called", startBundleCalls, greaterThan(0));
-      assertThat(
-          "there should be one startBundle call with no call to finishBundle",
-          startBundleCalls,
-          equalTo(finishBundleCalls + 1));
-      assertThat("teardown should not have been called", teardownCalled, is(false));
-    }
-
-    @FinishBundle
-    public void finishBundle() {
-      assertThat("startBundle should have been called", startBundleCalls, greaterThan(0));
-      assertThat(
-          "there should be one bundle that has been started but not finished",
-          startBundleCalls,
-          equalTo(finishBundleCalls + 1));
-      assertThat("teardown should not have been called", teardownCalled, is(false));
-      finishBundleCalls++;
-    }
-
-    @Teardown
-    public void teardown() {
-      assertThat(setupCalled, is(true));
-      assertThat(startBundleCalls, anyOf(equalTo(finishBundleCalls)));
-      assertThat(teardownCalled, is(false));
-      teardownCalled = true;
-    }
-  }
 
   @Test
   @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
@@ -201,7 +168,7 @@ public class ParDoLifecycleTest implements Serializable {
   }
 
   private static class CallSequenceEnforcingStatefulFn<K, V>
-      extends CallSequenceEnforcingDoFn<KV<K, V>> {
+      extends CallSequenceEnforcingFn<KV<K, V>> {
     private static final String STATE_ID = "foo";
 
     @StateId(STATE_ID)
@@ -210,164 +177,190 @@ public class ParDoLifecycleTest implements Serializable {
 
   @Test
   @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
-  public void testTeardownCalledAfterExceptionInStartBundle() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.START_BUNDLE);
+  public void testTeardownCalledAfterExceptionInSetup() {
+    ExceptionThrowingFn fn = new ExceptionThrowingFn(MethodForException.SETUP);
     p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(CallState.SETUP, CallState.TEARDOWN);
+    }
+  }
+
+  @Test
+  @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
+  public void testTeardownCalledAfterExceptionInStartBundle() {
+    ExceptionThrowingFn fn = new ExceptionThrowingFn(MethodForException.START_BUNDLE);
+    p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
+    try {
+      p.run();
+      fail("Pipeline should have failed with an exception");
+    } catch (Exception e) {
+      ExceptionThrowingFn.validate(CallState.SETUP, CallState.START_BUNDLE, CallState.TEARDOWN);
     }
   }
 
   @Test
   @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
   public void testTeardownCalledAfterExceptionInProcessElement() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.PROCESS_ELEMENT);
+    ExceptionThrowingFn fn = new ExceptionThrowingFn(MethodForException.PROCESS_ELEMENT);
     p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(
+          CallState.SETUP, CallState.START_BUNDLE, CallState.PROCESS_ELEMENT, CallState.TEARDOWN);
     }
   }
 
   @Test
   @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
   public void testTeardownCalledAfterExceptionInFinishBundle() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.FINISH_BUNDLE);
+    ExceptionThrowingFn fn = new ExceptionThrowingFn(MethodForException.FINISH_BUNDLE);
     p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(
+          CallState.SETUP,
+          CallState.START_BUNDLE,
+          CallState.PROCESS_ELEMENT,
+          CallState.FINISH_BUNDLE,
+          CallState.TEARDOWN);
     }
   }
 
   @Test
-  @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
-  public void testWithContextTeardownCalledAfterExceptionInSetup() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.SETUP);
-    p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
+  @Category({ValidatesRunner.class, UsesStatefulParDo.class, UsesParDoLifecycle.class})
+  public void testTeardownCalledAfterExceptionInSetupStateful() {
+    ExceptionThrowingFn fn = new ExceptionThrowingStatefulFn(MethodForException.SETUP);
+    p.apply(Create.of(KV.of("a", 1), KV.of("b", 2), KV.of("a", 3))).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(CallState.SETUP, CallState.TEARDOWN);
     }
   }
 
   @Test
-  @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
-  public void testWithContextTeardownCalledAfterExceptionInStartBundle() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.START_BUNDLE);
-    p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
+  @Category({ValidatesRunner.class, UsesStatefulParDo.class, UsesParDoLifecycle.class})
+  public void testTeardownCalledAfterExceptionInStartBundleStateful() {
+    ExceptionThrowingFn fn = new ExceptionThrowingStatefulFn(MethodForException.START_BUNDLE);
+    p.apply(Create.of(KV.of("a", 1), KV.of("b", 2), KV.of("a", 3))).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(CallState.SETUP, CallState.START_BUNDLE, CallState.TEARDOWN);
     }
   }
 
   @Test
-  @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
-  public void testWithContextTeardownCalledAfterExceptionInProcessElement() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.PROCESS_ELEMENT);
-    p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
+  @Category({ValidatesRunner.class, UsesStatefulParDo.class, UsesParDoLifecycle.class})
+  public void testTeardownCalledAfterExceptionInProcessElementStateful() {
+    ExceptionThrowingFn fn = new ExceptionThrowingStatefulFn(MethodForException.PROCESS_ELEMENT);
+    p.apply(Create.of(KV.of("a", 1), KV.of("b", 2), KV.of("a", 3))).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(
+          CallState.SETUP, CallState.START_BUNDLE, CallState.PROCESS_ELEMENT, CallState.TEARDOWN);
     }
   }
 
   @Test
-  @Category({ValidatesRunner.class, UsesParDoLifecycle.class})
-  public void testWithContextTeardownCalledAfterExceptionInFinishBundle() {
-    ExceptionThrowingOldFn fn = new ExceptionThrowingOldFn(MethodForException.FINISH_BUNDLE);
-    p.apply(Create.of(1, 2, 3)).apply(ParDo.of(fn));
+  @Category({ValidatesRunner.class, UsesStatefulParDo.class, UsesParDoLifecycle.class})
+  public void testTeardownCalledAfterExceptionInFinishBundleStateful() {
+    ExceptionThrowingFn fn = new ExceptionThrowingStatefulFn(MethodForException.FINISH_BUNDLE);
+    p.apply(Create.of(KV.of("a", 1), KV.of("b", 2), KV.of("a", 3))).apply(ParDo.of(fn));
     try {
       p.run();
       fail("Pipeline should have failed with an exception");
     } catch (Exception e) {
-      assertThat(
-          "Function should have been torn down after exception",
-          ExceptionThrowingOldFn.teardownCalled.get(),
-          is(true));
+      ExceptionThrowingFn.validate(
+          CallState.SETUP,
+          CallState.START_BUNDLE,
+          CallState.PROCESS_ELEMENT,
+          CallState.FINISH_BUNDLE,
+          CallState.TEARDOWN);
     }
   }
 
-  private static class ExceptionThrowingOldFn extends DoFn<Object, Object> {
-    static AtomicBoolean teardownCalled = new AtomicBoolean(false);
+  @Before
+  public void setup() {
+    ExceptionThrowingFn.callStateMap = new HashMap<>();
+    ExceptionThrowingFn.exceptionWasThrown.set(false);
+  }
 
-    private final MethodForException toThrow;
-    private boolean thrown;
+  private static class DelayedCallStateTracker {
+    private final CountDownLatch latch;
+    private final AtomicReference<CallState> callState;
+    private final List<CallState> callStateVisited =
+        Collections.synchronizedList(new ArrayList<>());
 
-    private ExceptionThrowingOldFn(MethodForException toThrow) {
-      this.toThrow = toThrow;
+    private DelayedCallStateTracker(CallState setup) {
+      latch = new CountDownLatch(1);
+      callState = new AtomicReference<>(setup);
+      callStateVisited.add(setup);
     }
 
-    @Setup
-    public void setup() throws Exception {
-      throwIfNecessary(MethodForException.SETUP);
+    DelayedCallStateTracker update(CallState val) {
+      CallState previous = callState.getAndSet(val);
+      if (previous == CallState.TEARDOWN && val != CallState.TEARDOWN) {
+        fail("illegal state change from " + callState + " to " + val);
+      }
+
+      if (CallState.TEARDOWN == val) {
+        latch.countDown();
+      }
+      synchronized (callStateVisited) {
+        if (!callStateVisited.contains(val)) {
+          callStateVisited.add(val);
+        }
+      }
+      return this;
     }
 
-    @StartBundle
-    public void startBundle() throws Exception {
-      throwIfNecessary(MethodForException.START_BUNDLE);
-    }
-
-    @ProcessElement
-    public void processElement(ProcessContext c) throws Exception {
-      throwIfNecessary(MethodForException.PROCESS_ELEMENT);
-    }
-
-    @FinishBundle
-    public void finishBundle() throws Exception {
-      throwIfNecessary(MethodForException.FINISH_BUNDLE);
-    }
-
-    private void throwIfNecessary(MethodForException method) throws Exception {
-      if (toThrow == method && !thrown) {
-        thrown = true;
-        throw new Exception("Hasn't yet thrown");
+    @Override
+    public String toString() {
+      synchronized (callStateVisited) {
+        return MoreObjects.toStringHelper(this)
+            .add("latch", latch)
+            .add("callState", callState)
+            .add("callStateVisited", callStateVisited)
+            .toString();
       }
     }
 
-    @Teardown
-    public void teardown() {
-      if (!thrown) {
-        fail("Excepted to have a processing method throw an exception");
+    CallState callState() {
+      return callState.get();
+    }
+
+    CallState finalState() {
+      try {
+        // call to tearDown might be delayed on other thread (happens on direct runner)
+        // so lets wait a while if not yet called to give a chance to catch up
+        if (!latch.await(60, TimeUnit.SECONDS)) {
+          throw new RuntimeException("Timed out waiting for tearDown");
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
       }
-      teardownCalled.set(true);
+      return callState();
     }
   }
 
-  private static class ExceptionThrowingFn extends DoFn<Object, Object> {
-    static AtomicBoolean teardownCalled = new AtomicBoolean(false);
+  private static class ExceptionThrowingFn<T> extends DoFn<T, T> {
+    static HashMap<Integer, DelayedCallStateTracker> callStateMap = new HashMap<>();
+    // exception is not necessarily thrown on every instance. But we expect at least
+    // one during tests
+    static AtomicBoolean exceptionWasThrown = new AtomicBoolean(false);
+    static AtomicInteger noOfInstancesToTearDown = new AtomicInteger(0);
 
     private final MethodForException toThrow;
     private boolean thrown;
@@ -376,40 +369,127 @@ public class ParDoLifecycleTest implements Serializable {
       this.toThrow = toThrow;
     }
 
+    private static void validate(CallState... requiredCallStates) {
+      Map<Integer, DelayedCallStateTracker> callStates;
+      synchronized (ExceptionThrowingFn.class) {
+        callStates =
+            (Map<Integer, DelayedCallStateTracker>) ExceptionThrowingFn.callStateMap.clone();
+      }
+      assertThat(callStates, is(not(anEmptyMap())));
+      // assert that callStateMap contains only TEARDOWN as a value. Note: We do not expect
+      // teardown to be called on fn itself, but on any deserialized instance on which any other
+      // lifecycle method was called
+      callStates.forEach(
+          (key, value) ->
+              assertThat(
+                  "Function should have been torn down after exception for id() " + key,
+                  value.finalState(),
+                  is(CallState.TEARDOWN)));
+
+      List<CallState> states = Arrays.stream(requiredCallStates).collect(Collectors.toList());
+      assertThat(
+          "At least one bundle should contain " + states + ", got " + callStates.values(),
+          callStates.values().stream()
+              .anyMatch(tracker -> tracker.callStateVisited.equals(states)));
+    }
+
     @Setup
     public void before() throws Exception {
+      synchronized (ExceptionThrowingFn.class) {
+        assertThat(
+            "lifecycle methods should not have been called",
+            callStateMap.get(id()),
+            is(nullValue()));
+        DelayedCallStateTracker previousTracker =
+            callStateMap.put(id(), new DelayedCallStateTracker(CallState.SETUP));
+        if (previousTracker != null) {
+          fail(CallState.SETUP + " method called multiple times");
+        }
+      }
+      noOfInstancesToTearDown.incrementAndGet();
       throwIfNecessary(MethodForException.SETUP);
     }
 
     @StartBundle
     public void preBundle() throws Exception {
-      throwIfNecessary(MethodForException.START_BUNDLE);
+      synchronized (ExceptionThrowingFn.class) {
+        assertThat(
+            "lifecycle method should have been called before start bundle",
+            callStateMap.get(id()).callState(),
+            anyOf(equalTo(CallState.SETUP), equalTo(CallState.FINISH_BUNDLE)));
+        callStateMap.get(id()).update(CallState.START_BUNDLE);
+        throwIfNecessary(MethodForException.START_BUNDLE);
+      }
     }
 
     @ProcessElement
     public void perElement(ProcessContext c) throws Exception {
-      throwIfNecessary(MethodForException.PROCESS_ELEMENT);
+      synchronized (ExceptionThrowingFn.class) {
+        assertThat(
+            "lifecycle method should have been called before processing bundle",
+            callStateMap.get(id()).callState(),
+            anyOf(equalTo(CallState.START_BUNDLE), equalTo(CallState.PROCESS_ELEMENT)));
+        callStateMap.get(id()).update(CallState.PROCESS_ELEMENT);
+        throwIfNecessary(MethodForException.PROCESS_ELEMENT);
+      }
     }
 
     @FinishBundle
     public void postBundle() throws Exception {
-      throwIfNecessary(MethodForException.FINISH_BUNDLE);
+      synchronized (ExceptionThrowingFn.class) {
+        assertThat(
+            "processing bundle or start bundle should have been called before finish bundle",
+            callStateMap.get(id()).callState(),
+            anyOf(equalTo(CallState.PROCESS_ELEMENT), equalTo(CallState.START_BUNDLE)));
+        callStateMap.get(id()).update(CallState.FINISH_BUNDLE);
+        throwIfNecessary(MethodForException.FINISH_BUNDLE);
+      }
     }
 
     private void throwIfNecessary(MethodForException method) throws Exception {
       if (toThrow == method && !thrown) {
         thrown = true;
+        exceptionWasThrown.set(true);
         throw new Exception("Hasn't yet thrown");
       }
     }
 
     @Teardown
     public void after() {
-      if (!thrown) {
-        fail("Excepted to have a processing method throw an exception");
+      if (noOfInstancesToTearDown.decrementAndGet() == 0 && !exceptionWasThrown.get()) {
+        fail("Expected to have a processing method throw an exception");
       }
-      teardownCalled.set(true);
+      synchronized (ExceptionThrowingFn.class) {
+        assertThat(
+            "some lifecycle method should have been called",
+            callStateMap.get(id()),
+            is(notNullValue()));
+        callStateMap.get(id()).update(CallState.TEARDOWN);
+      }
     }
+
+    private int id() {
+      return System.identityHashCode(this);
+    }
+  }
+
+  private static class ExceptionThrowingStatefulFn<K, V> extends ExceptionThrowingFn<KV<K, V>> {
+    private static final String STATE_ID = "foo";
+
+    @StateId(STATE_ID)
+    private final StateSpec<ValueState<String>> valueSpec = StateSpecs.value();
+
+    private ExceptionThrowingStatefulFn(MethodForException toThrow) {
+      super(toThrow);
+    }
+  }
+
+  private enum CallState {
+    SETUP,
+    START_BUNDLE,
+    PROCESS_ELEMENT,
+    FINISH_BUNDLE,
+    TEARDOWN
   }
 
   private enum MethodForException {

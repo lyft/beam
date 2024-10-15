@@ -17,20 +17,19 @@
  */
 package org.apache.beam.runners.spark;
 
-import static org.apache.beam.runners.core.construction.PipelineResources.detectClassPathResourcesToStage;
+import static org.apache.beam.runners.spark.SparkCommonPipelineOptions.prepareFilesToStage;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import org.apache.beam.runners.core.construction.PipelineResources;
+import org.apache.beam.runners.core.construction.SplittableParDo;
 import org.apache.beam.runners.core.construction.TransformInputs;
+import org.apache.beam.runners.core.construction.graph.ProjectionPushdownOptimizer;
 import org.apache.beam.runners.core.metrics.MetricsPusher;
-import org.apache.beam.runners.spark.aggregators.AggregatorsAccumulator;
-import org.apache.beam.runners.spark.metrics.AggregatorMetricSource;
-import org.apache.beam.runners.spark.metrics.CompositeSource;
 import org.apache.beam.runners.spark.metrics.MetricsAccumulator;
 import org.apache.beam.runners.spark.metrics.SparkBeamMetricSource;
 import org.apache.beam.runners.spark.translation.EvaluationContext;
@@ -45,6 +44,7 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineRunner;
 import org.apache.beam.sdk.metrics.MetricsEnvironment;
 import org.apache.beam.sdk.metrics.MetricsOptions;
+import org.apache.beam.sdk.options.ExperimentalOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.PipelineOptionsValidator;
@@ -60,7 +60,7 @@ import org.apache.beam.sdk.values.PInput;
 import org.apache.beam.sdk.values.POutput;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.apache.spark.SparkEnv$;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.metrics.MetricsSystem;
@@ -86,12 +86,15 @@ import org.slf4j.LoggerFactory;
  * SparkPipelineOptionsFactory.create(); options.setSparkMaster("spark://host:port");
  * SparkPipelineResult result = (SparkPipelineResult) p.run(); }
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
 
   private static final Logger LOG = LoggerFactory.getLogger(SparkRunner.class);
 
   /** Options used in this pipeline runner. */
-  private final SparkPipelineOptions mOptions;
+  private final SparkPipelineOptions pipelineOptions;
 
   /**
    * Creates and returns a new SparkRunner with default options. In particular, against a spark
@@ -122,21 +125,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
    * @return A pipeline runner that will execute with specified options.
    */
   public static SparkRunner fromOptions(PipelineOptions options) {
-    SparkPipelineOptions sparkOptions =
-        PipelineOptionsValidator.validate(SparkPipelineOptions.class, options);
-
-    if (sparkOptions.getFilesToStage() == null) {
-      sparkOptions.setFilesToStage(
-          detectClassPathResourcesToStage(SparkRunner.class.getClassLoader()));
-      LOG.info(
-          "PipelineOptions.filesToStage was not specified. "
-              + "Defaulting to files from the classpath: will stage {} files. "
-              + "Enable logging at DEBUG level to see which files will be staged.",
-          sparkOptions.getFilesToStage().size());
-      LOG.debug("Classpath elements: {}", sparkOptions.getFilesToStage());
-    }
-
-    return new SparkRunner(sparkOptions);
+    return new SparkRunner(PipelineOptionsValidator.validate(SparkPipelineOptions.class, options));
   }
 
   /**
@@ -144,7 +133,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
    * thread.
    */
   private SparkRunner(SparkPipelineOptions options) {
-    mOptions = options;
+    pipelineOptions = options;
   }
 
   @Override
@@ -161,31 +150,39 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
     MetricsEnvironment.setMetricsSupported(true);
 
     // visit the pipeline to determine the translation mode
-    detectTranslationMode(pipeline);
+    detectTranslationMode(pipeline, pipelineOptions);
 
-    pipeline.replaceAll(SparkTransformOverrides.getDefaultOverrides(mOptions.isStreaming()));
+    // Default to using the primitive versions of Read.Bounded and Read.Unbounded.
+    // TODO(https://github.com/apache/beam/issues/20530): Use SDF read as default when we address
+    // performance issue.
+    if (!ExperimentalOptions.hasExperiment(pipeline.getOptions(), "beam_fn_api")) {
+      SplittableParDo.convertReadBasedSplittableDoFnsToPrimitiveReadsIfNecessary(pipeline);
+    }
 
-    prepareFilesToStageForRemoteClusterExecution(mOptions);
+    if (!ExperimentalOptions.hasExperiment(pipelineOptions, "disable_projection_pushdown")) {
+      ProjectionPushdownOptimizer.optimize(pipeline);
+    }
 
-    if (mOptions.isStreaming()) {
-      CheckpointDir checkpointDir = new CheckpointDir(mOptions.getCheckpointDir());
+    pipeline.replaceAll(SparkTransformOverrides.getDefaultOverrides(pipelineOptions.isStreaming()));
+
+    prepareFilesToStage(pipelineOptions);
+
+    if (pipelineOptions.isStreaming()) {
+      CheckpointDir checkpointDir = new CheckpointDir(pipelineOptions.getCheckpointDir());
       SparkRunnerStreamingContextFactory streamingContextFactory =
-          new SparkRunnerStreamingContextFactory(pipeline, mOptions, checkpointDir);
+          new SparkRunnerStreamingContextFactory(pipeline, pipelineOptions, checkpointDir);
       final JavaStreamingContext jssc =
           JavaStreamingContext.getOrCreate(
               checkpointDir.getSparkCheckpointDir().toString(), streamingContextFactory);
-
       // Checkpoint aggregator/metrics values
-      jssc.addStreamingListener(
-          new JavaStreamingListenerWrapper(
-              new AggregatorsAccumulator.AccumulatorCheckpointingSparkListener()));
       jssc.addStreamingListener(
           new JavaStreamingListenerWrapper(
               new MetricsAccumulator.AccumulatorCheckpointingSparkListener()));
 
       // register user-defined listeners.
-      for (JavaStreamingListener listener : mOptions.as(SparkContextOptions.class).getListeners()) {
-        LOG.info("Registered listener {}." + listener.getClass().getSimpleName());
+      for (JavaStreamingListener listener :
+          pipelineOptions.as(SparkContextOptions.class).getListeners()) {
+        LOG.info("Registered listener {}.", listener.getClass().getSimpleName());
         jssc.addStreamingListener(new JavaStreamingListenerWrapper(listener));
       }
 
@@ -197,7 +194,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       // SparkRunnerStreamingContextFactory is because the factory is not called when resuming
       // from checkpoint (When not resuming from checkpoint initAccumulators will be called twice
       // but this is fine since it is idempotent).
-      initAccumulators(mOptions, jssc.sparkContext());
+      initAccumulators(pipelineOptions, jssc.sparkContext());
 
       startPipeline =
           executorService.submit(
@@ -209,15 +206,15 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
 
       result = new SparkPipelineResult.StreamingMode(startPipeline, jssc);
     } else {
-      // create the evaluation context
-      final JavaSparkContext jsc = SparkContextFactory.getSparkContext(mOptions);
-      final EvaluationContext evaluationContext = new EvaluationContext(jsc, pipeline, mOptions);
+      JavaSparkContext jsc = SparkContextFactory.getSparkContext(pipelineOptions);
+      final EvaluationContext evaluationContext =
+          new EvaluationContext(jsc, pipeline, pipelineOptions);
       translator = new TransformTranslator.Translator();
 
       // update the cache candidates
       updateCacheCandidates(pipeline, translator, evaluationContext);
 
-      initAccumulators(mOptions, jsc);
+      initAccumulators(pipelineOptions, jsc);
       startPipeline =
           executorService.submit(
               () -> {
@@ -230,8 +227,8 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       result = new SparkPipelineResult.BatchMode(startPipeline, jsc);
     }
 
-    if (mOptions.getEnableSparkMetricSinks()) {
-      registerMetricsSource(mOptions.getAppName());
+    if (pipelineOptions.getEnableSparkMetricSinks()) {
+      registerMetricsSource(pipelineOptions.getAppName());
     }
 
     // it would have been better to create MetricsPusher from runner-core but we need
@@ -239,53 +236,35 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
     // MetricsContainerStepMap
     MetricsPusher metricsPusher =
         new MetricsPusher(
-            MetricsAccumulator.getInstance().value(), mOptions.as(MetricsOptions.class), result);
+            MetricsAccumulator.getInstance().value(),
+            pipelineOptions.as(MetricsOptions.class),
+            result);
     metricsPusher.start();
+
     return result;
   }
 
   private void registerMetricsSource(String appName) {
     final MetricsSystem metricsSystem = SparkEnv$.MODULE$.get().metricsSystem();
-    final AggregatorMetricSource aggregatorMetricSource =
-        new AggregatorMetricSource(null, AggregatorsAccumulator.getInstance().value());
-    final SparkBeamMetricSource metricsSource = new SparkBeamMetricSource(null);
-    final CompositeSource compositeSource =
-        new CompositeSource(
-            appName + ".Beam",
-            metricsSource.metricRegistry(),
-            aggregatorMetricSource.metricRegistry());
+    final SparkBeamMetricSource metricsSource = new SparkBeamMetricSource(appName + ".Beam");
     // re-register the metrics in case of context re-use
-    metricsSystem.removeSource(compositeSource);
-    metricsSystem.registerSource(compositeSource);
+    metricsSystem.removeSource(metricsSource);
+    metricsSystem.registerSource(metricsSource);
   }
 
   /** Init Metrics/Aggregators accumulators. This method is idempotent. */
   public static void initAccumulators(SparkPipelineOptions opts, JavaSparkContext jsc) {
     // Init metrics accumulators
     MetricsAccumulator.init(opts, jsc);
-    AggregatorsAccumulator.init(opts, jsc);
   }
 
   /** Visit the pipeline to determine the translation mode (batch/streaming). */
-  private void detectTranslationMode(Pipeline pipeline) {
+  static void detectTranslationMode(Pipeline pipeline, SparkPipelineOptions pipelineOptions) {
     TranslationModeDetector detector = new TranslationModeDetector();
     pipeline.traverseTopologically(detector);
     if (detector.getTranslationMode().equals(TranslationMode.STREAMING)) {
       // set streaming mode if it's a streaming pipeline
-      this.mOptions.setStreaming(true);
-    }
-  }
-
-  /**
-   * Local configurations work in the same JVM and have no problems with improperly formatted files
-   * on classpath (eg. directories with .class files or empty directories). Prepare files for
-   * staging only when using remote cluster (passing the master address explicitly).
-   */
-  private static void prepareFilesToStageForRemoteClusterExecution(SparkPipelineOptions options) {
-    if (!options.getSparkMaster().matches("local\\[?\\d*\\]?")) {
-      options.setFilesToStage(
-          PipelineResources.prepareFilesForStaging(
-              options.getFilesToStage(), options.getTempLocation()));
+      pipelineOptions.setStreaming(true);
     }
   }
 
@@ -338,8 +317,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
   /** Traverses the pipeline to populate the candidates for caching. */
   static class CacheVisitor extends Evaluator {
 
-    protected CacheVisitor(
-        SparkPipelineTranslator translator, EvaluationContext evaluationContext) {
+    CacheVisitor(SparkPipelineTranslator translator, EvaluationContext evaluationContext) {
       super(translator, evaluationContext);
     }
 
@@ -348,8 +326,12 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       // we populate cache candidates by updating the map with inputs of each node.
       // The goal is to detect the PCollections accessed more than one time, and so enable cache
       // on the underlying RDDs or DStreams.
+      Map<TupleTag<?>, PValue> inputs = new HashMap<>(node.getInputs());
+      for (TupleTag<?> tupleTag : node.getTransform().getAdditionalInputs().keySet()) {
+        inputs.remove(tupleTag);
+      }
 
-      for (PValue value : node.getInputs().values()) {
+      for (PValue value : inputs.values()) {
         if (value instanceof PCollection) {
           long count = 1L;
           if (ctxt.getCacheCandidates().get(value) != null) {
@@ -397,7 +379,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       }
       PValue input = Iterables.getOnlyElement(nonAdditionalInputs);
       if (!(input instanceof PCollection)
-          || ((PCollection) input).getWindowingStrategy().getWindowFn().isNonMerging()) {
+          || !((PCollection) input).getWindowingStrategy().needsMerge()) {
         return false;
       }
       // so far we know that the input is a PCollection with merging windows.
@@ -432,7 +414,6 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
         TransformHierarchy.Node node) {
       @SuppressWarnings("unchecked")
       TransformT transform = (TransformT) node.getTransform();
-      @SuppressWarnings("unchecked")
       TransformEvaluator<TransformT> evaluator = translate(node, transform);
       LOG.info("Evaluating {}", transform);
       AppliedPTransform<?, ?, ?> appliedTransform = node.toAppliedPTransform(getPipeline());
@@ -451,7 +432,7 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
       // --- determine if node is bounded/unbounded.
       // usually, the input determines if the PCollection to apply the next transformation to
       // is BOUNDED or UNBOUNDED, meaning RDD/DStream.
-      Map<TupleTag<?>, PValue> pValues;
+      Map<TupleTag<?>, PCollection<?>> pValues;
       if (node.getInputs().isEmpty()) {
         // in case of a PBegin, it's the output.
         pValues = node.getOutputs();
@@ -466,18 +447,14 @@ public final class SparkRunner extends PipelineRunner<SparkPipelineResult> {
           : translator.translateUnbounded(transform);
     }
 
-    protected PCollection.IsBounded isBoundedCollection(Collection<PValue> pValues) {
+    protected PCollection.IsBounded isBoundedCollection(Collection<PCollection<?>> pValues) {
       // anything that is not a PCollection, is BOUNDED.
       // For PCollections:
       // BOUNDED behaves as the Identity Element, BOUNDED + BOUNDED = BOUNDED
       // while BOUNDED + UNBOUNDED = UNBOUNDED.
       PCollection.IsBounded isBounded = PCollection.IsBounded.BOUNDED;
-      for (PValue pValue : pValues) {
-        if (pValue instanceof PCollection) {
-          isBounded = isBounded.and(((PCollection) pValue).isBounded());
-        } else {
-          isBounded = isBounded.and(PCollection.IsBounded.BOUNDED);
-        }
+      for (PCollection<?> pValue : pValues) {
+        isBounded = isBounded.and(pValue.isBounded());
       }
       return isBounded;
     }

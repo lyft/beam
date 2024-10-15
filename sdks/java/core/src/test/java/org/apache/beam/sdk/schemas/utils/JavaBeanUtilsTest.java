@@ -33,7 +33,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.beam.sdk.schemas.FieldValueGetter;
 import org.apache.beam.sdk.schemas.FieldValueSetter;
@@ -41,6 +41,7 @@ import org.apache.beam.sdk.schemas.JavaBeanSchema;
 import org.apache.beam.sdk.schemas.JavaBeanSchema.GetterTypeSupplier;
 import org.apache.beam.sdk.schemas.JavaBeanSchema.SetterTypeSupplier;
 import org.apache.beam.sdk.schemas.Schema;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.DefaultTypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.TestJavaBeans.BeanWithBoxedFields;
 import org.apache.beam.sdk.schemas.utils.TestJavaBeans.BeanWithByteArray;
 import org.apache.beam.sdk.schemas.utils.TestJavaBeans.NestedArrayBean;
@@ -55,6 +56,9 @@ import org.joda.time.DateTime;
 import org.junit.Test;
 
 /** Tests for the {@link JavaBeanUtils} class. */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class JavaBeanUtilsTest {
   @Test
   public void testNullable() {
@@ -126,14 +130,17 @@ public class JavaBeanUtilsTest {
     simpleBean.setaBoolean(true);
     simpleBean.setDateTime(DateTime.parse("1979-03-14"));
     simpleBean.setInstant(DateTime.parse("1979-03-15").toInstant());
-    simpleBean.setBytes("bytes1".getBytes(Charset.defaultCharset()));
-    simpleBean.setByteBuffer(ByteBuffer.wrap("bytes2".getBytes(Charset.defaultCharset())));
+    simpleBean.setBytes("bytes1".getBytes(StandardCharsets.UTF_8));
+    simpleBean.setByteBuffer(ByteBuffer.wrap("bytes2".getBytes(StandardCharsets.UTF_8)));
     simpleBean.setBigDecimal(new BigDecimal(42));
     simpleBean.setStringBuilder(new StringBuilder("stringBuilder"));
 
     List<FieldValueGetter> getters =
         JavaBeanUtils.getGetters(
-            SimpleBean.class, SIMPLE_BEAN_SCHEMA, new JavaBeanSchema.GetterTypeSupplier());
+            SimpleBean.class,
+            SIMPLE_BEAN_SCHEMA,
+            new JavaBeanSchema.GetterTypeSupplier(),
+            new DefaultTypeConversionsFactory());
     assertEquals(12, getters.size());
     assertEquals("str", getters.get(0).name());
 
@@ -142,16 +149,16 @@ public class JavaBeanUtilsTest {
     assertEquals((short) 42, getters.get(2).get(simpleBean));
     assertEquals((int) 43, getters.get(3).get(simpleBean));
     assertEquals((long) 44, getters.get(4).get(simpleBean));
-    assertEquals(true, getters.get(5).get(simpleBean));
+    assertTrue((Boolean) getters.get(5).get(simpleBean));
     assertEquals(DateTime.parse("1979-03-14").toInstant(), getters.get(6).get(simpleBean));
     assertEquals(DateTime.parse("1979-03-15").toInstant(), getters.get(7).get(simpleBean));
     assertArrayEquals(
         "Unexpected bytes",
-        "bytes1".getBytes(Charset.defaultCharset()),
+        "bytes1".getBytes(StandardCharsets.UTF_8),
         (byte[]) getters.get(8).get(simpleBean));
     assertArrayEquals(
         "Unexpected bytes",
-        "bytes2".getBytes(Charset.defaultCharset()),
+        "bytes2".getBytes(StandardCharsets.UTF_8),
         (byte[]) getters.get(9).get(simpleBean));
     assertEquals(new BigDecimal(42), getters.get(10).get(simpleBean));
     assertEquals("stringBuilder", getters.get(11).get(simpleBean).toString());
@@ -161,7 +168,11 @@ public class JavaBeanUtilsTest {
   public void testGeneratedSimpleSetters() {
     SimpleBean simpleBean = new SimpleBean();
     List<FieldValueSetter> setters =
-        JavaBeanUtils.getSetters(SimpleBean.class, SIMPLE_BEAN_SCHEMA, new SetterTypeSupplier());
+        JavaBeanUtils.getSetters(
+            SimpleBean.class,
+            SIMPLE_BEAN_SCHEMA,
+            new SetterTypeSupplier(),
+            new DefaultTypeConversionsFactory());
     assertEquals(12, setters.size());
 
     setters.get(0).set(simpleBean, "field1");
@@ -172,8 +183,8 @@ public class JavaBeanUtilsTest {
     setters.get(5).set(simpleBean, true);
     setters.get(6).set(simpleBean, DateTime.parse("1979-03-14").toInstant());
     setters.get(7).set(simpleBean, DateTime.parse("1979-03-15").toInstant());
-    setters.get(8).set(simpleBean, "bytes1".getBytes(Charset.defaultCharset()));
-    setters.get(9).set(simpleBean, "bytes2".getBytes(Charset.defaultCharset()));
+    setters.get(8).set(simpleBean, "bytes1".getBytes(StandardCharsets.UTF_8));
+    setters.get(9).set(simpleBean, "bytes2".getBytes(StandardCharsets.UTF_8));
     setters.get(10).set(simpleBean, new BigDecimal(42));
     setters.get(11).set(simpleBean, "stringBuilder");
 
@@ -182,13 +193,13 @@ public class JavaBeanUtilsTest {
     assertEquals((short) 42, simpleBean.getaShort());
     assertEquals((int) 43, simpleBean.getAnInt());
     assertEquals((long) 44, simpleBean.getaLong());
-    assertEquals(true, simpleBean.isaBoolean());
+    assertTrue(simpleBean.isaBoolean());
     assertEquals(DateTime.parse("1979-03-14"), simpleBean.getDateTime());
     assertEquals(DateTime.parse("1979-03-15").toInstant(), simpleBean.getInstant());
     assertArrayEquals(
-        "Unexpected bytes", "bytes1".getBytes(Charset.defaultCharset()), simpleBean.getBytes());
+        "Unexpected bytes", "bytes1".getBytes(StandardCharsets.UTF_8), simpleBean.getBytes());
     assertEquals(
-        ByteBuffer.wrap("bytes2".getBytes(Charset.defaultCharset())), simpleBean.getByteBuffer());
+        ByteBuffer.wrap("bytes2".getBytes(StandardCharsets.UTF_8)), simpleBean.getByteBuffer());
     assertEquals(new BigDecimal(42), simpleBean.getBigDecimal());
     assertEquals("stringBuilder", simpleBean.getStringBuilder().toString());
   }
@@ -206,12 +217,13 @@ public class JavaBeanUtilsTest {
         JavaBeanUtils.getGetters(
             BeanWithBoxedFields.class,
             BEAN_WITH_BOXED_FIELDS_SCHEMA,
-            new JavaBeanSchema.GetterTypeSupplier());
+            new JavaBeanSchema.GetterTypeSupplier(),
+            new DefaultTypeConversionsFactory());
     assertEquals((byte) 41, getters.get(0).get(bean));
     assertEquals((short) 42, getters.get(1).get(bean));
     assertEquals((int) 43, getters.get(2).get(bean));
     assertEquals((long) 44, getters.get(3).get(bean));
-    assertEquals(true, getters.get(4).get(bean));
+    assertTrue((Boolean) getters.get(4).get(bean));
   }
 
   @Test
@@ -219,7 +231,10 @@ public class JavaBeanUtilsTest {
     BeanWithBoxedFields bean = new BeanWithBoxedFields();
     List<FieldValueSetter> setters =
         JavaBeanUtils.getSetters(
-            BeanWithBoxedFields.class, BEAN_WITH_BOXED_FIELDS_SCHEMA, new SetterTypeSupplier());
+            BeanWithBoxedFields.class,
+            BEAN_WITH_BOXED_FIELDS_SCHEMA,
+            new SetterTypeSupplier(),
+            new DefaultTypeConversionsFactory());
 
     setters.get(0).set(bean, (byte) 41);
     setters.get(1).set(bean, (short) 42);
@@ -231,7 +246,7 @@ public class JavaBeanUtilsTest {
     assertEquals((short) 42, bean.getaShort().shortValue());
     assertEquals((int) 43, bean.getAnInt().intValue());
     assertEquals((long) 44, bean.getaLong().longValue());
-    assertEquals(true, bean.getaBoolean().booleanValue());
+    assertTrue(bean.getaBoolean().booleanValue());
   }
 
   @Test
@@ -239,11 +254,14 @@ public class JavaBeanUtilsTest {
     BeanWithByteArray bean = new BeanWithByteArray();
     List<FieldValueSetter> setters =
         JavaBeanUtils.getSetters(
-            BeanWithByteArray.class, BEAN_WITH_BYTE_ARRAY_SCHEMA, new SetterTypeSupplier());
-    setters.get(0).set(bean, "field1".getBytes(Charset.defaultCharset()));
-    setters.get(1).set(bean, "field2".getBytes(Charset.defaultCharset()));
+            BeanWithByteArray.class,
+            BEAN_WITH_BYTE_ARRAY_SCHEMA,
+            new SetterTypeSupplier(),
+            new DefaultTypeConversionsFactory());
+    setters.get(0).set(bean, "field1".getBytes(StandardCharsets.UTF_8));
+    setters.get(1).set(bean, "field2".getBytes(StandardCharsets.UTF_8));
 
-    assertArrayEquals("not equal", "field1".getBytes(Charset.defaultCharset()), bean.getBytes1());
-    assertEquals(ByteBuffer.wrap("field2".getBytes(Charset.defaultCharset())), bean.getBytes2());
+    assertArrayEquals("not equal", "field1".getBytes(StandardCharsets.UTF_8), bean.getBytes1());
+    assertEquals(ByteBuffer.wrap("field2".getBytes(StandardCharsets.UTF_8)), bean.getBytes2());
   }
 }

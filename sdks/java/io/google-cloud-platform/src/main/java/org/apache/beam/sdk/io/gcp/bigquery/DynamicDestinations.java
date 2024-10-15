@@ -18,21 +18,22 @@
 package org.apache.beam.sdk.io.gcp.bigquery;
 
 import static org.apache.beam.sdk.values.TypeDescriptors.extractFromTypeParameters;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import com.google.api.services.bigquery.model.TableSchema;
 import java.io.Serializable;
 import java.util.List;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderRegistry;
+import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.TypeDescriptors;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * This class provides the most general way of specifying dynamic BigQuery table destinations.
@@ -77,7 +78,8 @@ public abstract class DynamicDestinations<T, DestinationT> implements Serializab
     <SideInputT> SideInputT sideInput(PCollectionView<SideInputT> view);
   }
 
-  @Nullable private transient SideInputAccessor sideInputAccessor;
+  private transient @Nullable SideInputAccessor sideInputAccessor;
+  private transient @Nullable PipelineOptions options;
 
   static class SideInputAccessorViaProcessContext implements SideInputAccessor {
     private DoFn<?, ?>.ProcessContext processContext;
@@ -90,6 +92,12 @@ public abstract class DynamicDestinations<T, DestinationT> implements Serializab
     public <SideInputT> SideInputT sideInput(PCollectionView<SideInputT> view) {
       return processContext.sideInput(view);
     }
+  }
+
+  /** Get the current PipelineOptions if set. */
+  @Nullable
+  PipelineOptions getPipelineOptions() {
+    return options;
   }
 
   /**
@@ -109,22 +117,22 @@ public abstract class DynamicDestinations<T, DestinationT> implements Serializab
         "View %s not declared in getSideInputs() (%s)",
         view,
         getSideInputs());
+    if (sideInputAccessor == null) {
+      throw new IllegalStateException("sideInputAccessor (transient field) is null");
+    }
     return sideInputAccessor.sideInput(view);
   }
 
-  final void setSideInputAccessor(SideInputAccessor sideInputAccessor) {
-    this.sideInputAccessor = sideInputAccessor;
-  }
-
-  final void setSideInputAccessorFromProcessContext(DoFn<?, ?>.ProcessContext context) {
+  void setSideInputAccessorFromProcessContext(DoFn<?, ?>.ProcessContext context) {
     this.sideInputAccessor = new SideInputAccessorViaProcessContext(context);
+    this.options = context.getPipelineOptions();
   }
 
   /**
    * Returns an object that represents at a high level which table is being written to. May not
    * return null.
    */
-  public abstract DestinationT getDestination(ValueInSingleWindow<T> element);
+  public abstract DestinationT getDestination(@Nullable ValueInSingleWindow<T> element);
 
   /**
    * Returns the coder for {@link DestinationT}. If this is not overridden, then {@link BigQueryIO}
@@ -132,16 +140,19 @@ public abstract class DynamicDestinations<T, DestinationT> implements Serializab
    * {@link DestinationT} will be used as a key type in a {@link
    * org.apache.beam.sdk.transforms.GroupByKey}.
    */
-  @Nullable
-  public Coder<DestinationT> getDestinationCoder() {
+  public @Nullable Coder<DestinationT> getDestinationCoder() {
     return null;
   }
 
-  /** Returns a {@link TableDestination} object for the destination. May not return null. */
+  /**
+   * Returns a {@link TableDestination} object for the destination. May not return null. Return
+   * value needs to be unique to each destination: may not return the same {@link TableDestination}
+   * for different destinations.
+   */
   public abstract TableDestination getTable(DestinationT destination);
 
-  /** Returns the table schema for the destination. May not return null. */
-  public abstract TableSchema getSchema(DestinationT destination);
+  /** Returns the table schema for the destination. */
+  public abstract @Nullable TableSchema getSchema(DestinationT destination);
 
   // Gets the destination coder. If the user does not provide one, try to find one in the coder
   // registry. If no coder can be found, throws CannotProvideCoderException.

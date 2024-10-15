@@ -14,9 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
 """Tests for Google Cloud Storage client."""
-from __future__ import absolute_import
-from __future__ import division
+# pytype: skip-file
 
 import datetime
 import errno
@@ -24,11 +24,8 @@ import io
 import logging
 import os
 import random
-import sys
 import time
 import unittest
-from builtins import object
-from builtins import range
 from email.message import Message
 
 import httplib2
@@ -36,13 +33,21 @@ import mock
 
 # Protect against environments where apitools library is not available.
 # pylint: disable=wrong-import-order, wrong-import-position
+import apache_beam
+from apache_beam.metrics import monitoring_infos
+from apache_beam.metrics.execution import MetricsEnvironment
+from apache_beam.metrics.metricbase import MetricName
+
 try:
-  from apache_beam.io.gcp import gcsio
+  from apache_beam.io.gcp import gcsio, resource_identifiers
   from apache_beam.io.gcp.internal.clients import storage
   from apitools.base.py.exceptions import HttpError
 except ImportError:
   HttpError = None
 # pylint: enable=wrong-import-order, wrong-import-position
+
+DEFAULT_GCP_PROJECT = 'apache-beam-testing'
+DEFAULT_PROJECT_NUMBER = 1
 
 
 class FakeGcsClient(object):
@@ -51,14 +56,14 @@ class FakeGcsClient(object):
 
   def __init__(self):
     self.objects = FakeGcsObjects()
+    self.buckets = FakeGcsBuckets()
     # Referenced in GcsIO.copy_batch() and GcsIO.delete_batch().
     self._http = object()
 
 
 class FakeFile(object):
-
-  def __init__(self, bucket, obj, contents, generation, crc32c=None,
-               last_updated=None):
+  def __init__(
+      self, bucket, obj, contents, generation, crc32c=None, last_updated=None):
     self.bucket = bucket
     self.object = obj
     self.contents = contents
@@ -81,18 +86,35 @@ class FakeFile(object):
         updated=last_updated_datetime)
 
 
-class FakeGcsObjects(object):
+class FakeGcsBuckets(object):
+  def __init__(self):
+    pass
 
+  def get_bucket(self, bucket):
+    return storage.Bucket(name=bucket, projectNumber=DEFAULT_PROJECT_NUMBER)
+
+  def Get(self, get_request):
+    return self.get_bucket(get_request.bucket)
+
+
+class FakeGcsObjects(object):
   def __init__(self):
     self.files = {}
     # Store the last generation used for a given object name.  Note that this
     # has to persist even past the deletion of the object.
     self.last_generation = {}
     self.list_page_tokens = {}
+    self._fail_when_getting_metadata = []
+    self._fail_when_reading = []
 
-  def add_file(self, f):
+  def add_file(
+      self, f, fail_when_getting_metadata=False, fail_when_reading=False):
     self.files[(f.bucket, f.object)] = f
     self.last_generation[(f.bucket, f.object)] = f.generation
+    if fail_when_getting_metadata:
+      self._fail_when_getting_metadata.append(f)
+    if fail_when_reading:
+      self._fail_when_reading.append(f)
 
   def get_file(self, bucket, obj):
     return self.files.get((bucket, obj), None)
@@ -106,29 +128,29 @@ class FakeGcsObjects(object):
   def Get(self, get_request, download=None):  # pylint: disable=invalid-name
     f = self.get_file(get_request.bucket, get_request.object)
     if f is None:
-      # Failing with a HTTP 404 if file does not exist.
+      # Failing with an HTTP 404 if file does not exist.
       raise HttpError({'status': 404}, None, None)
     if download is None:
+      if f in self._fail_when_getting_metadata:
+        raise HttpError({'status': 429}, None, None)
       return f.get_metadata()
     else:
+      if f in self._fail_when_reading:
+        raise HttpError({'status': 429}, None, None)
       stream = download.stream
 
       def get_range_callback(start, end):
-        if not (start >= 0 and end >= start and end < len(f.contents)):
+        if not 0 <= start <= end < len(f.contents):
           raise ValueError(
               'start=%d end=%d len=%s' % (start, end, len(f.contents)))
         stream.write(f.contents[start:end + 1])
 
       download.GetRange = get_range_callback
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def Insert(self, insert_request, upload=None):  # pylint: disable=invalid-name
     assert upload is not None
-    generation = self.get_last_generation(insert_request.bucket,
-                                          insert_request.name) + 1
+    generation = self.get_last_generation(
+        insert_request.bucket, insert_request.name) + 1
     f = FakeFile(insert_request.bucket, insert_request.name, b'', generation)
 
     # Stream data into file.
@@ -149,24 +171,32 @@ class FakeGcsObjects(object):
     if rewrite_request.rewriteToken == self.REWRITE_TOKEN:
       dest_object = storage.Object()
       return storage.RewriteResponse(
-          done=True, objectSize=100, resource=dest_object,
+          done=True,
+          objectSize=100,
+          resource=dest_object,
           totalBytesRewritten=100)
 
-    src_file = self.get_file(rewrite_request.sourceBucket,
-                             rewrite_request.sourceObject)
+    src_file = self.get_file(
+        rewrite_request.sourceBucket, rewrite_request.sourceObject)
     if not src_file:
       raise HttpError(
-          httplib2.Response({'status': '404'}), '404 Not Found',
+          httplib2.Response({'status': '404'}),
+          '404 Not Found',
           'https://fake/url')
-    generation = self.get_last_generation(rewrite_request.destinationBucket,
-                                          rewrite_request.destinationObject) + 1
-    dest_file = FakeFile(rewrite_request.destinationBucket,
-                         rewrite_request.destinationObject, src_file.contents,
-                         generation)
+    generation = self.get_last_generation(
+        rewrite_request.destinationBucket,
+        rewrite_request.destinationObject) + 1
+    dest_file = FakeFile(
+        rewrite_request.destinationBucket,
+        rewrite_request.destinationObject,
+        src_file.contents,
+        generation)
     self.add_file(dest_file)
     time.sleep(10)  # time.sleep and time.time are mocked below.
     return storage.RewriteResponse(
-        done=False, objectSize=100, rewriteToken=self.REWRITE_TOKEN,
+        done=False,
+        objectSize=100,
+        rewriteToken=self.REWRITE_TOKEN,
         totalBytesRewritten=5)
 
   def Delete(self, delete_request):  # pylint: disable=invalid-name
@@ -176,7 +206,8 @@ class FakeGcsObjects(object):
       self.delete_file(delete_request.bucket, delete_request.object)
     else:
       raise HttpError(
-          httplib2.Response({'status': '404'}), '404 Not Found',
+          httplib2.Response({'status': '404'}),
+          '404 Not Found',
           'https://fake/url')
 
   def List(self, list_request):  # pylint: disable=invalid-name
@@ -202,15 +233,14 @@ class FakeGcsObjects(object):
         items=matching_files[range_start:range_start + items_per_page])
     if range_start + items_per_page < len(matching_files):
       next_range_start = range_start + items_per_page
-      next_page_token = '_page_token_%s_%s_%d' % (bucket, prefix,
-                                                  next_range_start)
+      next_page_token = '_page_token_%s_%s_%d' % (
+          bucket, prefix, next_range_start)
       self.list_page_tokens[next_page_token] = next_range_start
       result.nextPageToken = next_page_token
     return result
 
 
 class FakeApiCall(object):
-
   def __init__(self, exception, response):
     self.exception = exception
     self.is_error = exception is not None
@@ -219,7 +249,6 @@ class FakeApiCall(object):
 
 
 class FakeBatchApiRequest(object):
-
   def __init__(self, **unused_kwargs):
     self.operations = []
 
@@ -274,23 +303,63 @@ class TestGCSPathParser(unittest.TestCase):
       self.assertRaises(ValueError, gcsio.parse_gcs_path, path, True)
 
 
-@unittest.skipIf(HttpError is None, 'GCP dependencies are not installed')
-@mock.patch.multiple('time',
-                     time=mock.MagicMock(side_effect=range(100)),
-                     sleep=mock.MagicMock())
-class TestGCSIO(unittest.TestCase):
+class SampleOptions(object):
+  def __init__(self, project, region, kms_key=None):
+    self.project = DEFAULT_GCP_PROJECT
+    self.region = region
+    self.dataflow_kms_key = kms_key
 
-  def _insert_random_file(self, client, path, size, generation=1, crc32c=None,
-                          last_updated=None):
+
+@unittest.skipIf(HttpError is None, 'GCP dependencies are not installed')
+@mock.patch.multiple(
+    'time', time=mock.MagicMock(side_effect=range(100)), sleep=mock.MagicMock())
+class TestGCSIO(unittest.TestCase):
+  def _insert_random_file(
+      self,
+      client,
+      path,
+      size,
+      generation=1,
+      crc32c=None,
+      last_updated=None,
+      fail_when_getting_metadata=False,
+      fail_when_reading=False):
     bucket, name = gcsio.parse_gcs_path(path)
-    f = FakeFile(bucket, name, os.urandom(size), generation, crc32c=crc32c,
-                 last_updated=last_updated)
-    client.objects.add_file(f)
+    f = FakeFile(
+        bucket,
+        name,
+        os.urandom(size),
+        generation,
+        crc32c=crc32c,
+        last_updated=last_updated)
+    client.objects.add_file(f, fail_when_getting_metadata, fail_when_reading)
     return f
 
   def setUp(self):
     self.client = FakeGcsClient()
     self.gcs = gcsio.GcsIO(self.client)
+
+  def test_default_bucket_name(self):
+    self.assertEqual(
+        gcsio.default_gcs_bucket_name(DEFAULT_GCP_PROJECT, "us-central1"),
+        'dataflow-staging-us-central1-77b801c0838aee13391c0d1885860494')
+
+  def test_default_bucket_name_failure(self):
+    self.assertEqual(
+        gcsio.get_or_create_default_gcs_bucket(
+            SampleOptions(
+                DEFAULT_GCP_PROJECT, "us-central1", kms_key="kmskey!")),
+        None)
+
+  def test_num_retries(self):
+    # BEAM-7424: update num_retries accordingly if storage_client is
+    # regenerated.
+    self.assertEqual(gcsio.GcsIO().client.num_retries, 20)
+
+  def test_retry_func(self):
+    # BEAM-7667: update retry_func accordingly if storage_client is
+    # regenerated.
+    self.assertIsNotNone(gcsio.GcsIO().client.retry_func)
 
   def test_exists(self):
     file_name = 'gs://gcsio-test/dummy_file'
@@ -309,7 +378,7 @@ class TestGCSIO(unittest.TestCase):
     self._insert_random_file(self.client, file_name, file_size)
     with self.assertRaises(HttpError) as cm:
       self.gcs.exists(file_name)
-    self.assertEquals(400, cm.exception.status_code)
+    self.assertEqual(400, cm.exception.status_code)
 
   def test_checksum(self):
     file_name = 'gs://gcsio-test/dummy_file'
@@ -332,10 +401,30 @@ class TestGCSIO(unittest.TestCase):
     file_size = 1234
     last_updated = 123456.78
 
-    self._insert_random_file(self.client, file_name, file_size,
-                             last_updated=last_updated)
+    self._insert_random_file(
+        self.client, file_name, file_size, last_updated=last_updated)
     self.assertTrue(self.gcs.exists(file_name))
     self.assertEqual(last_updated, self.gcs.last_updated(file_name))
+
+  def test_file_status(self):
+    file_name = 'gs://gcsio-test/dummy_file'
+    file_size = 1234
+    last_updated = 123456.78
+    checksum = 'deadbeef'
+
+    self._insert_random_file(
+        self.client,
+        file_name,
+        file_size,
+        last_updated=last_updated,
+        crc32c=checksum)
+    file_checksum = self.gcs.checksum(file_name)
+
+    file_status = self.gcs._status(file_name)
+
+    self.assertEqual(file_status['size'], file_size)
+    self.assertEqual(file_status['checksum'], file_checksum)
+    self.assertEqual(file_status['last_updated'], last_updated)
 
   def test_file_mode(self):
     file_name = 'gs://gcsio-test/dummy_mode_file'
@@ -370,6 +459,24 @@ class TestGCSIO(unittest.TestCase):
 
     self.assertFalse(
         gcsio.parse_gcs_path(file_name) in self.client.objects.files)
+
+  @mock.patch(
+      'apache_beam.io.gcp.gcsio.auth.get_service_credentials',
+      wraps=lambda pipeline_options: None)
+  @mock.patch('apache_beam.io.gcp.gcsio.get_new_http')
+  def test_user_agent_passed(self, get_new_http_mock, get_service_creds_mock):
+    client = gcsio.GcsIO()
+    try:
+      client.get_bucket('mabucket')
+    except:  # pylint: disable=bare-except
+      # Ignore errors. The errors come from the fact that we did not mock
+      # the response from the API, so the overall get_bucket call fails
+      # soon after the GCS API is called.
+      pass
+    call = get_new_http_mock.return_value.request.mock_calls[-2]
+    self.assertIn(
+        "apache-beam/%s (GPN:Beam)" % apache_beam.__version__,
+        call[2]['headers']['User-Agent'])
 
   @mock.patch('apache_beam.io.gcp.gcsio.BatchApiRequest')
   def test_delete_batch(self, *unused_args):
@@ -420,9 +527,10 @@ class TestGCSIO(unittest.TestCase):
         gcsio.parse_gcs_path(dest_file_name) in self.client.objects.files)
 
     # Test copy of non-existent files.
-    with self.assertRaisesRegexp(HttpError, r'Not Found'):
-      self.gcs.copy('gs://gcsio-test/non-existent',
-                    'gs://gcsio-test/non-existent-destination')
+    with self.assertRaisesRegex(HttpError, r'Not Found'):
+      self.gcs.copy(
+          'gs://gcsio-test/non-existent',
+          'gs://gcsio-test/non-existent-destination')
 
   @mock.patch('apache_beam.io.gcp.gcsio.BatchApiRequest')
   def test_copy_batch(self, *unused_args):
@@ -432,10 +540,9 @@ class TestGCSIO(unittest.TestCase):
     file_size = 1024
     num_files = 10
 
-    result = self.gcs.copy_batch(
-        [(from_name_pattern % i, to_name_pattern % i)
-         for i in range(num_files)],
-        dest_kms_key_name='kms_key')
+    result = self.gcs.copy_batch([(from_name_pattern % i, to_name_pattern % i)
+                                  for i in range(num_files)],
+                                 dest_kms_key_name='kms_key')
     self.assertTrue(result)
     for i, (src, dest, exception) in enumerate(result):
       self.assertEqual(src, from_name_pattern % i)
@@ -532,10 +639,6 @@ class TestGCSIO(unittest.TestCase):
           f.read(end - start + 1), random_file.contents[start:end + 1])
       self.assertEqual(f.tell(), end + 1)
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def test_file_iterator(self):
     file_name = 'gs://gcsio-test/iterating_file'
     lines = []
@@ -557,10 +660,6 @@ class TestGCSIO(unittest.TestCase):
 
     self.assertEqual(read_lines, line_count)
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def test_file_read_line(self):
     file_name = 'gs://gcsio-test/read_line_file'
     lines = []
@@ -613,10 +712,6 @@ class TestGCSIO(unittest.TestCase):
       f.seek(start)
       self.assertEqual(f.readline(), lines[line_index][chars_left:])
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def test_file_write(self):
     file_name = 'gs://gcsio-test/write_file'
     file_size = 5 * 1024 * 1024 + 2000
@@ -631,10 +726,6 @@ class TestGCSIO(unittest.TestCase):
     self.assertEqual(
         self.client.objects.get_file(bucket, name).contents, contents)
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def test_file_close(self):
     file_name = 'gs://gcsio-test/close_file'
     file_size = 5 * 1024 * 1024 + 2000
@@ -648,10 +739,6 @@ class TestGCSIO(unittest.TestCase):
     self.assertEqual(
         self.client.objects.get_file(bucket, name).contents, contents)
 
-  @unittest.skipIf(sys.version_info[0] == 3 and
-                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
-                   'This test still needs to be fixed on Python 3'
-                   'TODO: BEAM-5627')
   def test_file_flush(self):
     file_name = 'gs://gcsio-test/flush_file'
     file_size = 5 * 1024 * 1024 + 2000
@@ -700,16 +787,20 @@ class TestGCSIO(unittest.TestCase):
       file_name = 'gs://%s/%s' % (bucket_name, object_name)
       self._insert_random_file(self.client, file_name, size)
     test_cases = [
-        ('gs://gcsio-test/c', [
-            ('cow/cat/fish', 2),
-            ('cow/cat/blubber', 3),
-            ('cow/dog/blubber', 4),
-        ]),
-        ('gs://gcsio-test/cow/', [
-            ('cow/cat/fish', 2),
-            ('cow/cat/blubber', 3),
-            ('cow/dog/blubber', 4),
-        ]),
+        (
+            'gs://gcsio-test/c',
+            [
+                ('cow/cat/fish', 2),
+                ('cow/cat/blubber', 3),
+                ('cow/dog/blubber', 4),
+            ]),
+        (
+            'gs://gcsio-test/cow/',
+            [
+                ('cow/cat/fish', 2),
+                ('cow/cat/blubber', 3),
+                ('cow/dog/blubber', 4),
+            ]),
         ('gs://gcsio-test/cow/cat/fish', [
             ('cow/cat/fish', 2),
         ]),
@@ -726,10 +817,7 @@ class TestGCSIO(unittest.TestCase):
     # and does not corrupt '\r\n' during uploads (the patch to apitools in
     # Python 3 is applied in io/gcp/__init__.py).
     from apitools.base.py.transfer import email_generator
-    if sys.version_info[0] == 3:
-      generator_cls = email_generator.BytesGenerator
-    else:
-      generator_cls = email_generator.Generator
+    generator_cls = email_generator.BytesGenerator
     output_buffer = io.BytesIO()
     generator = generator_cls(output_buffer)
     test_msg = 'a\nb\r\nc\n\r\n\n\nd'
@@ -737,6 +825,127 @@ class TestGCSIO(unittest.TestCase):
     message.set_payload(test_msg)
     generator._handle_text(message)
     self.assertEqual(test_msg.encode('ascii'), output_buffer.getvalue())
+
+  def test_downloader_monitoring_info(self):
+    # Clear the process wide metric container.
+    MetricsEnvironment.process_wide_container().reset()
+
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    file_size = 5 * 1024 * 1024 + 100
+    random_file = self._insert_random_file(self.client, file_name, file_size)
+    self.gcs.open(file_name, 'r')
+
+    resource = resource_identifiers.GoogleCloudStorageBucket(random_file.bucket)
+    labels = {
+        monitoring_infos.SERVICE_LABEL: 'Storage',
+        monitoring_infos.METHOD_LABEL: 'Objects.get',
+        monitoring_infos.RESOURCE_LABEL: resource,
+        monitoring_infos.GCS_BUCKET_LABEL: random_file.bucket,
+        monitoring_infos.GCS_PROJECT_ID_LABEL: str(DEFAULT_PROJECT_NUMBER),
+        monitoring_infos.STATUS_LABEL: 'ok'
+    }
+
+    metric_name = MetricName(
+        None, None, urn=monitoring_infos.API_REQUEST_COUNT_URN, labels=labels)
+    metric_value = MetricsEnvironment.process_wide_container().get_counter(
+        metric_name).get_cumulative()
+
+    self.assertEqual(metric_value, 2)
+
+  @mock.patch.object(FakeGcsBuckets, 'Get')
+  def test_downloader_fail_to_get_project_number(self, mock_get):
+    # Raising an error when listing GCS Bucket so that project number fails to
+    # be retrieved.
+    mock_get.side_effect = HttpError({'status': 403}, None, None)
+    # Clear the process wide metric container.
+    MetricsEnvironment.process_wide_container().reset()
+
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    file_size = 5 * 1024 * 1024 + 100
+    random_file = self._insert_random_file(self.client, file_name, file_size)
+    self.gcs.open(file_name, 'r')
+
+    resource = resource_identifiers.GoogleCloudStorageBucket(random_file.bucket)
+    labels = {
+        monitoring_infos.SERVICE_LABEL: 'Storage',
+        monitoring_infos.METHOD_LABEL: 'Objects.get',
+        monitoring_infos.RESOURCE_LABEL: resource,
+        monitoring_infos.GCS_BUCKET_LABEL: random_file.bucket,
+        monitoring_infos.GCS_PROJECT_ID_LABEL: str(DEFAULT_PROJECT_NUMBER),
+        monitoring_infos.STATUS_LABEL: 'ok'
+    }
+
+    metric_name = MetricName(
+        None, None, urn=monitoring_infos.API_REQUEST_COUNT_URN, labels=labels)
+    metric_value = MetricsEnvironment.process_wide_container().get_counter(
+        metric_name).get_cumulative()
+
+    self.assertEqual(metric_value, 0)
+
+    labels_without_project_id = {
+        monitoring_infos.SERVICE_LABEL: 'Storage',
+        monitoring_infos.METHOD_LABEL: 'Objects.get',
+        monitoring_infos.RESOURCE_LABEL: resource,
+        monitoring_infos.GCS_BUCKET_LABEL: random_file.bucket,
+        monitoring_infos.STATUS_LABEL: 'ok'
+    }
+    metric_name = MetricName(
+        None,
+        None,
+        urn=monitoring_infos.API_REQUEST_COUNT_URN,
+        labels=labels_without_project_id)
+    metric_value = MetricsEnvironment.process_wide_container().get_counter(
+        metric_name).get_cumulative()
+
+    self.assertEqual(metric_value, 2)
+
+  def test_downloader_fail_non_existent_object(self):
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    with self.assertRaises(IOError):
+      self.gcs.open(file_name, 'r')
+
+  def test_downloader_fail_when_getting_metadata(self):
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    file_size = 5 * 1024 * 1024 + 100
+    self._insert_random_file(
+        self.client, file_name, file_size, fail_when_getting_metadata=True)
+    with self.assertRaises(HttpError):
+      self.gcs.open(file_name, 'r')
+
+  def test_downloader_fail_when_reading(self):
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    file_size = 5 * 1024 * 1024 + 100
+    self._insert_random_file(
+        self.client, file_name, file_size, fail_when_reading=True)
+    with self.assertRaises(HttpError):
+      self.gcs.open(file_name, 'r')
+
+  def test_uploader_monitoring_info(self):
+    # Clear the process wide metric container.
+    MetricsEnvironment.process_wide_container().reset()
+
+    file_name = 'gs://gcsio-metrics-test/dummy_mode_file'
+    file_size = 5 * 1024 * 1024 + 100
+    random_file = self._insert_random_file(self.client, file_name, file_size)
+    f = self.gcs.open(file_name, 'w')
+
+    resource = resource_identifiers.GoogleCloudStorageBucket(random_file.bucket)
+    labels = {
+        monitoring_infos.SERVICE_LABEL: 'Storage',
+        monitoring_infos.METHOD_LABEL: 'Objects.insert',
+        monitoring_infos.RESOURCE_LABEL: resource,
+        monitoring_infos.GCS_BUCKET_LABEL: random_file.bucket,
+        monitoring_infos.GCS_PROJECT_ID_LABEL: str(DEFAULT_PROJECT_NUMBER),
+        monitoring_infos.STATUS_LABEL: 'ok'
+    }
+
+    f.close()
+    metric_name = MetricName(
+        None, None, urn=monitoring_infos.API_REQUEST_COUNT_URN, labels=labels)
+    metric_value = MetricsEnvironment.process_wide_container().get_counter(
+        metric_name).get_cumulative()
+
+    self.assertEqual(metric_value, 1)
 
 
 if __name__ == '__main__':

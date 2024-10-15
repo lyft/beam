@@ -20,18 +20,20 @@ package org.apache.beam.sdk.loadtests;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.beam.sdk.util.CoderUtils.encodeToByteArray;
 
+import com.amazonaws.regions.Regions;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.beam.sdk.Pipeline;
-import org.apache.beam.sdk.coders.ByteArrayCoder;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
-import org.apache.beam.sdk.coders.KvCoder;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Read;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.io.kafka.KafkaIO;
+import org.apache.beam.sdk.io.kinesis.KinesisIO;
 import org.apache.beam.sdk.io.synthetic.SyntheticBoundedSource;
 import org.apache.beam.sdk.io.synthetic.SyntheticOptions;
 import org.apache.beam.sdk.io.synthetic.SyntheticSourceOptions;
@@ -47,26 +49,35 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.kafka.common.serialization.StringSerializer;
 
 /**
- * Pipeline that generates synthetic data and publishes it in PubSub topic.
+ * Pipeline that generates synthetic data and publishes it in a PubSub or Kafka topic or in a
+ * Kinesis stream.
  *
  * <p>To run it manually, use the following command:
  *
  * <pre>
- *  ./gradlew :beam-sdks-java-load-tests:run -PloadTest.args='
+ *  ./gradlew :sdks:java:testing:load-tests:run -PloadTest.args='
  *    --pubSubTopic=TOPIC_NAME
  *    --kafkaBootstrapServerAddress=SERVER_ADDRESS
  *    --kafkaTopic=KAFKA_TOPIC_NAME
- *    --sourceOptions={"numRecords":1000,...}'
+ *    --sourceOptions={"numRecords":1000,...}
+ *    --kinesisStreamName=KINESIS_STREAM_NAME
+ *    --kinesisPartitionKey=KINESIS_PARTITION_KEY
+ *    --kinesisAwsKey=KINESIS_AWS_KEY
+ *    --kinesisAwsSecret=KINESIS_AWS_SECRET
+ *    --kinesisAwsRegion=KINESIS_AWS_REGION'
  *    -PloadTest.mainClass="org.apache.beam.sdk.loadtests.SyntheticDataPublisher"
  *  </pre>
  *
- * <p>If parameters related to a specific sink are provided (Kafka or PubSub), the pipeline writes
- * to the sink. Writing to both sinks is also acceptable.
+ * <p>If parameters related to a specific sink are provided (Kafka, PubSub or Kinesis), the pipeline
+ * writes to the sink. Writing to more than one sink is also acceptable.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SyntheticDataPublisher {
 
-  private static final KvCoder<byte[], byte[]> RECORD_CODER =
-      KvCoder.of(ByteArrayCoder.of(), ByteArrayCoder.of());
+  private static final Coder RECORD_CODER = StringUtf8Coder.of();
 
   private static Options options;
 
@@ -93,6 +104,31 @@ public class SyntheticDataPublisher {
     String getKafkaTopic();
 
     void setKafkaTopic(String topic);
+
+    @Description("Kinesis partition key")
+    String getKinesisPartitionKey();
+
+    void setKinesisPartitionKey(String partitionKey);
+
+    @Description("Kinesis partition name")
+    String getKinesisStreamName();
+
+    void setKinesisStreamName(String kinesisStreamName);
+
+    @Description("AWS secret for Kinesis")
+    String getKinesisAwsSecret();
+
+    void setKinesisAwsSecret(String kinesisAwsSecret);
+
+    @Description("AWS key for Kinesis")
+    String getKinesisAwsKey();
+
+    void setKinesisAwsKey(String kinesisAwsKey);
+
+    @Description("AWS region for Kinesis")
+    String getKinesisAwsRegion();
+
+    void setKinesisAwsRegion(String kinesisAwsRegion);
   }
 
   public static void main(String[] args) throws IOException {
@@ -111,7 +147,18 @@ public class SyntheticDataPublisher {
     if (options.getPubSubTopic() != null) {
       writeToPubSub(syntheticData);
     }
+    if (allKinesisOptionsConfigured()) {
+      writeToKinesis(syntheticData);
+    }
     pipeline.run().waitUntilFinish();
+  }
+
+  private static boolean allKinesisOptionsConfigured() {
+    return options.getKinesisAwsKey() != null
+        && options.getKinesisAwsRegion() != null
+        && options.getKinesisAwsSecret() != null
+        && options.getKinesisPartitionKey() != null
+        && options.getKinesisStreamName() != null;
   }
 
   private static void writeToPubSub(PCollection<KV<byte[], byte[]>> collection) {
@@ -132,11 +179,32 @@ public class SyntheticDataPublisher {
                 .values());
   }
 
+  private static void writeToKinesis(PCollection<KV<byte[], byte[]>> collection) {
+    collection
+        .apply("Map to byte array for Kinesis", MapElements.via(new MapKVToByteArray()))
+        .apply(
+            "Write to Kinesis",
+            KinesisIO.write()
+                .withStreamName(options.getKinesisStreamName())
+                .withPartitionKey(options.getKinesisPartitionKey())
+                .withAWSClientsProvider(
+                    options.getKinesisAwsKey(),
+                    options.getKinesisAwsSecret(),
+                    Regions.fromName(options.getKinesisAwsRegion())));
+  }
+
   private static class MapKVToString extends SimpleFunction<KV<byte[], byte[]>, String> {
     @Override
     public String apply(KV<byte[], byte[]> input) {
       return String.format(
           "{%s,%s}", Arrays.toString(input.getKey()), Arrays.toString(input.getValue()));
+    }
+  }
+
+  private static class MapKVToByteArray extends SimpleFunction<KV<byte[], byte[]>, byte[]> {
+    @Override
+    public byte[] apply(KV<byte[], byte[]> input) {
+      return encodeInputElement(input);
     }
   }
 
@@ -150,7 +218,7 @@ public class SyntheticDataPublisher {
 
   private static byte[] encodeInputElement(KV<byte[], byte[]> input) {
     try {
-      return encodeToByteArray(RECORD_CODER, input);
+      return encodeToByteArray(RECORD_CODER, new String(input.getValue(), UTF_8));
     } catch (CoderException e) {
       throw new RuntimeException(String.format("Couldn't encode element. Exception: %s", e));
     }

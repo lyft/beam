@@ -21,7 +21,7 @@ import com.amazonaws.client.builder.AwsClientBuilder;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import org.apache.beam.sdk.io.aws.options.S3ClientBuilderFactory;
 import org.apache.beam.sdk.io.aws.options.S3Options;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Strings;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Strings;
 
 /**
  * Construct AmazonS3ClientBuilder with default values of S3 client properties like path style
@@ -38,13 +38,13 @@ public class DefaultS3ClientBuilderFactory implements S3ClientBuilderFactory {
       builder = builder.withClientConfiguration(s3Options.getClientConfiguration());
     }
 
-    if (Strings.isNullOrEmpty(s3Options.getAwsServiceEndpoint())) {
-      builder = builder.withRegion(s3Options.getAwsRegion());
-    } else {
+    if (!Strings.isNullOrEmpty(s3Options.getAwsServiceEndpoint())) {
       builder =
           builder.withEndpointConfiguration(
               new AwsClientBuilder.EndpointConfiguration(
                   s3Options.getAwsServiceEndpoint(), s3Options.getAwsRegion()));
+    } else if (!Strings.isNullOrEmpty(s3Options.getAwsRegion())) {
+      builder = builder.withRegion(s3Options.getAwsRegion());
     }
     return builder;
   }

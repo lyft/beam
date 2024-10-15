@@ -27,13 +27,17 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.beam.runners.dataflow.worker.counters.Counter.AtomicCounterValue;
 import org.apache.beam.runners.dataflow.worker.counters.Counter.CounterUpdateExtractor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.math.LongMath;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.util.concurrent.AtomicDouble;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.math.LongMath;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.util.concurrent.AtomicDouble;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Factory interface for creating counters. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class CounterFactory {
 
   protected <InputT, AccumT> Counter<InputT, AccumT> createCounter(
@@ -709,7 +713,7 @@ public class CounterFactory {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       if (obj == this) {
         return true;
       } else if (!(obj instanceof LongCounterMean)) {
@@ -764,7 +768,7 @@ public class CounterFactory {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       if (obj == this) {
         return true;
       } else if (!(obj instanceof IntegerCounterMean)) {
@@ -819,7 +823,7 @@ public class CounterFactory {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
       if (obj == this) {
         return true;
       } else if (!(obj instanceof DoubleCounterMean)) {

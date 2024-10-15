@@ -17,7 +17,7 @@
  */
 package org.apache.beam.sdk.io.mqtt;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.value.AutoValue;
 import java.io.IOException;
@@ -30,8 +30,6 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.SerializableCoder;
@@ -44,7 +42,8 @@ import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.fusesource.mqtt.client.BlockingConnection;
 import org.fusesource.mqtt.client.MQTT;
 import org.fusesource.mqtt.client.Message;
@@ -99,10 +98,13 @@ import org.slf4j.LoggerFactory;
  *
  * }</pre>
  */
-@Experimental(Experimental.Kind.SOURCE_SINK)
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class MqttIO {
 
   private static final Logger LOG = LoggerFactory.getLogger(MqttIO.class);
+  private static final int MQTT_3_1_MAX_CLIENT_ID_LENGTH = 23;
 
   public static Read read() {
     return new AutoValue_MqttIO_Read.Builder()
@@ -121,20 +123,15 @@ public class MqttIO {
   @AutoValue
   public abstract static class ConnectionConfiguration implements Serializable {
 
-    @Nullable
     abstract String getServerUri();
 
-    @Nullable
     abstract String getTopic();
 
-    @Nullable
-    abstract String getClientId();
+    abstract @Nullable String getClientId();
 
-    @Nullable
-    abstract String getUsername();
+    abstract @Nullable String getUsername();
 
-    @Nullable
-    abstract String getPassword();
+    abstract @Nullable String getPassword();
 
     abstract Builder builder();
 
@@ -154,7 +151,7 @@ public class MqttIO {
     }
 
     /**
-     * Describe a connection configuration to the MQTT broker. This method creates an unique random
+     * Describe a connection configuration to the MQTT broker. This method creates a unique random
      * MQTT client ID.
      *
      * @param serverUri The MQTT broker URI.
@@ -170,30 +167,31 @@ public class MqttIO {
           .build();
     }
 
-    /**
-     * Describe a connection configuration to the MQTT broker.
-     *
-     * @param serverUri The MQTT broker URI.
-     * @param topic The MQTT getTopic pattern.
-     * @param clientId A client ID prefix, used to construct an unique client ID.
-     * @return A connection configuration to the MQTT broker.
-     */
-    public static ConnectionConfiguration create(String serverUri, String topic, String clientId) {
+    /** Set up the MQTT broker URI. */
+    public ConnectionConfiguration withServerUri(String serverUri) {
       checkArgument(serverUri != null, "serverUri can not be null");
+      return builder().setServerUri(serverUri).build();
+    }
+
+    /** Set up the MQTT getTopic pattern. */
+    public ConnectionConfiguration withTopic(String topic) {
       checkArgument(topic != null, "topic can not be null");
+      return builder().setTopic(topic).build();
+    }
+
+    /** Set up the client ID prefix, which is used to construct a unique client ID. */
+    public ConnectionConfiguration withClientId(String clientId) {
       checkArgument(clientId != null, "clientId can not be null");
-      return new AutoValue_MqttIO_ConnectionConfiguration.Builder()
-          .setServerUri(serverUri)
-          .setTopic(topic)
-          .setClientId(clientId)
-          .build();
+      return builder().setClientId(clientId).build();
     }
 
     public ConnectionConfiguration withUsername(String username) {
+      checkArgument(username != null, "username can not be null");
       return builder().setUsername(username).build();
     }
 
     public ConnectionConfiguration withPassword(String password) {
+      checkArgument(password != null, "password can not be null");
       return builder().setPassword(password).build();
     }
 
@@ -215,10 +213,14 @@ public class MqttIO {
       }
       if (getClientId() != null) {
         String clientId = getClientId() + "-" + UUID.randomUUID().toString();
+        clientId =
+            clientId.substring(0, Math.min(clientId.length(), MQTT_3_1_MAX_CLIENT_ID_LENGTH));
         LOG.debug("MQTT client id set to {}", clientId);
         client.setClientId(clientId);
       } else {
         String clientId = UUID.randomUUID().toString();
+        clientId =
+            clientId.substring(0, Math.min(clientId.length(), MQTT_3_1_MAX_CLIENT_ID_LENGTH));
         LOG.debug("MQTT client id set to random value {}", clientId);
         client.setClientId(clientId);
       }
@@ -230,13 +232,11 @@ public class MqttIO {
   @AutoValue
   public abstract static class Read extends PTransform<PBegin, PCollection<byte[]>> {
 
-    @Nullable
-    abstract ConnectionConfiguration connectionConfiguration();
+    abstract @Nullable ConnectionConfiguration connectionConfiguration();
 
     abstract long maxNumRecords();
 
-    @Nullable
-    abstract Duration maxReadTime();
+    abstract @Nullable Duration maxReadTime();
 
     abstract Builder builder();
 
@@ -345,7 +345,7 @@ public class MqttIO {
     }
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
       if (other instanceof MqttCheckpointMark) {
         MqttCheckpointMark that = (MqttCheckpointMark) other;
         return Objects.equals(this.clientId, that.clientId)
@@ -506,8 +506,7 @@ public class MqttIO {
   @AutoValue
   public abstract static class Write extends PTransform<PCollection<byte[]>, PDone> {
 
-    @Nullable
-    abstract ConnectionConfiguration connectionConfiguration();
+    abstract @Nullable ConnectionConfiguration connectionConfiguration();
 
     abstract boolean retained();
 

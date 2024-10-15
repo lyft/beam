@@ -17,29 +17,34 @@
  */
 package org.apache.beam.sdk.io.clickhouse;
 
-import com.github.dockerjava.api.command.CreateContainerCmd;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.ClickHouseContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 
 /** Base setup for ClickHouse containers. */
-@SuppressWarnings("unchecked")
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "unchecked",
+})
 public class BaseClickHouseTest {
 
+  public static ClickHouseContainer clickHouse;
   public static Network network;
   public static GenericContainer zookeeper;
-  public static ClickHouseContainer clickHouse;
+  private static final Logger LOG = LoggerFactory.getLogger(BaseClickHouseTest.class);
 
   @BeforeClass
-  public static void setup() {
-    // network sharing doesn't work with ClassRule
+  public static void setup() throws IOException, InterruptedException {
     network = Network.newNetwork();
 
     zookeeper =
@@ -48,36 +53,27 @@ public class BaseClickHouseTest {
             .withExposedPorts(2181)
             .withNetwork(network)
             .withNetworkAliases("zookeeper");
+
+    // so far zookeeper container always starts successfully, so no extra retries
     zookeeper.start();
 
     clickHouse =
-        (ClickHouseContainer)
-            new ClickHouseContainer("yandex/clickhouse-server:19.1")
-                .withStartupAttempts(10)
-                .withCreateContainerCmdModifier(
-                    // type inference for `(CreateContainerCmd) -> cmd.` doesn't work
-                    cmd ->
-                        ((CreateContainerCmd) cmd)
-                            .withMemory(256 * 1024 * 1024L)
-                            .withMemorySwap(4L * 1024 * 1024 * 1024L))
-                .withNetwork(network)
-                .withClasspathResourceMapping(
-                    "config.d/zookeeper_default.xml",
-                    "/etc/clickhouse-server/config.d/zookeeper_default.xml",
-                    BindMode.READ_ONLY);
+        new ClickHouseContainer("clickhouse/clickhouse-server:22.9")
+            .withStartupAttempts(10)
+            .withNetwork(network)
+            .withClasspathResourceMapping(
+                "config.d/zookeeper_default.xml",
+                "/etc/clickhouse-server/config.d/zookeeper_default.xml",
+                BindMode.READ_ONLY);
+    ;
     clickHouse.start();
+    LOG.info("Start Clickhouse");
   }
 
   @AfterClass
   public static void tearDown() {
     clickHouse.close();
     zookeeper.close();
-
-    try {
-      network.close();
-    } catch (Exception e) {
-      // ignore
-    }
   }
 
   boolean executeSql(String sql) throws SQLException {
@@ -89,7 +85,7 @@ public class BaseClickHouseTest {
 
   ResultSet executeQuery(String sql) throws SQLException {
     try (Connection connection = clickHouse.createConnection("");
-        Statement statement = connection.createStatement(); ) {
+        Statement statement = connection.createStatement()) {
       return statement.executeQuery(sql);
     }
   }

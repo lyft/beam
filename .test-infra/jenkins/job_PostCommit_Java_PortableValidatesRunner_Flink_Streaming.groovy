@@ -17,27 +17,34 @@
  */
 
 import CommonJobProperties as commonJobProperties
+import CommonTestProperties
 import PostcommitJobBuilder
 
 // This job runs the suite of ValidatesRunner tests against the Flink runner.
 PostcommitJobBuilder.postCommitJob('beam_PostCommit_Java_PVR_Flink_Streaming',
-  'Run Java Flink PortableValidatesRunner Streaming', 'Java Flink PortableValidatesRunner Streaming Tests', this) {
-  description('Runs the Java PortableValidatesRunner suite on the Flink runner.')
+    'Run Java Flink PortableValidatesRunner Streaming', 'Java Flink PortableValidatesRunner Streaming Tests', this) {
+      description('Runs the Java PortableValidatesRunner suite on the Flink runner.')
 
-  // Set common parameters.
-  commonJobProperties.setTopLevelMainJobProperties(delegate)
+      // Set common parameters.
+      commonJobProperties.setTopLevelMainJobProperties(delegate)
 
-  // Publish all test results to Jenkins
-  publishers {
-    archiveJunit('**/build/test-results/**/*.xml')
-  }
+      // Publish all test results to Jenkins
+      publishers {
+        archiveJunit('**/build/test-results/**/*.xml')
+      }
 
-  // Gradle goals for this job.
-  steps {
-    gradle {
-      rootBuildScriptDir(commonJobProperties.checkoutDir)
-      tasks(':beam-runners-flink_2.11-job-server:validatesPortableRunnerStreaming')
-      commonJobProperties.setGradleSwitches(delegate)
+      // Gradle goals for this job.
+      steps {
+        gradle {
+          rootBuildScriptDir(commonJobProperties.checkoutDir)
+          tasks(":runners:flink:${CommonTestProperties.getFlinkVersion()}:job-server:validatesPortableRunnerStreaming")
+          commonJobProperties.setGradleSwitches(delegate)
+        }
+        // TODO(https://github.com/apache/beam/issues/20668): Enable this test suite once we have support.
+        //gradle {
+        //  rootBuildScriptDir(commonJobProperties.checkoutDir)
+        //  tasks(":runners:flink:${CommonTestProperties.getFlinkVersion()}:job-server:validatesPortableRunnerStreamingCheckpoint")
+        //  commonJobProperties.setGradleSwitches(delegate)
+        //}
+      }
     }
-  }
-}

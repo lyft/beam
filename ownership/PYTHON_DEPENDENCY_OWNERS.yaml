@@ -33,12 +33,6 @@ deps:
   dill:
     owners: robertwb
 
-  future:
-    owners:
-
-  futures:
-    owners:
-
   google-apitools:
     owners:
 
@@ -54,9 +48,6 @@ deps:
   google-cloud-pubsub:
     owners: markflyhigh
 
-  googledatastore:
-    owners:
-
   grpcio:
     owners: robertwb
 
@@ -69,11 +60,8 @@ deps:
   mock:
     owners:
 
-  oauth2client:
-    owners:
-
-  proto-google-cloud-datastore-v1:
-    owners:
+  pymongo:
+    owners: yichi
 
   proto-google-cloud-pubsub-v1:
     owners:
@@ -95,6 +83,15 @@ deps:
 
   typing:
     owners: robertwb
+
+  pandas:
+    owners: bhulette, robertwb
+
+  pyarrow:
+    owners: bhulette
+
+  numpy:
+    owners: bhulette
 
 # No dependency added below this line.
 ...

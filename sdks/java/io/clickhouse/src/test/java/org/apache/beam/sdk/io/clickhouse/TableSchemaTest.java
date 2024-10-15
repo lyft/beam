@@ -19,8 +19,10 @@ package org.apache.beam.sdk.io.clickhouse;
 
 import static org.junit.Assert.assertEquals;
 
+import java.util.Map;
 import org.apache.beam.sdk.io.clickhouse.TableSchema.ColumnType;
 import org.apache.beam.sdk.schemas.Schema;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
 import org.junit.Test;
 
 /** Tests for {@link TableSchema}. */
@@ -97,6 +99,55 @@ public class TableSchemaTest {
   }
 
   @Test
+  public void testParseEnum8() {
+    Map<String, Integer> enumValues =
+        ImmutableMap.of(
+            "a", -1,
+            "b", 0,
+            "c", 42);
+
+    assertEquals(
+        ColumnType.enum8(enumValues), ColumnType.parse("Enum8('a' = -1, 'b' = 0, 'c' = 42)"));
+  }
+
+  @Test
+  public void testParseEnum16() {
+    Map<String, Integer> enumValues =
+        ImmutableMap.of(
+            "a", -1,
+            "b", 0,
+            "c", 42);
+
+    assertEquals(
+        ColumnType.enum16(enumValues), ColumnType.parse("Enum16('a' = -1, 'b' = 0, 'c' = 42)"));
+  }
+
+  @Test
+  public void testParseNullableEnum16() {
+    Map<String, Integer> enumValues =
+        ImmutableMap.of(
+            "a", -1,
+            "b", 0,
+            "c", 42);
+
+    assertEquals(
+        ColumnType.enum16(enumValues).withNullable(true),
+        ColumnType.parse("Nullable(Enum16('a' = -1, 'b' = 0, 'c' = 42))"));
+  }
+
+  @Test
+  public void testParseFixedString() {
+    assertEquals(ColumnType.fixedString(16), ColumnType.parse("FixedString(16)"));
+  }
+
+  @Test
+  public void testParseNullableFixedString() {
+    assertEquals(
+        ColumnType.fixedString(16).withNullable(true),
+        ColumnType.parse("Nullable(FixedString(16))"));
+  }
+
+  @Test
   public void testParseNullableInt32() {
     assertEquals(
         ColumnType.nullable(TableSchema.TypeName.INT32), ColumnType.parse("Nullable(Int32)"));
@@ -118,13 +169,12 @@ public class TableSchemaTest {
 
   @Test
   public void testParseDefaultExpressionString() {
-    assertEquals(
-        "abc", ColumnType.parseDefaultExpression(ColumnType.STRING, "CAST('abc' AS String)"));
+    assertEquals("abc", ColumnType.parseDefaultExpression(ColumnType.STRING, "abc"));
   }
 
   @Test
   public void testParseDefaultExpressionInt64() {
-    assertEquals(-1L, ColumnType.parseDefaultExpression(ColumnType.INT64, "CAST(-1 AS Int64)"));
+    assertEquals(-1L, ColumnType.parseDefaultExpression(ColumnType.INT64, "-1"));
   }
 
   @Test

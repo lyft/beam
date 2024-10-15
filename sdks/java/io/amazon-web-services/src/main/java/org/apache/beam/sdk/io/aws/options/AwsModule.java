@@ -17,22 +17,24 @@
  */
 package org.apache.beam.sdk.io.aws.options;
 
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
+
 import com.amazonaws.ClientConfiguration;
+import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.BasicSessionCredentials;
 import com.amazonaws.auth.ClasspathPropertiesFileCredentialsProvider;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper;
 import com.amazonaws.auth.EnvironmentVariableCredentialsProvider;
 import com.amazonaws.auth.PropertiesFileCredentialsProvider;
+import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
 import com.amazonaws.auth.SystemPropertiesCredentialsProvider;
 import com.amazonaws.auth.profile.ProfileCredentialsProvider;
 import com.amazonaws.services.s3.model.SSEAwsKeyManagementParams;
 import com.amazonaws.services.s3.model.SSECustomerKey;
-import com.fasterxml.jackson.annotation.JsonAutoDetect;
-import com.fasterxml.jackson.annotation.JsonAutoDetect.Visibility;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
@@ -49,9 +51,9 @@ import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.auto.service.AutoService;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.util.Map;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
+import org.apache.beam.repackaged.core.org.apache.commons.lang3.reflect.FieldUtils;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
 
 /**
  * A Jackson {@link Module} that registers a {@link JsonSerializer} and {@link JsonDeserializer} for
@@ -65,14 +67,29 @@ public class AwsModule extends SimpleModule {
 
   private static final String AWS_ACCESS_KEY_ID = "awsAccessKeyId";
   private static final String AWS_SECRET_KEY = "awsSecretKey";
+  private static final String SESSION_TOKEN = "sessionToken";
   private static final String CREDENTIALS_FILE_PATH = "credentialsFilePath";
+  public static final String CLIENT_EXECUTION_TIMEOUT = "clientExecutionTimeout";
+  public static final String CONNECTION_MAX_IDLE_TIME = "connectionMaxIdleTime";
+  public static final String CONNECTION_TIMEOUT = "connectionTimeout";
+  public static final String CONNECTION_TIME_TO_LIVE = "connectionTimeToLive";
+  public static final String MAX_CONNECTIONS = "maxConnections";
+  public static final String REQUEST_TIMEOUT = "requestTimeout";
+  public static final String SOCKET_TIMEOUT = "socketTimeout";
+  public static final String PROXY_HOST = "proxyHost";
+  public static final String PROXY_PORT = "proxyPort";
+  public static final String PROXY_USERNAME = "proxyUsername";
+  public static final String PROXY_PASSWORD = "proxyPassword";
+  private static final String ROLE_ARN = "roleArn";
+  private static final String ROLE_SESSION_NAME = "roleSessionName";
 
+  @SuppressWarnings({"nullness"})
   public AwsModule() {
     super("AwsModule");
     setMixInAnnotation(AWSCredentialsProvider.class, AWSCredentialsProviderMixin.class);
     setMixInAnnotation(SSECustomerKey.class, SSECustomerKeyMixin.class);
     setMixInAnnotation(SSEAwsKeyManagementParams.class, SSEAwsKeyManagementParamsMixin.class);
-    setMixInAnnotation(ClientConfiguration.class, ClientConfigurationMixin.class);
+    setMixInAnnotation(ClientConfiguration.class, AwsHttpClientConfigurationMixin.class);
   }
 
   /** A mixin to add Jackson annotations to {@link AWSCredentialsProvider}. */
@@ -95,37 +112,62 @@ public class AwsModule extends SimpleModule {
         JsonParser jsonParser, DeserializationContext context, TypeDeserializer typeDeserializer)
         throws IOException {
       Map<String, String> asMap =
-          jsonParser.readValueAs(new TypeReference<Map<String, String>>() {});
+          checkNotNull(
+              jsonParser.readValueAs(new TypeReference<Map<String, String>>() {}),
+              "Serialized AWS credentials provider is null");
 
       String typeNameKey = typeDeserializer.getPropertyName();
-      String typeName = asMap.get(typeNameKey);
-      if (typeName == null) {
-        throw new IOException(
-            String.format("AWS credentials provider type name key '%s' not found", typeNameKey));
-      }
+      String typeName = getNotNull(asMap, typeNameKey, "unknown");
 
-      if (typeName.equals(AWSStaticCredentialsProvider.class.getSimpleName())) {
-        return new AWSStaticCredentialsProvider(
-            new BasicAWSCredentials(asMap.get(AWS_ACCESS_KEY_ID), asMap.get(AWS_SECRET_KEY)));
-      } else if (typeName.equals(PropertiesFileCredentialsProvider.class.getSimpleName())) {
-        return new PropertiesFileCredentialsProvider(asMap.get(CREDENTIALS_FILE_PATH));
-      } else if (typeName.equals(
-          ClasspathPropertiesFileCredentialsProvider.class.getSimpleName())) {
-        return new ClasspathPropertiesFileCredentialsProvider(asMap.get(CREDENTIALS_FILE_PATH));
-      } else if (typeName.equals(DefaultAWSCredentialsProviderChain.class.getSimpleName())) {
+      if (hasName(AWSStaticCredentialsProvider.class, typeName)) {
+        boolean isSession = asMap.containsKey(SESSION_TOKEN);
+        if (isSession) {
+          return new AWSStaticCredentialsProvider(
+              new BasicSessionCredentials(
+                  getNotNull(asMap, AWS_ACCESS_KEY_ID, typeName),
+                  getNotNull(asMap, AWS_SECRET_KEY, typeName),
+                  getNotNull(asMap, SESSION_TOKEN, typeName)));
+        } else {
+          return new AWSStaticCredentialsProvider(
+              new BasicAWSCredentials(
+                  getNotNull(asMap, AWS_ACCESS_KEY_ID, typeName),
+                  getNotNull(asMap, AWS_SECRET_KEY, typeName)));
+        }
+      } else if (hasName(PropertiesFileCredentialsProvider.class, typeName)) {
+        return new PropertiesFileCredentialsProvider(
+            getNotNull(asMap, CREDENTIALS_FILE_PATH, typeName));
+      } else if (hasName(ClasspathPropertiesFileCredentialsProvider.class, typeName)) {
+        return new ClasspathPropertiesFileCredentialsProvider(
+            getNotNull(asMap, CREDENTIALS_FILE_PATH, typeName));
+      } else if (hasName(DefaultAWSCredentialsProviderChain.class, typeName)) {
         return new DefaultAWSCredentialsProviderChain();
-      } else if (typeName.equals(EnvironmentVariableCredentialsProvider.class.getSimpleName())) {
+      } else if (hasName(EnvironmentVariableCredentialsProvider.class, typeName)) {
         return new EnvironmentVariableCredentialsProvider();
-      } else if (typeName.equals(SystemPropertiesCredentialsProvider.class.getSimpleName())) {
+      } else if (hasName(SystemPropertiesCredentialsProvider.class, typeName)) {
         return new SystemPropertiesCredentialsProvider();
-      } else if (typeName.equals(ProfileCredentialsProvider.class.getSimpleName())) {
+      } else if (hasName(ProfileCredentialsProvider.class, typeName)) {
         return new ProfileCredentialsProvider();
-      } else if (typeName.equals(EC2ContainerCredentialsProviderWrapper.class.getSimpleName())) {
+      } else if (hasName(EC2ContainerCredentialsProviderWrapper.class, typeName)) {
         return new EC2ContainerCredentialsProviderWrapper();
+      } else if (hasName(STSAssumeRoleSessionCredentialsProvider.class, typeName)) {
+        return new STSAssumeRoleSessionCredentialsProvider.Builder(
+                getNotNull(asMap, ROLE_ARN, typeName),
+                getNotNull(asMap, ROLE_SESSION_NAME, typeName))
+            .build();
       } else {
         throw new IOException(
             String.format("AWS credential provider type '%s' is not supported", typeName));
       }
+    }
+
+    @SuppressWarnings({"nullness"})
+    private String getNotNull(Map<String, String> map, String key, String typeName) {
+      return checkNotNull(
+          map.get(key), "AWS credentials provider type '%s' is missing '%s'", typeName, key);
+    }
+
+    private boolean hasName(Class<? extends AWSCredentialsProvider> clazz, String typeName) {
+      return clazz.getSimpleName().equals(typeName);
     }
   }
 
@@ -156,49 +198,56 @@ public class AwsModule extends SimpleModule {
         SerializerProvider serializers,
         TypeSerializer typeSerializer)
         throws IOException {
+      // BEAM-11958 Use deprecated Jackson APIs to be compatible with older versions of jackson
       typeSerializer.writeTypePrefixForObject(credentialsProvider, jsonGenerator);
 
-      if (credentialsProvider.getClass().equals(AWSStaticCredentialsProvider.class)) {
-        jsonGenerator.writeStringField(
-            AWS_ACCESS_KEY_ID, credentialsProvider.getCredentials().getAWSAccessKeyId());
-        jsonGenerator.writeStringField(
-            AWS_SECRET_KEY, credentialsProvider.getCredentials().getAWSSecretKey());
-
-      } else if (credentialsProvider.getClass().equals(PropertiesFileCredentialsProvider.class)) {
-        try {
-          PropertiesFileCredentialsProvider specificProvider =
-              (PropertiesFileCredentialsProvider) credentialsProvider;
-          Field field =
-              PropertiesFileCredentialsProvider.class.getDeclaredField(CREDENTIALS_FILE_PATH);
-          field.setAccessible(true);
-          String credentialsFilePath = (String) field.get(specificProvider);
-          jsonGenerator.writeStringField(CREDENTIALS_FILE_PATH, credentialsFilePath);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-          throw new IOException("failed to access private field with reflection", e);
+      Class<?> providerClass = credentialsProvider.getClass();
+      if (providerClass.equals(AWSStaticCredentialsProvider.class)) {
+        AWSCredentials credentials = credentialsProvider.getCredentials();
+        if (credentials.getClass().equals(BasicSessionCredentials.class)) {
+          BasicSessionCredentials sessionCredentials = (BasicSessionCredentials) credentials;
+          jsonGenerator.writeStringField(AWS_ACCESS_KEY_ID, sessionCredentials.getAWSAccessKeyId());
+          jsonGenerator.writeStringField(AWS_SECRET_KEY, sessionCredentials.getAWSSecretKey());
+          jsonGenerator.writeStringField(SESSION_TOKEN, sessionCredentials.getSessionToken());
+        } else {
+          jsonGenerator.writeStringField(AWS_ACCESS_KEY_ID, credentials.getAWSAccessKeyId());
+          jsonGenerator.writeStringField(AWS_SECRET_KEY, credentials.getAWSSecretKey());
         }
-
-      } else if (credentialsProvider
-          .getClass()
-          .equals(ClasspathPropertiesFileCredentialsProvider.class)) {
-        try {
-          ClasspathPropertiesFileCredentialsProvider specificProvider =
-              (ClasspathPropertiesFileCredentialsProvider) credentialsProvider;
-          Field field =
-              ClasspathPropertiesFileCredentialsProvider.class.getDeclaredField(
-                  CREDENTIALS_FILE_PATH);
-          field.setAccessible(true);
-          String credentialsFilePath = (String) field.get(specificProvider);
-          jsonGenerator.writeStringField(CREDENTIALS_FILE_PATH, credentialsFilePath);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-          throw new IOException("failed to access private field with reflection", e);
-        }
-
-      } else if (!SINGLETON_CREDENTIAL_PROVIDERS.contains(credentialsProvider.getClass())) {
+      } else if (providerClass.equals(PropertiesFileCredentialsProvider.class)) {
+        String filePath = (String) readField(credentialsProvider, CREDENTIALS_FILE_PATH);
+        jsonGenerator.writeStringField(CREDENTIALS_FILE_PATH, filePath);
+      } else if (providerClass.equals(ClasspathPropertiesFileCredentialsProvider.class)) {
+        String filePath = (String) readField(credentialsProvider, CREDENTIALS_FILE_PATH);
+        jsonGenerator.writeStringField(CREDENTIALS_FILE_PATH, filePath);
+      } else if (providerClass.equals(STSAssumeRoleSessionCredentialsProvider.class)) {
+        String arn = (String) readField(credentialsProvider, ROLE_ARN);
+        String sessionName = (String) readField(credentialsProvider, ROLE_SESSION_NAME);
+        jsonGenerator.writeStringField(ROLE_ARN, arn);
+        jsonGenerator.writeStringField(ROLE_SESSION_NAME, sessionName);
+      } else if (!SINGLETON_CREDENTIAL_PROVIDERS.contains(providerClass)) {
         throw new IllegalArgumentException(
-            "Unsupported AWS credentials provider type " + credentialsProvider.getClass());
+            "Unsupported AWS credentials provider type " + providerClass);
       }
+      // BEAM-11958 Use deprecated Jackson APIs to be compatible with older versions of jackson
       typeSerializer.writeTypeSuffixForObject(credentialsProvider, jsonGenerator);
     }
+
+    private Object readField(AWSCredentialsProvider provider, String fieldName) throws IOException {
+      try {
+        return FieldUtils.readField(provider, fieldName, true);
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        throw new IOException(
+            String.format(
+                "Failed to access private field '%s' of AWS credential provider type '%s' with reflection",
+                fieldName, provider.getClass().getSimpleName()),
+            e);
+      }
+    }
+  }
+
+  @SuppressWarnings({"nullness"})
+  private static String getNotNull(Map<String, String> map, String key, Class<?> clazz) {
+    return checkNotNull(map.get(key), "`%s` required in serialized %s", key, clazz.getSimpleName());
   }
 
   /** A mixin to add Jackson annotations to {@link SSECustomerKey}. */
@@ -209,12 +258,15 @@ public class AwsModule extends SimpleModule {
     @Override
     public SSECustomerKey deserialize(JsonParser parser, DeserializationContext context)
         throws IOException {
-      Map<String, String> asMap = parser.readValueAs(new TypeReference<Map<String, String>>() {});
+      Map<String, String> asMap =
+          checkNotNull(
+              parser.readValueAs(new TypeReference<Map<String, String>>() {}),
+              "Serialized SSECustomerKey is null");
 
-      final String key = asMap.getOrDefault("key", null);
-      final String algorithm = asMap.getOrDefault("algorithm", null);
-      final String md5 = asMap.getOrDefault("md5", null);
-      SSECustomerKey sseCustomerKey = new SSECustomerKey(key);
+      SSECustomerKey sseCustomerKey =
+          new SSECustomerKey(getNotNull(asMap, "key", SSECustomerKey.class));
+      final String algorithm = asMap.get("algorithm");
+      final String md5 = asMap.get("md5");
       if (algorithm != null) {
         sseCustomerKey.setAlgorithm(algorithm);
       }
@@ -234,27 +286,105 @@ public class AwsModule extends SimpleModule {
     @Override
     public SSEAwsKeyManagementParams deserialize(JsonParser parser, DeserializationContext context)
         throws IOException {
-      Map<String, String> asMap = parser.readValueAs(new TypeReference<Map<String, String>>() {});
-      final String awsKmsKeyId = asMap.getOrDefault("awsKmsKeyId", null);
-      return new SSEAwsKeyManagementParams(awsKmsKeyId);
+      Map<String, String> asMap =
+          checkNotNull(
+              parser.readValueAs(new TypeReference<Map<String, String>>() {}),
+              "Serialized SSEAwsKeyManagementParams is null");
+
+      return new SSEAwsKeyManagementParams(
+          getNotNull(asMap, "awsKmsKeyId", SSEAwsKeyManagementParams.class));
     }
   }
 
-  @JsonAutoDetect(
-      fieldVisibility = Visibility.NONE,
-      getterVisibility = Visibility.NONE,
-      setterVisibility = Visibility.NONE)
-  interface ClientConfigurationMixin {
-    @JsonProperty
-    String getProxyHost();
+  /** A mixin to add Jackson annotations to {@link ClientConfiguration}. */
+  @JsonSerialize(using = AwsHttpClientConfigurationSerializer.class)
+  @JsonDeserialize(using = AwsHttpClientConfigurationDeserializer.class)
+  private static class AwsHttpClientConfigurationMixin {}
 
-    @JsonProperty
-    Integer getProxyPort();
+  private static class AwsHttpClientConfigurationDeserializer
+      extends JsonDeserializer<ClientConfiguration> {
+    @Override
+    public ClientConfiguration deserialize(JsonParser jsonParser, DeserializationContext context)
+        throws IOException {
+      Map<String, Object> map =
+          checkNotNull(
+              jsonParser.readValueAs(new TypeReference<Map<String, Object>>() {}),
+              "Serialized ClientConfiguration is null");
 
-    @JsonProperty
-    String getProxyUsername();
+      ClientConfiguration clientConfiguration = new ClientConfiguration();
 
-    @JsonProperty
-    String getProxyPassword();
+      if (map.containsKey(PROXY_HOST)) {
+        clientConfiguration.setProxyHost((String) map.get(PROXY_HOST));
+      }
+      if (map.containsKey(PROXY_PORT)) {
+        clientConfiguration.setProxyPort(((Number) map.get(PROXY_PORT)).intValue());
+      }
+      if (map.containsKey(PROXY_USERNAME)) {
+        clientConfiguration.setProxyUsername((String) map.get(PROXY_USERNAME));
+      }
+      if (map.containsKey(PROXY_PASSWORD)) {
+        clientConfiguration.setProxyPassword((String) map.get(PROXY_PASSWORD));
+      }
+      if (map.containsKey(CLIENT_EXECUTION_TIMEOUT)) {
+        clientConfiguration.setClientExecutionTimeout(
+            ((Number) map.get(CLIENT_EXECUTION_TIMEOUT)).intValue());
+      }
+      if (map.containsKey(CONNECTION_MAX_IDLE_TIME)) {
+        clientConfiguration.setConnectionMaxIdleMillis(
+            ((Number) map.get(CONNECTION_MAX_IDLE_TIME)).longValue());
+      }
+      if (map.containsKey(CONNECTION_TIMEOUT)) {
+        clientConfiguration.setConnectionTimeout(((Number) map.get(CONNECTION_TIMEOUT)).intValue());
+      }
+      if (map.containsKey(CONNECTION_TIME_TO_LIVE)) {
+        clientConfiguration.setConnectionTTL(
+            ((Number) map.get(CONNECTION_TIME_TO_LIVE)).longValue());
+      }
+      if (map.containsKey(MAX_CONNECTIONS)) {
+        clientConfiguration.setMaxConnections(((Number) map.get(MAX_CONNECTIONS)).intValue());
+      }
+      if (map.containsKey(REQUEST_TIMEOUT)) {
+        clientConfiguration.setRequestTimeout(((Number) map.get(REQUEST_TIMEOUT)).intValue());
+      }
+      if (map.containsKey(SOCKET_TIMEOUT)) {
+        clientConfiguration.setSocketTimeout(((Number) map.get(SOCKET_TIMEOUT)).intValue());
+      }
+      return clientConfiguration;
+    }
+  }
+
+  private static class AwsHttpClientConfigurationSerializer
+      extends JsonSerializer<ClientConfiguration> {
+
+    @Override
+    public void serialize(
+        ClientConfiguration clientConfiguration,
+        JsonGenerator jsonGenerator,
+        SerializerProvider serializer)
+        throws IOException {
+
+      jsonGenerator.writeStartObject();
+      jsonGenerator.writeObjectField(PROXY_HOST /*string*/, clientConfiguration.getProxyHost());
+      jsonGenerator.writeObjectField(PROXY_PORT /*int*/, clientConfiguration.getProxyPort());
+      jsonGenerator.writeObjectField(
+          PROXY_USERNAME /*string*/, clientConfiguration.getProxyUsername());
+      jsonGenerator.writeObjectField(
+          PROXY_PASSWORD /*string*/, clientConfiguration.getProxyPassword());
+      jsonGenerator.writeObjectField(
+          CLIENT_EXECUTION_TIMEOUT /*int*/, clientConfiguration.getClientExecutionTimeout());
+      jsonGenerator.writeObjectField(
+          CONNECTION_MAX_IDLE_TIME /*long*/, clientConfiguration.getConnectionMaxIdleMillis());
+      jsonGenerator.writeObjectField(
+          CONNECTION_TIMEOUT /*int*/, clientConfiguration.getConnectionTimeout());
+      jsonGenerator.writeObjectField(
+          CONNECTION_TIME_TO_LIVE /*long*/, clientConfiguration.getConnectionTTL());
+      jsonGenerator.writeObjectField(
+          MAX_CONNECTIONS /*int*/, clientConfiguration.getMaxConnections());
+      jsonGenerator.writeObjectField(
+          REQUEST_TIMEOUT /*int*/, clientConfiguration.getRequestTimeout());
+      jsonGenerator.writeObjectField(
+          SOCKET_TIMEOUT /*int*/, clientConfiguration.getSocketTimeout());
+      jsonGenerator.writeEndObject();
+    }
   }
 }

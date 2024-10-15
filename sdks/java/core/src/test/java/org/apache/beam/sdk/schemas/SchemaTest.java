@@ -23,9 +23,16 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
+import org.apache.beam.sdk.schemas.Schema.Options;
+import org.apache.beam.sdk.schemas.logicaltypes.PassThroughLogicalType;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -130,6 +137,34 @@ public class SchemaTest {
   }
 
   @Test
+  public void testIterableSchema() {
+    FieldType iterableType = FieldType.iterable(FieldType.STRING);
+    Schema schema = Schema.of(Field.of("f_iter", iterableType));
+    Field field = schema.getField("f_iter");
+    assertEquals("f_iter", field.getName());
+    assertEquals(iterableType, field.getType());
+  }
+
+  @Test
+  public void testIterableOfRowSchema() {
+    Schema nestedSchema = Schema.of(Field.of("f1_str", FieldType.STRING));
+    FieldType iterableType = FieldType.iterable(FieldType.row(nestedSchema));
+    Schema schema = Schema.of(Field.of("f_iter", iterableType));
+    Field field = schema.getField("f_iter");
+    assertEquals("f_iter", field.getName());
+    assertEquals(iterableType, field.getType());
+  }
+
+  @Test
+  public void testNestedIterableSchema() {
+    FieldType iterableType = FieldType.iterable(FieldType.iterable(FieldType.STRING));
+    Schema schema = Schema.of(Field.of("f_iter", iterableType));
+    Field field = schema.getField("f_iter");
+    assertEquals("f_iter", field.getName());
+    assertEquals(iterableType, field.getType());
+  }
+
+  @Test
   public void testWrongName() {
     Schema schema = Schema.of(Field.of("f_byte", FieldType.BYTE));
     thrown.expect(IllegalArgumentException.class);
@@ -157,6 +192,81 @@ public class SchemaTest {
     assertEquals(FieldType.INT32, schema.getField(0).getType());
     assertEquals("f_string", schema.getField(1).getName());
     assertEquals(FieldType.STRING, schema.getField(1).getType());
+  }
+
+  @Test
+  public void testSorted() {
+    Options testOptions =
+        Options.builder()
+            .setOption("test_str_option", FieldType.STRING, "test_str")
+            .setOption("test_bool_option", FieldType.BOOLEAN, true)
+            .build();
+
+    Schema unorderedSchema =
+        Schema.builder()
+            .addStringField("d")
+            .addInt32Field("c")
+            .addStringField("b")
+            .addByteField("a")
+            .build()
+            .withOptions(testOptions);
+
+    Schema unorderedSchemaAfterSorting = unorderedSchema.sorted();
+
+    Schema sortedSchema =
+        Schema.builder()
+            .addByteField("a")
+            .addStringField("b")
+            .addInt32Field("c")
+            .addStringField("d")
+            .build()
+            .withOptions(testOptions);
+
+    assertEquals(true, unorderedSchema.equivalent(unorderedSchemaAfterSorting));
+    assertEquals(
+        true,
+        Objects.equals(unorderedSchemaAfterSorting.getFields(), sortedSchema.getFields())
+            && Objects.equals(unorderedSchemaAfterSorting.getOptions(), sortedSchema.getOptions())
+            && Objects.equals(
+                unorderedSchemaAfterSorting.getEncodingPositions(),
+                sortedSchema.getEncodingPositions()));
+  }
+
+  @Test
+  public void testSortedMethodIncludesAllSchemaFields() {
+    // This test is most likely to break when new Schema object attributes are added. It is designed
+    // this way to make sure that the Schema::sorted() method is updated to return a full sorted
+    // copy.
+
+    // Schema object attributes that are accounted for in Schema::sorted().
+    // Note: Only the appropriate ones are copied over.
+    List<String> attributesAccountedForInSorted =
+        Arrays.asList(
+            "fieldIndices",
+            "encodingPositions",
+            "encodingPositionsOverridden",
+            "fields",
+            "hashCode",
+            "uuid",
+            "options");
+
+    // Current attributes in Schema object.
+    List<String> currentAttributes =
+        Arrays.stream(Schema.class.getDeclaredFields())
+            .filter(field -> !field.isSynthetic())
+            .map(java.lang.reflect.Field::getName)
+            .collect(Collectors.toList());
+
+    List<String> differences = new ArrayList<>(currentAttributes);
+    differences.removeAll(attributesAccountedForInSorted);
+
+    assertEquals(
+        String.format(
+            "Detected attributes %s in Schema object that are not accounted for in Schema::sorted(). "
+                + "If appropriate, sorted() should copy over these attributes as well. Either way, update this test after checking.",
+            differences.toString()),
+        currentAttributes,
+        attributesAccountedForInSorted);
   }
 
   @Test
@@ -205,6 +315,22 @@ public class SchemaTest {
     schema2 = Schema.builder().addNullableField("foo", FieldType.INT64).build();
     assertNotEquals(schema1, schema2);
     assertFalse(schema1.equivalent(schema2));
+  }
+
+  @Test
+  public void testFieldsWithDifferentMetadataAreEquivalent() {
+    Field foo = Field.of("foo", FieldType.STRING);
+    Field fooWithMetadata = Field.of("foo", FieldType.STRING.withMetadata("key", "value"));
+
+    Schema schema1 = Schema.builder().addField(foo).build();
+    Schema schema2 = Schema.builder().addField(foo).build();
+    assertEquals(schema1, schema2);
+    assertTrue(schema1.equivalent(schema2));
+
+    schema1 = Schema.builder().addField(foo).build();
+    schema2 = Schema.builder().addField(fooWithMetadata).build();
+    assertNotEquals(schema1, schema2);
+    assertTrue(schema1.equivalent(schema2));
   }
 
   @Test
@@ -263,5 +389,86 @@ public class SchemaTest {
         Schema.builder().addMapField("foo", FieldType.STRING, FieldType.row(nestedSchema2)).build();
     assertNotEquals(schema1, schema2);
     assertFalse(schema1.equivalent(schema2));
+  }
+
+  static class TestType extends PassThroughLogicalType<Long> {
+    TestType(String id, String arg) {
+      super(id, FieldType.STRING, arg, FieldType.INT64);
+    }
+  }
+
+  @Test
+  public void testLogicalType() {
+    Schema schema1 =
+        Schema.builder().addLogicalTypeField("logical", new TestType("id", "arg")).build();
+    Schema schema2 =
+        Schema.builder().addLogicalTypeField("logical", new TestType("id", "arg")).build();
+    assertEquals(schema1, schema2); // Logical types are the same.
+
+    Schema schema3 =
+        Schema.builder()
+            .addNullableField("logical", Schema.FieldType.logicalType(new TestType("id", "arg")))
+            .build();
+    assertNotEquals(schema1, schema3); // schema1 and schema3 differ in Nullability
+
+    Schema schema4 =
+        Schema.builder().addLogicalTypeField("logical", new TestType("id2", "arg")).build();
+    assertNotEquals(schema1, schema4); // Logical type id is different.
+
+    Schema schema5 =
+        Schema.builder().addLogicalTypeField("logical", new TestType("id", "arg2")).build();
+    assertNotEquals(schema1, schema5); // Logical type arg is different.
+  }
+
+  @Test
+  public void testTypesEquality() {
+    Schema schema1 = Schema.builder().addStringField("foo").build();
+    Schema schema2 = Schema.builder().addStringField("bar").build();
+    assertTrue(schema1.typesEqual(schema2)); // schema1 and schema2 only differ by names
+
+    Schema schema3 = Schema.builder().addNullableField("foo", FieldType.STRING).build();
+    assertFalse(schema1.typesEqual(schema3)); // schema1 and schema3 differ in Nullability
+
+    Schema schema4 = Schema.builder().addInt32Field("foo").build();
+    assertFalse(schema1.typesEqual(schema4)); // schema1 and schema4 differ by types
+  }
+
+  @Test
+  public void testIllegalIndexOf() {
+    Schema schema = Schema.builder().addStringField("foo").build();
+
+    thrown.expect(IllegalArgumentException.class);
+    thrown.expectMessage("Cannot find field bar in schema " + schema);
+
+    schema.indexOf("bar");
+  }
+
+  @Test
+  public void testIllegalNameOf() {
+    Schema schema = Schema.builder().addStringField("foo").build();
+
+    thrown.expect(IllegalArgumentException.class);
+    thrown.expectMessage("Cannot find field 1");
+
+    schema.nameOf(1);
+  }
+
+  @Test
+  public void testFieldTypeToString() {
+    assertEquals("STRING NOT NULL", FieldType.STRING.toString());
+    assertEquals("INT64", FieldType.INT64.withNullable(true).toString());
+    assertEquals("ARRAY<INT32 NOT NULL> NOT NULL", FieldType.array(FieldType.INT32).toString());
+    assertEquals(
+        "MAP<INT16 NOT NULL, FLOAT> NOT NULL",
+        FieldType.map(FieldType.INT16, FieldType.FLOAT.withNullable(true)).toString());
+    assertEquals(
+        "ROW<field1 BYTES NOT NULL, time DATETIME>",
+        FieldType.row(
+                Schema.builder()
+                    .addByteArrayField("field1")
+                    .addField("time", FieldType.DATETIME.withNullable(true))
+                    .build())
+            .withNullable(true)
+            .toString());
   }
 }

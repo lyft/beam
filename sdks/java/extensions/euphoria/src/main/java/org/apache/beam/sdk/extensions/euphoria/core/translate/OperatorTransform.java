@@ -22,7 +22,7 @@ import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Operato
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 
 /**
  * Expand operator to a beam {@link PTransform}.
@@ -31,6 +31,9 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
  * @param <OutputT> type of output elements
  * @param <OperatorT> type of operator to expand
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class OperatorTransform<InputT, OutputT, OperatorT extends Operator<OutputT>>
     extends PTransform<PCollectionList<InputT>, PCollection<OutputT>> {
 
@@ -56,7 +59,7 @@ public class OperatorTransform<InputT, OutputT, OperatorT extends Operator<Outpu
             + operator.getClass()
             + "] with name ["
             + operator.getName().orElse(null)
-            + ".");
+            + "]");
   }
 
   private final OperatorT operator;

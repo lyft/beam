@@ -17,30 +17,48 @@
  */
 package org.apache.beam.sdk.schemas.utils;
 
+import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Type;
 import java.util.Map;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.type.TypeDescription.ForLoadedType;
 import net.bytebuddy.dynamic.DynamicType;
-import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.MethodCall;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
 import net.bytebuddy.implementation.bytecode.collection.ArrayAccess;
 import net.bytebuddy.implementation.bytecode.constant.IntegerConstant;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
+import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.avro.specific.SpecificRecord;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.SchemaUserTypeCreator;
-import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.ConvertType;
+import org.apache.beam.sdk.schemas.utils.AvroUtils.AvroTypeConversionFactory;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.InjectPackageStrategy;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversion;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.ReflectUtils.ClassWithSchema;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
 
+/**
+ * @deprecated Avro related classes are deprecated in module <code>beam-sdks-java-core</code> and
+ *     will be eventually removed. Please, migrate to a new module <code>
+ *     beam-sdks-java-extensions-avro</code> by importing <code>
+ *     org.apache.beam.sdk.extensions.avro.schemas.utils.AvroByteBuddyUtils</code> instead of this
+ *     one.
+ */
+@SuppressWarnings({
+  "nullness", // TODO(https://github.com/apache/beam/issues/20497)
+  "rawtypes"
+})
+@Deprecated
 class AvroByteBuddyUtils {
   private static final ByteBuddy BYTE_BUDDY = new ByteBuddy();
 
@@ -51,7 +69,7 @@ class AvroByteBuddyUtils {
   static <T extends SpecificRecord> SchemaUserTypeCreator getCreator(
       Class<T> clazz, Schema schema) {
     return CACHED_CREATORS.computeIfAbsent(
-        new ClassWithSchema(clazz, schema), c -> createCreator(clazz, schema));
+        ClassWithSchema.create(clazz, schema), c -> createCreator(clazz, schema));
   }
 
   private static <T> SchemaUserTypeCreator createCreator(Class<T> clazz, Schema schema) {
@@ -83,8 +101,11 @@ class AvroByteBuddyUtils {
               .intercept(construct);
 
       return builder
+          .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
           .make()
-          .load(ReflectHelpers.findClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+          .load(
+              ReflectHelpers.findClassLoader(clazz.getClassLoader()),
+              getClassLoadingStrategy(clazz))
           .getLoaded()
           .getDeclaredConstructor()
           .newInstance();
@@ -99,11 +120,13 @@ class AvroByteBuddyUtils {
 
   private static StackManipulation readAndConvertParameter(
       Class<?> constructorParameterType, int index) {
+    TypeConversionsFactory typeConversionsFactory = new AvroTypeConversionFactory();
+
     // The types in the AVRO-generated constructor might be the types returned by Beam's Row class,
     // so we have to convert the types used by Beam's Row class.
     // We know that AVRO generates constructor parameters in the same order as fields
     // in the schema, so we can just add the parameters sequentially.
-    ConvertType convertType = new ConvertType(true);
+    TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
 
     // Map the AVRO-generated type to the one Beam will use.
     ForLoadedType convertedType =
@@ -119,7 +142,8 @@ class AvroByteBuddyUtils {
             TypeCasting.to(convertedType));
 
     // Convert to the parameter accepted by the SpecificRecord constructor.
-    return new ByteBuddyUtils.ConvertValueForSetter(readParameter)
+    return typeConversionsFactory
+        .createSetterConversions(readParameter)
         .convert(TypeDescriptor.of(constructorParameterType));
   }
 }
