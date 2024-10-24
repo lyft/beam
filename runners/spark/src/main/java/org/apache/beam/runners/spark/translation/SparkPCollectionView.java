@@ -31,6 +31,10 @@ import org.slf4j.LoggerFactory;
 import scala.Tuple2;
 
 /** SparkPCollectionView is used to pass serialized views to lambdas. */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SparkPCollectionView implements Serializable {
 
   private static final Logger LOG = LoggerFactory.getLogger(SparkPCollectionView.class);
@@ -38,7 +42,7 @@ public class SparkPCollectionView implements Serializable {
   private transient volatile Map<PCollectionView<?>, SideInputBroadcast> broadcastHelperMap = null;
 
   // Holds the Actual data of the views in serialize form
-  private Map<PCollectionView<?>, Tuple2<byte[], Coder<Iterable<WindowedValue<?>>>>> pviews =
+  private final Map<PCollectionView<?>, Tuple2<byte[], Coder<Iterable<WindowedValue<?>>>>> pviews =
       new LinkedHashMap<>();
 
   // Driver only - during evaluation stage

@@ -21,13 +21,20 @@ import java.util.Map;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
 import org.apache.beam.sdk.io.FileBasedSink.DynamicDestinations;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * A specialization of {@link DynamicDestinations} for {@link AvroIO}. In addition to dynamic file
- * destinations, this allows specifying other AVRO properties (schema, metadata, codec) per
- * destination.
+ * destinations, this allows specifying other AVRO properties (schema, metadata, codec, datum
+ * writer) per destination.
+ *
+ * @deprecated Avro related classes are deprecated in module <code>beam-sdks-java-core</code> and
+ *     will be eventually removed. Please, migrate to a new module <code>
+ *     beam-sdks-java-extensions-avro</code> by importing <code>
+ *     org.apache.beam.sdk.extensions.avro.io.DynamicAvroDestinations</code> instead of this one.
  */
+@Deprecated
 public abstract class DynamicAvroDestinations<UserT, DestinationT, OutputT>
     extends DynamicDestinations<UserT, DestinationT, OutputT> {
   /** Return an AVRO schema for a given destination. */
@@ -41,5 +48,14 @@ public abstract class DynamicAvroDestinations<UserT, DestinationT, OutputT>
   /** Return an AVRO codec for a given destination. */
   public CodecFactory getCodec(DestinationT destination) {
     return AvroIO.TypedWrite.DEFAULT_CODEC;
+  }
+
+  /**
+   * Return a {@link AvroSink.DatumWriterFactory} for a given destination. If provided, it will be
+   * used to created {@link org.apache.avro.io.DatumWriter} instances as required.
+   */
+  public AvroSink.@Nullable DatumWriterFactory<OutputT> getDatumWriterFactory(
+      DestinationT destinationT) {
+    return null;
   }
 }

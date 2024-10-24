@@ -23,13 +23,12 @@ import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.coders.VarLongCoder;
 import org.apache.beam.sdk.testing.NeedsRunner;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestStream;
-import org.apache.beam.sdk.testing.UsesTestStream;
+import org.apache.beam.sdk.testing.UsesTestStreamWithProcessingTime;
 import org.apache.beam.sdk.transforms.windowing.AfterPane;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
@@ -40,8 +39,9 @@ import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TimestampedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.junit.Rule;
@@ -101,17 +101,19 @@ public class WaitTest implements Serializable {
     // allowedLateness of it.
     List<Instant> watermarks = Lists.newArrayList();
     for (int i = 0; i < numElements; ++i) {
-      watermarks.add(base.plus(new Duration((long) (totalDuration.getMillis() * Math.random()))));
+      watermarks.add(
+          base.plus(Duration.millis((long) (totalDuration.getMillis() * Math.random()))));
     }
     Collections.sort(watermarks);
 
     List<Event<Long>> events = Lists.newArrayList();
     for (int i = 0; i < numElements; ++i) {
       Instant processingTimestamp =
-          base.plus((long) (1.0 * i * totalDuration.getMillis() / (numElements + 1)));
+          base.plus(
+              Duration.millis((long) (1.0 * i * totalDuration.getMillis() / (numElements + 1))));
       Instant watermark = watermarks.get(i);
       Instant elementTimestamp =
-          watermark.minus((long) (Math.random() * allowedLateness.getMillis()));
+          watermark.minus(Duration.millis((long) (Math.random() * allowedLateness.getMillis())));
       events.add(new Event<>(processingTimestamp, watermark));
       events.add(new Event<>(processingTimestamp, TimestampedValue.of((long) i, elementTimestamp)));
     }
@@ -137,7 +139,7 @@ public class WaitTest implements Serializable {
       new AtomicReference<>();
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitWithSameFixedWindows() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,
@@ -149,7 +151,7 @@ public class WaitTest implements Serializable {
   }
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitWithDifferentFixedWindows() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,
@@ -161,7 +163,7 @@ public class WaitTest implements Serializable {
   }
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitWithSignalInSlidingWindows() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,
@@ -173,7 +175,7 @@ public class WaitTest implements Serializable {
   }
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitInGlobalWindow() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,
@@ -185,7 +187,7 @@ public class WaitTest implements Serializable {
   }
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitBoundedInDefaultWindow() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,
@@ -197,7 +199,7 @@ public class WaitTest implements Serializable {
   }
 
   @Test
-  @Category({NeedsRunner.class, UsesTestStream.class})
+  @Category({NeedsRunner.class, UsesTestStreamWithProcessingTime.class})
   public void testWaitWithSomeSignalWindowsEmpty() {
     testWaitWithParameters(
         Duration.standardMinutes(1) /* duration */,

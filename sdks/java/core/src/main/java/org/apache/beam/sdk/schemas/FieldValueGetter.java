@@ -18,8 +18,8 @@
 package org.apache.beam.sdk.schemas;
 
 import java.io.Serializable;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Internal;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * <b><i>For internal use only; no backwards-compatibility guarantees.</i></b>
@@ -32,6 +32,11 @@ import org.apache.beam.sdk.annotations.Internal;
 public interface FieldValueGetter<ObjectT, ValueT> extends Serializable {
   @Nullable
   ValueT get(ObjectT object);
+
+  /** Returns the raw value of the getter before any further transformations. */
+  default @Nullable Object getRaw(ObjectT object) {
+    return get(object);
+  }
 
   String name();
 }

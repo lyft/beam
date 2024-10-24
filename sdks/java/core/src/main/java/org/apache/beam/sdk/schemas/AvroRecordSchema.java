@@ -19,6 +19,7 @@ package org.apache.beam.sdk.schemas;
 
 import static org.apache.beam.sdk.schemas.utils.AvroUtils.toBeamSchema;
 
+import java.util.List;
 import org.apache.avro.reflect.ReflectData;
 import org.apache.beam.sdk.schemas.utils.AvroUtils;
 import org.apache.beam.sdk.values.TypeDescriptor;
@@ -29,7 +30,16 @@ import org.apache.beam.sdk.values.TypeDescriptor;
  * <p>This provider infers a schema from generated SpecificRecord objects, and creates schemas and
  * rows that bind to the appropriate fields. This provider also infers schemas from Java POJO
  * objects, creating a schema that matches that inferred by the AVRO libraries.
+ *
+ * @deprecated Avro related classes are deprecated in module <code>beam-sdks-java-core</code> and
+ *     will be eventually removed. Please, migrate to a new module <code>
+ *     beam-sdks-java-extensions-avro</code> by importing <code>
+ *     org.apache.beam.sdk.extensions.avro.schemas.AvroRecordSchema</code> instead of this one.
  */
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
+@Deprecated
 public class AvroRecordSchema extends GetterBasedSchemaProvider {
   @Override
   public <T> Schema schemaFor(TypeDescriptor<T> typeDescriptor) {
@@ -37,17 +47,18 @@ public class AvroRecordSchema extends GetterBasedSchemaProvider {
   }
 
   @Override
-  public FieldValueGetterFactory fieldValueGetterFactory() {
-    return AvroUtils::getGetters;
+  public List<FieldValueGetter> fieldValueGetters(Class<?> targetClass, Schema schema) {
+    return AvroUtils.getGetters(targetClass, schema);
   }
 
   @Override
-  public UserTypeCreatorFactory schemaTypeCreatorFactory() {
-    return AvroUtils::getCreator;
+  public List<FieldValueTypeInformation> fieldValueTypeInformations(
+      Class<?> targetClass, Schema schema) {
+    return AvroUtils.getFieldTypes(targetClass, schema);
   }
 
   @Override
-  public FieldValueTypeInformationFactory fieldValueTypeInformationFactory() {
-    return AvroUtils::getFieldTypes;
+  public SchemaUserTypeCreator schemaTypeCreator(Class<?> targetClass, Schema schema) {
+    return AvroUtils.getCreator(targetClass, schema);
   }
 }

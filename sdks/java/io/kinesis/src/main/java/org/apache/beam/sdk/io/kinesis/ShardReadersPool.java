@@ -17,8 +17,11 @@
  */
 package org.apache.beam.sdk.io.kinesis;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -30,9 +33,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Collectors;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import java.util.stream.StreamSupport;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,22 +48,27 @@ import org.slf4j.LoggerFactory;
  * Internal shard iterators pool. It maintains the thread pool for reading Kinesis shards in
  * separate threads. Read records are stored in a blocking queue of limited capacity.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class ShardReadersPool {
 
   private static final Logger LOG = LoggerFactory.getLogger(ShardReadersPool.class);
-  private static final int DEFAULT_CAPACITY_PER_SHARD = 10_000;
+  public static final int DEFAULT_CAPACITY_PER_SHARD = 10_000;
   private static final int ATTEMPTS_TO_SHUTDOWN = 3;
+  private static final int QUEUE_OFFER_TIMEOUT_MS = 500;
+  private static final int QUEUE_POLL_TIMEOUT_MS = 1000;
 
   /**
    * Executor service for running the threads that read records from shards handled by this pool.
-   * Each thread runs the {@link ShardReadersPool#readLoop(ShardRecordsIterator)} method and handles
-   * exactly one shard.
+   * Each thread runs the {@link ShardReadersPool#readLoop(ShardRecordsIterator, RateLimitPolicy)}
+   * method and handles exactly one shard.
    */
   private final ExecutorService executorService;
 
   /**
    * A Bounded buffer for read records. Records are added to this buffer within {@link
-   * ShardReadersPool#readLoop(ShardRecordsIterator)} method and removed in {@link
+   * ShardReadersPool#readLoop(ShardRecordsIterator, RateLimitPolicy)} method and removed in {@link
    * ShardReadersPool#nextRecord()}.
    */
   private BlockingQueue<KinesisRecord> recordsQueue;
@@ -70,20 +83,22 @@ class ShardReadersPool {
   private final ConcurrentMap<String, AtomicInteger> numberOfRecordsInAQueueByShard;
 
   private final SimplifiedKinesisClient kinesis;
+  private final WatermarkPolicyFactory watermarkPolicyFactory;
+  private final RateLimitPolicyFactory rateLimitPolicyFactory;
   private final KinesisReaderCheckpoint initialCheckpoint;
   private final int queueCapacityPerShard;
   private final AtomicBoolean poolOpened = new AtomicBoolean(true);
 
-  ShardReadersPool(SimplifiedKinesisClient kinesis, KinesisReaderCheckpoint initialCheckpoint) {
-    this(kinesis, initialCheckpoint, DEFAULT_CAPACITY_PER_SHARD);
-  }
-
   ShardReadersPool(
       SimplifiedKinesisClient kinesis,
       KinesisReaderCheckpoint initialCheckpoint,
+      WatermarkPolicyFactory watermarkPolicyFactory,
+      RateLimitPolicyFactory rateLimitPolicyFactory,
       int queueCapacityPerShard) {
     this.kinesis = kinesis;
     this.initialCheckpoint = initialCheckpoint;
+    this.watermarkPolicyFactory = watermarkPolicyFactory;
+    this.rateLimitPolicyFactory = rateLimitPolicyFactory;
     this.queueCapacityPerShard = queueCapacityPerShard;
     this.executorService = Executors.newCachedThreadPool();
     this.numberOfRecordsInAQueueByShard = new ConcurrentHashMap<>();
@@ -99,7 +114,8 @@ class ShardReadersPool {
     if (!shardIteratorsMap.get().isEmpty()) {
       recordsQueue =
           new ArrayBlockingQueue<>(queueCapacityPerShard * shardIteratorsMap.get().size());
-      startReadingShards(shardIteratorsMap.get().values());
+      String streamName = initialCheckpoint.getStreamName();
+      startReadingShards(shardIteratorsMap.get().values(), streamName);
     } else {
       // There are no shards to handle when restoring from an empty checkpoint. Empty checkpoints
       // are generated when the last shard handled by this pool was closed
@@ -109,19 +125,47 @@ class ShardReadersPool {
 
   // Note: readLoop() will log any Throwable raised so opt to ignore the future result
   @SuppressWarnings("FutureReturnValueIgnored")
-  void startReadingShards(Iterable<ShardRecordsIterator> shardRecordsIterators) {
+  void startReadingShards(Iterable<ShardRecordsIterator> shardRecordsIterators, String streamName) {
+    if (!shardRecordsIterators.iterator().hasNext()) {
+      LOG.info("Stream {} will not be read, no shard records iterators available", streamName);
+      return;
+    }
+    LOG.info(
+        "Starting to read {} stream from {} shards",
+        streamName,
+        getShardIdsFromRecordsIterators(shardRecordsIterators));
     for (final ShardRecordsIterator recordsIterator : shardRecordsIterators) {
       numberOfRecordsInAQueueByShard.put(recordsIterator.getShardId(), new AtomicInteger());
-      executorService.submit(() -> readLoop(recordsIterator));
+      executorService.submit(
+          () -> readLoop(recordsIterator, rateLimitPolicyFactory.getRateLimitPolicy()));
     }
   }
 
-  private void readLoop(ShardRecordsIterator shardRecordsIterator) {
+  private void readLoop(ShardRecordsIterator shardRecordsIterator, RateLimitPolicy rateLimiter) {
     while (poolOpened.get()) {
       try {
-        List<KinesisRecord> kinesisRecords;
         try {
-          kinesisRecords = shardRecordsIterator.readNextBatch();
+          List<KinesisRecord> kinesisRecords = shardRecordsIterator.readNextBatch();
+          try {
+            for (KinesisRecord kinesisRecord : kinesisRecords) {
+              while (true) {
+                if (!poolOpened.get()) {
+                  return;
+                }
+                if (recordsQueue.offer(kinesisRecord, QUEUE_OFFER_TIMEOUT_MS, MILLISECONDS)) {
+                  numberOfRecordsInAQueueByShard.get(kinesisRecord.getShardId()).incrementAndGet();
+                  break;
+                }
+              }
+            }
+          } finally {
+            // One of the paths into this finally block is recordsQueue.put() throwing
+            // InterruptedException so we should check the thread's interrupted status before
+            // calling onSuccess().
+            if (!Thread.currentThread().isInterrupted()) {
+              rateLimiter.onSuccess(kinesisRecords);
+            }
+          }
         } catch (KinesisShardClosedException e) {
           LOG.info(
               "Shard iterator for {} shard is closed, finishing the read loop",
@@ -136,14 +180,19 @@ class ShardReadersPool {
           readFromSuccessiveShards(shardRecordsIterator);
           break;
         }
-        for (KinesisRecord kinesisRecord : kinesisRecords) {
-          recordsQueue.put(kinesisRecord);
-          numberOfRecordsInAQueueByShard.get(kinesisRecord.getShardId()).incrementAndGet();
+      } catch (KinesisClientThrottledException e) {
+        try {
+          rateLimiter.onThrottle(e);
+        } catch (InterruptedException ex) {
+          LOG.warn("Thread was interrupted, finishing the read loop", ex);
+          Thread.currentThread().interrupt();
+          break;
         }
       } catch (TransientKinesisException e) {
         LOG.warn("Transient exception occurred.", e);
       } catch (InterruptedException e) {
         LOG.warn("Thread was interrupted, finishing the read loop", e);
+        Thread.currentThread().interrupt();
         break;
       } catch (Throwable e) {
         LOG.error("Unexpected exception occurred", e);
@@ -154,7 +203,7 @@ class ShardReadersPool {
 
   CustomOptional<KinesisRecord> nextRecord() {
     try {
-      KinesisRecord record = recordsQueue.poll(1, TimeUnit.SECONDS);
+      KinesisRecord record = recordsQueue.poll(QUEUE_POLL_TIMEOUT_MS, MILLISECONDS);
       if (record == null) {
         return CustomOptional.absent();
       }
@@ -203,13 +252,19 @@ class ShardReadersPool {
     }
   }
 
-  boolean allShardsUpToDate() {
-    boolean shardsUpToDate = true;
-    ImmutableMap<String, ShardRecordsIterator> currentShardIterators = shardIteratorsMap.get();
-    for (ShardRecordsIterator shardRecordsIterator : currentShardIterators.values()) {
-      shardsUpToDate &= shardRecordsIterator.isUpToDate();
-    }
-    return shardsUpToDate;
+  Instant getWatermark() {
+    return getMinTimestamp(ShardRecordsIterator::getShardWatermark);
+  }
+
+  Instant getLatestRecordTimestamp() {
+    return getMinTimestamp(ShardRecordsIterator::getLatestRecordTimestamp);
+  }
+
+  private Instant getMinTimestamp(Function<ShardRecordsIterator, Instant> timestampExtractor) {
+    return shardIteratorsMap.get().values().stream()
+        .map(timestampExtractor)
+        .min(Comparator.naturalOrder())
+        .orElse(BoundedWindow.TIMESTAMP_MAX_VALUE);
   }
 
   KinesisReaderCheckpoint getCheckpointMark() {
@@ -228,7 +283,7 @@ class ShardReadersPool {
   ShardRecordsIterator createShardIterator(
       SimplifiedKinesisClient kinesis, ShardCheckpoint checkpoint)
       throws TransientKinesisException {
-    return new ShardRecordsIterator(checkpoint, kinesis);
+    return new ShardRecordsIterator(checkpoint, kinesis, watermarkPolicyFactory);
   }
 
   /**
@@ -284,7 +339,36 @@ class ShardReadersPool {
               current, closedShardIterator, successiveShardRecordIterators);
     } while (!shardIteratorsMap.compareAndSet(current, updated));
     numberOfRecordsInAQueueByShard.remove(closedShardIterator.getShardId());
-    startReadingShards(successiveShardRecordIterators);
+
+    logSuccessiveShardsFromRecordsIterators(closedShardIterator, successiveShardRecordIterators);
+
+    String streamName = closedShardIterator.getStreamName();
+    startReadingShards(successiveShardRecordIterators, streamName);
+  }
+
+  private static void logSuccessiveShardsFromRecordsIterators(
+      final ShardRecordsIterator closedShardIterator,
+      final Collection<ShardRecordsIterator> shardRecordsIterators) {
+    if (shardRecordsIterators.isEmpty()) {
+      LOG.info(
+          "Shard {} for {} stream is closed. Found no successive shards to read from "
+              + "as it was merged with another shard and this one is considered adjacent by merge operation",
+          closedShardIterator.getShardId(),
+          closedShardIterator.getStreamName());
+    } else {
+      LOG.info(
+          "Shard {} for {} stream is closed, found successive shards to read from: {}",
+          closedShardIterator.getShardId(),
+          closedShardIterator.getStreamName(),
+          getShardIdsFromRecordsIterators(shardRecordsIterators));
+    }
+  }
+
+  private static List<String> getShardIdsFromRecordsIterators(
+      final Iterable<ShardRecordsIterator> iterators) {
+    return StreamSupport.stream(iterators.spliterator(), false)
+        .map(ShardRecordsIterator::getShardId)
+        .collect(Collectors.toList());
   }
 
   private ImmutableMap<String, ShardRecordsIterator> createMapWithSuccessiveShards(
@@ -301,5 +385,10 @@ class ShardReadersPool {
       }
     }
     return shardsMap.build();
+  }
+
+  @VisibleForTesting
+  BlockingQueue<KinesisRecord> getRecordsQueue() {
+    return recordsQueue;
   }
 }

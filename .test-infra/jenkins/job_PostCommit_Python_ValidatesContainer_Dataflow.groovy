@@ -19,19 +19,49 @@
 import CommonJobProperties as commonJobProperties
 import PostcommitJobBuilder
 
+import static PythonTestProperties.VALIDATES_CONTAINER_DATAFLOW_PYTHON_VERSIONS
+
 // This job runs the suite of Python ValidatesContainer tests against the
 // Dataflow runner.
 PostcommitJobBuilder.postCommitJob('beam_PostCommit_Py_ValCont',
-  'Run Python Dataflow ValidatesContainer', 'Google Cloud Dataflow Runner Python ValidatesContainer Tests', this) {
-  description('Runs Python ValidatesContainer suite on the Dataflow runner.')
+    'Run Python Dataflow ValidatesContainer', 'Google Cloud Dataflow Runner Python ValidatesContainer Tests', this) {
+      description('Runs Python ValidatesContainer suite on the Dataflow runner.')
 
-  // Set common parameters.
-  commonJobProperties.setTopLevelMainJobProperties(delegate)
+      // Set common parameters.
+      commonJobProperties.setTopLevelMainJobProperties(delegate)
 
-  // Execute shell command to test Python SDK.
-  // TODO: Parallel the script run with Jenkins DSL or Gradle.
-  steps {
-    shell('cd ' + commonJobProperties.checkoutDir + ' && bash sdks/python/container/run_validatescontainer.sh')
-    shell('cd ' + commonJobProperties.checkoutDir + ' && bash sdks/python/container/run_validatescontainer_py3.sh')
-  }
-}
+      publishers {
+        archiveJunit('**/pytest*.xml')
+      }
+
+      // Execute shell command to test Python SDK.
+      steps {
+        gradle {
+          rootBuildScriptDir(commonJobProperties.checkoutDir)
+          tasks(':sdks:python:test-suites:dataflow:validatesContainerTests')
+          commonJobProperties.setGradleSwitches(delegate)
+        }
+      }
+    }
+
+PostcommitJobBuilder.postCommitJob('beam_PostCommit_Py_ValCont_with_RC',
+    'Run Python RC Dataflow ValidatesContainer', 'Google Cloud Dataflow Runner Python ValidatesContainer Tests with RC Dependencies', this) {
+      description('Runs Python ValidatesContainer suite on the Dataflow runner by installing Release Candidates.')
+
+      // Set common parameters.
+      commonJobProperties.setTopLevelMainJobProperties(delegate)
+
+      publishers {
+        archiveJunit('**/pytest*.xml')
+      }
+
+      // Execute shell command to test Python SDK.
+      steps {
+        gradle {
+          rootBuildScriptDir(commonJobProperties.checkoutDir)
+          tasks(':sdks:python:test-suites:dataflow:validatesContainerTests')
+          switches('-PtestRCDependencies=true')
+          commonJobProperties.setGradleSwitches(delegate)
+        }
+      }
+    }

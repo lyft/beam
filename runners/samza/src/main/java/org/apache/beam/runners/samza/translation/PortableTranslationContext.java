@@ -18,47 +18,40 @@
 package org.apache.beam.runners.samza.translation;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.beam.runners.core.construction.graph.PipelineNode;
+import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
 import org.apache.beam.runners.samza.SamzaPipelineOptions;
 import org.apache.beam.runners.samza.runtime.OpMessage;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.apache.samza.application.descriptors.StreamApplicationDescriptor;
+import org.apache.samza.operators.KV;
 import org.apache.samza.operators.MessageStream;
-import org.apache.samza.operators.OutputStream;
-import org.apache.samza.operators.StreamGraph;
+import org.apache.samza.system.descriptors.InputDescriptor;
 
 /**
  * Helper that keeps the mapping from BEAM PCollection id to Samza {@link MessageStream}. It also
  * provides other context data such as input and output of a {@link
  * org.apache.beam.model.pipeline.v1.RunnerApi.PTransform}.
  */
-public class PortableTranslationContext {
-  private final Map<String, MessageStream<?>> messsageStreams = new HashMap<>();
-  private final StreamGraph streamGraph;
-  private final SamzaPipelineOptions options;
-  private int topologicalId;
-  private final Set<String> registeredInputStreams = new HashSet<>();
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
+public class PortableTranslationContext extends TranslationContext {
+  private final Map<String, MessageStream<?>> messageStreams = new HashMap<>();
+  private final JobInfo jobInfo;
 
-  public PortableTranslationContext(StreamGraph streamGraph, SamzaPipelineOptions options) {
-    this.streamGraph = streamGraph;
-    this.options = options;
-  }
+  private PipelineNode.PTransformNode currentTransform;
 
-  public SamzaPipelineOptions getSamzaPipelineOptions() {
-    return this.options;
-  }
-
-  public void setCurrentTopologicalId(int id) {
-    this.topologicalId = id;
-  }
-
-  public int getCurrentTopologicalId() {
-    return this.topologicalId;
+  public PortableTranslationContext(
+      StreamApplicationDescriptor appDescriptor, SamzaPipelineOptions options, JobInfo jobInfo) {
+    super(appDescriptor, Collections.emptyMap(), Collections.emptySet(), options);
+    this.jobInfo = jobInfo;
   }
 
   public <T> List<MessageStream<OpMessage<T>>> getAllInputMessageStreams(
@@ -75,7 +68,7 @@ public class PortableTranslationContext {
 
   @SuppressWarnings("unchecked")
   public <T> MessageStream<OpMessage<T>> getMessageStreamById(String id) {
-    return (MessageStream<OpMessage<T>>) messsageStreams.get(id);
+    return (MessageStream<OpMessage<T>>) messageStreams.get(id);
   }
 
   public String getInputId(PipelineNode.PTransformNode transform) {
@@ -86,40 +79,39 @@ public class PortableTranslationContext {
     return Iterables.getOnlyElement(transform.getTransform().getOutputsMap().values());
   }
 
+  public JobInfo getJobInfo() {
+    return jobInfo;
+  }
+
   public <T> void registerMessageStream(String id, MessageStream<OpMessage<T>> stream) {
-    if (messsageStreams.containsKey(id)) {
+    if (messageStreams.containsKey(id)) {
       throw new IllegalArgumentException("Stream already registered for id: " + id);
     }
-    messsageStreams.put(id, stream);
+    messageStreams.put(id, stream);
   }
 
-  /** Register an input stream, using the PCollection id as the config id. */
-  public void registerInputMessageStream(String id) {
-    registerInputMessageStreamWithStreamId(id, id);
+  /** Register an input stream with certain config id. */
+  public <T> void registerInputMessageStream(
+      String id, InputDescriptor<KV<?, OpMessage<T>>, ?> inputDescriptor) {
+    registerInputMessageStreams(id, Collections.singletonList(inputDescriptor));
   }
 
-  /** Get output stream by stream id. */
-  public <T> OutputStream<T> getOutputStreamById(String outputStreamId) {
-    return streamGraph.getOutputStream(outputStreamId);
+  public <T> void registerInputMessageStreams(
+      String id, List<? extends InputDescriptor<KV<?, OpMessage<T>>, ?>> inputDescriptors) {
+    registerInputMessageStreams(id, inputDescriptors, this::registerMessageStream);
   }
 
-  /**
-   * Register an input stream with certain config id.
-   *
-   * @param id id of the PCollection in the input/output of PTransform
-   * @param streamId samza stream id which user can use to customize the stream level config
-   */
-  public <T> void registerInputMessageStreamWithStreamId(String id, String streamId) {
-    // we want to register it with the Samza graph only once per i/o stream
-    if (registeredInputStreams.contains(streamId)) {
-      return;
-    }
-    final MessageStream<OpMessage<T>> stream =
-        streamGraph
-            .<org.apache.samza.operators.KV<?, OpMessage<T>>>getInputStream(streamId)
-            .map(org.apache.samza.operators.KV::getValue);
+  public void setCurrentTransform(PipelineNode.PTransformNode currentTransform) {
+    this.currentTransform = currentTransform;
+  }
 
-    registerMessageStream(id, stream);
-    registeredInputStreams.add(streamId);
+  @Override
+  public void clearCurrentTransform() {
+    this.currentTransform = null;
+  }
+
+  @Override
+  public String getTransformFullName() {
+    return currentTransform.getTransform().getUniqueName();
   }
 }

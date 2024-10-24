@@ -21,14 +21,14 @@ import java.sql.SQLException;
 import java.util.Collections;
 import java.util.Map;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.extensions.sql.meta.provider.TableProvider;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.values.KV;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.calcite.jdbc.CalciteConnection;
-import org.apache.calcite.jdbc.CalciteSchema;
-import org.apache.calcite.schema.SchemaPlus;
+import org.apache.beam.vendor.calcite.v1_28_0.org.apache.calcite.jdbc.CalciteConnection;
+import org.apache.beam.vendor.calcite.v1_28_0.org.apache.calcite.jdbc.CalciteSchema;
+import org.apache.beam.vendor.calcite.v1_28_0.org.apache.calcite.schema.SchemaPlus;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Beam JDBC Connection.
@@ -37,6 +37,9 @@ import org.apache.calcite.schema.SchemaPlus;
  * {@link BeamCalciteSchema BeamCalciteSchemas} keep reference to this connection. Pipeline options
  * are stored here.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class JdbcConnection extends CalciteConnectionWrapper {
   /**
    * Connection string parameters that begin with {@code "beam."} will be interpreted as {@link
@@ -45,6 +48,7 @@ public class JdbcConnection extends CalciteConnectionWrapper {
   private static final String PIPELINE_OPTION_PREFIX = "beam.";
 
   private Map<String, String> pipelineOptionsMap;
+  private PipelineOptions pipelineOptions;
 
   private JdbcConnection(CalciteConnection connection) throws SQLException {
     super(connection);
@@ -95,6 +99,14 @@ public class JdbcConnection extends CalciteConnectionWrapper {
    */
   public void setPipelineOptionsMap(Map<String, String> pipelineOptionsMap) {
     this.pipelineOptionsMap = ImmutableMap.copyOf(pipelineOptionsMap);
+  }
+
+  public void setPipelineOptions(PipelineOptions pipelineOptions) {
+    this.pipelineOptions = pipelineOptions;
+  }
+
+  public PipelineOptions getPipelineOptions() {
+    return this.pipelineOptions;
   }
 
   /** Get the current default schema from the root schema. */

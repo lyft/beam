@@ -17,6 +17,9 @@
  */
 package org.apache.beam.examples.cookbook;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.TypedRead.Method;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryOptions;
 import org.apache.beam.sdk.io.gcp.testing.BigqueryMatcher;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -38,7 +41,7 @@ import org.junit.runners.JUnit4;
  *
  * <pre>
  *  ./gradlew integrationTest -p examples/java/ -DintegrationTestPipelineOptions='[
- *  "--tempLocation=gs://your-location/"]'
+ *  "--tempLocation=gs://apache-beam-testing-developers/"]'
  *  --tests org.apache.beam.examples.cookbook.BigQueryTornadoesIT
  *  -DintegrationTestRunner=direct
  * </pre>
@@ -57,22 +60,67 @@ public class BigQueryTornadoesIT {
 
   @BeforeClass
   public static void setUp() {
-    PipelineOptionsFactory.register(BigQueryTornadoesITOptions.class);
+    PipelineOptionsFactory.register(TestPipelineOptions.class);
+  }
+
+  private void runE2EBigQueryTornadoesTest(BigQueryTornadoesITOptions options) throws Exception {
+    String query = String.format("SELECT month, tornado_count FROM [%s]", options.getOutput());
+    BigQueryTornadoes.runBigQueryTornadoes(options);
+
+    assertThat(
+        BigqueryMatcher.createQuery(options.getAppName(), options.getProject(), query),
+        BigqueryMatcher.queryResultHasChecksum(DEFAULT_OUTPUT_CHECKSUM));
   }
 
   @Test
-  public void testE2EBigQueryTornadoes() throws Exception {
+  public void testE2EBigQueryTornadoesWithExport() throws Exception {
     BigQueryTornadoesITOptions options =
         TestPipeline.testingPipelineOptions().as(BigQueryTornadoesITOptions.class);
+    options.setReadMethod(Method.EXPORT);
     options.setOutput(
         String.format(
             "%s.%s", "BigQueryTornadoesIT", "monthly_tornadoes_" + System.currentTimeMillis()));
 
-    String query = String.format("SELECT month, tornado_count FROM [%s]", options.getOutput());
-    options.setOnSuccessMatcher(
-        new BigqueryMatcher(
-            options.getAppName(), options.getProject(), query, DEFAULT_OUTPUT_CHECKSUM));
+    runE2EBigQueryTornadoesTest(options);
+  }
 
-    BigQueryTornadoes.runBigQueryTornadoes(options);
+  @Test
+  public void testE2eBigQueryTornadoesWithStorageApi() throws Exception {
+    BigQueryTornadoesITOptions options =
+        TestPipeline.testingPipelineOptions().as(BigQueryTornadoesITOptions.class);
+    options.setReadMethod(Method.DIRECT_READ);
+    options.setOutput(
+        String.format(
+            "%s.%s",
+            "BigQueryTornadoesIT", "monthly_tornadoes_storage_" + System.currentTimeMillis()));
+
+    runE2EBigQueryTornadoesTest(options);
+  }
+
+  @Test
+  public void testE2EBigQueryTornadoesWithExportUsingQuery() throws Exception {
+    BigQueryTornadoesITOptions options =
+        TestPipeline.testingPipelineOptions().as(BigQueryTornadoesITOptions.class);
+    options.setReadMethod(Method.EXPORT);
+    options.setOutput(
+        String.format(
+            "%s.%s", "BigQueryTornadoesIT", "monthly_tornadoes_" + System.currentTimeMillis()));
+    options.setInputQuery("SELECT * FROM `clouddataflow-readonly.samples.weather_stations`");
+
+    runE2EBigQueryTornadoesTest(options);
+  }
+
+  @Test
+  public void testE2eBigQueryTornadoesWithStorageApiUsingQuery() throws Exception {
+    BigQueryTornadoesITOptions options =
+        TestPipeline.testingPipelineOptions().as(BigQueryTornadoesITOptions.class);
+    options.setReadMethod(Method.DIRECT_READ);
+    options.setOutput(
+        String.format(
+            "%s.%s",
+            "BigQueryTornadoesIT", "monthly_tornadoes_storage_" + System.currentTimeMillis()));
+    options.setInputQuery("SELECT * FROM `clouddataflow-readonly.samples.weather_stations`");
+
+    runE2EBigQueryTornadoesTest(options);
   }
 }

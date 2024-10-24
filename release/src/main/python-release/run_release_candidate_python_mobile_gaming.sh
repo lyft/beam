@@ -48,26 +48,6 @@ function complete() {
 
 
 #######################################
-# Download files from RC staging location, install python sdk
-# Globals:
-#   BEAM_PYTHON_SDK
-# Arguments:
-#   None
-#######################################
-function install_sdk() {
-  print_separator "Creating new virtualenv and installing the SDK"
-  virtualenv temp_virtualenv
-  . temp_virtualenv/bin/activate
-  gcloud_version=$(gcloud --version | head -1 | awk '{print $4}')
-  if [[ "$gcloud_version" < "189" ]]; then
-    update_gcloud
-  fi
-  pip install google-compute-engine
-  pip install $BEAM_PYTHON_SDK[gcp]
-}
-
-
-#######################################
 # Run UserScore with DirectRunner
 # Globals:
 #   USERSCORE_OUTPUT_PREFIX, DATASET, BUCKET_NAME
@@ -100,6 +80,7 @@ function verify_userscore_dataflow() {
   output_file_name="$USERSCORE_OUTPUT_PREFIX-dataflow-runner.txt"
   python -m apache_beam.examples.complete.game.user_score \
     --project=$PROJECT_ID \
+    --region=$REGION_ID \
     --runner=DataflowRunner \
     --temp_location=gs://$BUCKET_NAME/temp/ \
     --sdk_location=$BEAM_PYTHON_SDK \
@@ -119,11 +100,15 @@ function verify_userscore_dataflow() {
 #######################################
 function verify_hourlyteamscore_direct() {
   print_separator "Running HourlyTeamScore example with DirectRunner"
+  # Clean up old bq tables
+  cleanup_hourly_team_score "direct"
+
   python -m apache_beam.examples.complete.game.hourly_team_score \
     --project=$PROJECT_ID \
     --dataset=$DATASET \
     --input=$GAME_INPUT_DATA \
-    --table="hourly_team_score_python_direct"
+    --temp_location=gs://$BUCKET_NAME/temp/ \
+    --table="${HOURLY_TEAM_SCORE_TABLE_PREFIX}_direct"
 
   verify_hourly_team_score "direct"
 }
@@ -139,14 +124,18 @@ function verify_hourlyteamscore_direct() {
 #######################################
 function verify_hourlyteamscore_dataflow() {
   print_separator "Running HourlyTeamScore example with DataflowRunner"
+  # Clean up old bq tables
+  cleanup_hourly_team_score "dataflow"
+
   python -m apache_beam.examples.complete.game.hourly_team_score \
     --project=$PROJECT_ID \
+    --region=$REGION_ID \
     --dataset=$DATASET \
     --runner=DataflowRunner \
     --temp_location=gs://$BUCKET_NAME/temp/ \
     --sdk_location $BEAM_PYTHON_SDK \
     --input=$GAME_INPUT_DATA \
-    --table="hourly_team_score_python_dataflow"
+    --table="${HOURLY_TEAM_SCORE_TABLE_PREFIX}_dataflow"
 
   verify_hourly_team_score "dataflow"
 }
@@ -164,6 +153,7 @@ function verify_hourlyteamscore_dataflow() {
 #   VERSION
 # Arguments:
 #   $1 - sdk types: [tar, wheel]
+#   $2 - python interpreter version: [python3.7, python3.8, ...]
 #######################################
 function run_release_candidate_python_mobile_gaming() {
   print_separator "Start Mobile Gaming Examples"
@@ -173,11 +163,11 @@ function run_release_candidate_python_mobile_gaming() {
   echo $TMPDIR
   pushd $TMPDIR
 
-  download_files $1
+  download_files $1 $2
   # get exact names of sdk and other files
   BEAM_PYTHON_SDK=$(get_sdk_name $1)
 
-  install_sdk
+  install_sdk $1 $2
   verify_userscore_direct
   verify_userscore_dataflow
   verify_hourlyteamscore_direct

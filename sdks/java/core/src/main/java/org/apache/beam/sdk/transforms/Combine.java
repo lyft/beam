@@ -17,7 +17,7 @@
  */
 package org.apache.beam.sdk.transforms;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,7 +29,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
-import javax.annotation.Nullable;
+import org.apache.beam.sdk.annotations.Internal;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
@@ -44,12 +44,9 @@ import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.CombineFnBase.AbstractGlobalCombineFn;
 import org.apache.beam.sdk.transforms.CombineFnBase.GlobalCombineFn;
 import org.apache.beam.sdk.transforms.CombineWithContext.CombineFnWithContext;
-import org.apache.beam.sdk.transforms.CombineWithContext.Context;
 import org.apache.beam.sdk.transforms.CombineWithContext.RequiresContextInternal;
 import org.apache.beam.sdk.transforms.View.CreatePCollectionView;
-import org.apache.beam.sdk.transforms.View.VoidKeyToMultimapMaterialization;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.transforms.display.DisplayData.Builder;
 import org.apache.beam.sdk.transforms.display.HasDisplayData;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindows;
@@ -64,13 +61,15 @@ import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PCollectionViews;
+import org.apache.beam.sdk.values.PCollectionViews.TypeDescriptorSupplier;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * {@code PTransform}s for combining {@code PCollection} elements globally and per-key.
@@ -79,6 +78,9 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
  * href="https://beam.apache.org/documentation/programming-guide/#transforms-combine">documentation</a>
  * for how to use the operations in this class.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class Combine {
   private Combine() {
     // do not instantiate
@@ -99,6 +101,23 @@ public class Combine {
    */
   public static <V> Globally<V, V> globally(SerializableFunction<Iterable<V>, V> combiner) {
     return globally(IterableCombineFn.of(combiner), displayDataForFn(combiner));
+  }
+
+  /**
+   * Returns a {@link Globally Combine.Globally} {@code PTransform} that uses the given {@code
+   * SerializableBiFunction} to combine all the elements in each window of the input {@code
+   * PCollection} into a single value in the output {@code PCollection}. The types of the input
+   * elements and the output elements must be the same.
+   *
+   * <p>If the input {@code PCollection} is windowed into {@link GlobalWindows}, a default value in
+   * the {@link GlobalWindow} will be output if the input {@code PCollection} is empty. To use this
+   * with inputs with other windowing, either {@link Globally#withoutDefaults} or {@link
+   * Globally#asSingletonView} must be called.
+   *
+   * <p>See {@link Globally Combine.Globally} for more information.
+   */
+  public static <V> Globally<V, V> globally(SerializableBiFunction<V, V, V> combiner) {
+    return globally(BinaryCombineFn.of(combiner), displayDataForFn(combiner));
   }
 
   /**
@@ -157,6 +176,22 @@ public class Combine {
    *
    * <p>See {@link PerKey Combine.PerKey} for more information.
    */
+  public static <K, V> PerKey<K, V, V> perKey(SerializableBiFunction<V, V, V> fn) {
+    return perKey(BinaryCombineFn.of(fn), displayDataForFn(fn));
+  }
+
+  /**
+   * Returns a {@link PerKey Combine.PerKey} {@code PTransform} that first groups its input {@code
+   * PCollection} of {@code KV}s by keys and windows, then invokes the given function on each of the
+   * values lists to produce a combined value, and then returns a {@code PCollection} of {@code KV}s
+   * mapping each distinct key to its combined value for each window.
+   *
+   * <p>Each output element is in the window by which its corresponding input was grouped, and has
+   * the timestamp of the end of that window. The output {@code PCollection} has the same {@link
+   * org.apache.beam.sdk.transforms.windowing.WindowFn} as the input.
+   *
+   * <p>See {@link PerKey Combine.PerKey} for more information.
+   */
   public static <K, InputT, OutputT> PerKey<K, InputT, OutputT> perKey(
       GlobalCombineFn<? super InputT, ?, OutputT> fn) {
     return perKey(fn, displayDataForFn(fn));
@@ -166,6 +201,13 @@ public class Combine {
       GlobalCombineFn<? super InputT, ?, OutputT> fn,
       DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
     return new PerKey<>(fn, fnDisplayData, false /*fewKeys*/);
+  }
+
+  /** Returns a {@link PerKey Combine.PerKey}, and set fewKeys in {@link GroupByKey}. */
+  @Internal
+  public static <K, InputT, OutputT> PerKey<K, InputT, OutputT> fewKeys(
+      GlobalCombineFn<? super InputT, ?, OutputT> fn) {
+    return new PerKey<>(fn, displayDataForFn(fn), true /*fewKeys*/);
   }
 
   /** Returns a {@link PerKey Combine.PerKey}, and set fewKeys in {@link GroupByKey}. */
@@ -194,6 +236,26 @@ public class Combine {
   public static <K, V> GroupedValues<K, V, V> groupedValues(
       SerializableFunction<Iterable<V>, V> fn) {
     return groupedValues(IterableCombineFn.of(fn), displayDataForFn(fn));
+  }
+
+  /**
+   * Returns a {@link GroupedValues Combine.GroupedValues} {@code PTransform} that takes a {@code
+   * PCollection} of {@code KV}s where a key maps to an {@code Iterable} of values, e.g., the result
+   * of a {@code GroupByKey}, then uses the given {@code SerializableFunction} to combine all the
+   * values associated with a key, ignoring the key. The type of the input and output values must be
+   * the same.
+   *
+   * <p>Each output element has the same timestamp and is in the same window as its corresponding
+   * input element, and the output {@code PCollection} has the same {@link
+   * org.apache.beam.sdk.transforms.windowing.WindowFn} associated with it as the input.
+   *
+   * <p>See {@link GroupedValues Combine.GroupedValues} for more information.
+   *
+   * <p>Note that {@link #perKey(SerializableBiFunction)} is typically more convenient to use than
+   * {@link GroupByKey} followed by {@code groupedValues(...)}.
+   */
+  public static <K, V> GroupedValues<K, V, V> groupedValues(SerializableBiFunction<V, V, V> fn) {
+    return groupedValues(BinaryCombineFn.of(fn), displayDataForFn(fn));
   }
 
   /**
@@ -252,14 +314,14 @@ public class Combine {
    *
    * <p>For example:
    *
-   * <pre>{@code
-   * public class AverageFn extends CombineFn<Integer, AverageFn.Accum, Double> {
+   * <pre><code>
+   * public class AverageFn extends{@literal CombineFn<Integer, AverageFn.Accum, Double>} {
    *   public static class Accum implements Serializable {
    *     int sum = 0;
    *     int count = 0;
    *
-   *    {@literal@}Override
-   *     public boolean equals(Object other) {
+   *    {@literal @Override}
+   *     public boolean equals(@Nullable Object other) {
    *       if (other == null) return false;
    *       if (other == this) return true;
    *       if (!(other instanceof Accum))return false;
@@ -277,12 +339,14 @@ public class Combine {
    *   public Accum createAccumulator() {
    *     return new Accum();
    *   }
+   *
    *   public Accum addInput(Accum accum, Integer input) {
    *       accum.sum += input;
    *       accum.count++;
    *       return accum;
    *   }
-   *   public Accum mergeAccumulators(Iterable<Accum> accums) {
+   *
+   *   public Accum{@literal mergeAccumulators(Iterable<Accum> accums)} {
    *     Accum merged = createAccumulator();
    *     for (Accum accum : accums) {
    *       merged.sum += accum.sum;
@@ -290,13 +354,14 @@ public class Combine {
    *     }
    *     return merged;
    *   }
+   *
    *   public Double extractOutput(Accum accum) {
    *     return ((double) accum.sum) / accum.count;
    *   }
-   * }
+   * }{@literal
    * PCollection<Integer> pc = ...;
    * PCollection<Double> average = pc.apply(Combine.globally(new AverageFn()));
-   * }</pre>
+   * }</code></pre>
    *
    * <p>Combining functions used by {@link Combine.Globally}, {@link Combine.PerKey}, {@link
    * Combine.GroupedValues}, and {@code PTransforms} derived from them should be <i>associative</i>
@@ -327,7 +392,10 @@ public class Combine {
    * @param <AccumT> type of mutable accumulator values
    * @param <OutputT> type of output values
    */
-  public abstract static class CombineFn<InputT, AccumT, OutputT>
+  public abstract static class CombineFn<
+          InputT extends @Nullable Object,
+          AccumT extends @Nullable Object,
+          OutputT extends @Nullable Object>
       extends AbstractGlobalCombineFn<InputT, AccumT, OutputT> {
 
     /**
@@ -338,22 +406,26 @@ public class Combine {
     /**
      * Adds the given input value to the given accumulator, returning the new accumulator value.
      *
-     * <p>For efficiency, the input accumulator may be modified and returned.
+     * @param mutableAccumulator may be modified and returned for efficiency
+     * @param input should not be mutated
      */
-    public abstract AccumT addInput(AccumT accumulator, InputT input);
+    public abstract AccumT addInput(AccumT mutableAccumulator, InputT input);
 
     /**
      * Returns an accumulator representing the accumulation of all the input values accumulated in
      * the merging accumulators.
      *
-     * <p>May modify any of the argument accumulators. May return a fresh accumulator, or may return
-     * one of the (modified) argument accumulators.
+     * @param accumulators only the first accumulator may be modified and returned for efficiency;
+     *     the other accumulators should not be mutated, because they may be shared with other code
+     *     and mutating them could lead to incorrect results or data corruption.
      */
     public abstract AccumT mergeAccumulators(Iterable<AccumT> accumulators);
 
     /**
      * Returns the output value that is the result of combining all the input values represented by
      * the given accumulator.
+     *
+     * @param accumulator can be modified for efficiency
      */
     public abstract OutputT extractOutput(AccumT accumulator);
 
@@ -428,12 +500,24 @@ public class Combine {
    */
   public abstract static class BinaryCombineFn<V> extends CombineFn<V, Holder<V>, V> {
 
+    /**
+     * Returns a {@code CombineFn} that uses the given {@code SerializableBiFunction} to combine
+     * values.
+     */
+    public static <V> BinaryCombineFn<V> of(SerializableBiFunction<V, V, V> combiner) {
+      return new BinaryCombineFn<V>() {
+        @Override
+        public V apply(V left, V right) {
+          return combiner.apply(left, right);
+        }
+      };
+    }
+
     /** Applies the binary operation to the two operands, returning the result. */
     public abstract V apply(V left, V right);
 
     /** Returns the value that should be used for the combine of the empty set. */
-    @Nullable
-    public V identity() {
+    public @Nullable V identity() {
       return null;
     }
 
@@ -499,7 +583,7 @@ public class Combine {
    * <p>Used only as a private accumulator class.
    */
   public static class Holder<V> {
-    @Nullable private V value;
+    private @Nullable V value;
     private boolean present;
 
     private Holder() {}
@@ -511,6 +595,11 @@ public class Combine {
     private void set(V value) {
       this.present = true;
       this.value = value;
+    }
+
+    @Override
+    public String toString() {
+      return "Combine.Holder(value=" + value + ", present=" + present + ")";
     }
   }
 
@@ -526,11 +615,11 @@ public class Combine {
     @Override
     public void encode(Holder<V> accumulator, OutputStream outStream)
         throws CoderException, IOException {
-      encode(accumulator, outStream, Context.NESTED);
+      encode(accumulator, outStream, Coder.Context.NESTED);
     }
 
     @Override
-    public void encode(Holder<V> accumulator, OutputStream outStream, Context context)
+    public void encode(Holder<V> accumulator, OutputStream outStream, Coder.Context context)
         throws CoderException, IOException {
       if (accumulator.present) {
         outStream.write(1);
@@ -542,11 +631,11 @@ public class Combine {
 
     @Override
     public Holder<V> decode(InputStream inStream) throws CoderException, IOException {
-      return decode(inStream, Context.NESTED);
+      return decode(inStream, Coder.Context.NESTED);
     }
 
     @Override
-    public Holder<V> decode(InputStream inStream, Context context)
+    public Holder<V> decode(InputStream inStream, Coder.Context context)
         throws CoderException, IOException {
       if (inStream.read() == 1) {
         return new Holder<>(valueCoder.decode(inStream, context));
@@ -636,7 +725,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof ToIntegerCodingFunction;
       }
 
@@ -654,7 +743,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof FromIntegerCodingFunction;
       }
 
@@ -733,7 +822,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof ToLongCodingFunction;
       }
 
@@ -751,7 +840,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof FromLongCodingFunction;
       }
 
@@ -832,7 +921,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof ToDoubleCodingFunction;
       }
 
@@ -850,7 +939,7 @@ public class Combine {
       }
 
       @Override
-      public boolean equals(Object o) {
+      public boolean equals(@Nullable Object o) {
         return o instanceof FromDoubleCodingFunction;
       }
 
@@ -1224,17 +1313,20 @@ public class Combine {
     @Override
     public PCollectionView<OutputT> expand(PCollection<InputT> input) {
       PCollection<OutputT> combined =
-          input.apply(Combine.<InputT, OutputT>globally(fn).withoutDefaults().withFanout(fanout));
-      PCollection<KV<Void, OutputT>> materializationInput =
-          combined.apply(new VoidKeyToMultimapMaterialization<>());
+          input.apply(
+              "CombineValues",
+              Combine.<InputT, OutputT>globally(fn).withoutDefaults().withFanout(fanout));
+      Coder<OutputT> outputCoder = combined.getCoder();
       PCollectionView<OutputT> view =
           PCollectionViews.singletonView(
-              materializationInput,
+              combined,
+              (TypeDescriptorSupplier<OutputT>)
+                  () -> outputCoder != null ? outputCoder.getEncodedTypeDescriptor() : null,
               input.getWindowingStrategy(),
               insertDefault,
               insertDefault ? fn.defaultValue() : null,
               combined.getCoder());
-      materializationInput.apply(CreatePCollectionView.of(view));
+      combined.apply("CreatePCollectionView", CreatePCollectionView.of(view));
       return view;
     }
 
@@ -1463,7 +1555,7 @@ public class Combine {
      */
     public PerKeyWithHotKeyFanout<K, InputT, OutputT> withHotKeyFanout(
         SerializableFunction<? super K, Integer> hotKeyFanout) {
-      return new PerKeyWithHotKeyFanout<>(fn, fnDisplayData, hotKeyFanout);
+      return new PerKeyWithHotKeyFanout<>(fn, fnDisplayData, hotKeyFanout, fewKeys);
     }
 
     /**
@@ -1476,7 +1568,7 @@ public class Combine {
           fnDisplayData,
           new SimpleFunction<K, Integer>() {
             @Override
-            public void populateDisplayData(Builder builder) {
+            public void populateDisplayData(DisplayData.Builder builder) {
               super.populateDisplayData(builder);
               builder.add(DisplayData.item("fanout", hotKeyFanout).withLabel("Key Fanout Size"));
             }
@@ -1485,7 +1577,8 @@ public class Combine {
             public Integer apply(K unused) {
               return hotKeyFanout;
             }
-          });
+          },
+          fewKeys);
     }
 
     /** Returns the {@link GlobalCombineFn} used by this Combine operation. */
@@ -1532,13 +1625,17 @@ public class Combine {
     private final DisplayData.ItemSpec<? extends Class<?>> fnDisplayData;
     private final SerializableFunction<? super K, Integer> hotKeyFanout;
 
+    private final boolean fewKeys;
+
     private PerKeyWithHotKeyFanout(
         GlobalCombineFn<? super InputT, ?, OutputT> fn,
         DisplayData.ItemSpec<? extends Class<?>> fnDisplayData,
-        SerializableFunction<? super K, Integer> hotKeyFanout) {
+        SerializableFunction<? super K, Integer> hotKeyFanout,
+        boolean fewKeys) {
       this.fn = fn;
       this.fnDisplayData = fnDisplayData;
       this.hotKeyFanout = hotKeyFanout;
+      this.fewKeys = fewKeys;
     }
 
     @Override
@@ -1683,27 +1780,29 @@ public class Combine {
         hotPreCombine =
             new CombineFnWithContext<InputT, AccumT, AccumT>() {
               @Override
-              public AccumT createAccumulator(Context c) {
+              public AccumT createAccumulator(CombineWithContext.Context c) {
                 return fnWithContext.createAccumulator(c);
               }
 
               @Override
-              public AccumT addInput(AccumT accumulator, InputT value, Context c) {
+              public AccumT addInput(
+                  AccumT accumulator, InputT value, CombineWithContext.Context c) {
                 return fnWithContext.addInput(accumulator, value, c);
               }
 
               @Override
-              public AccumT mergeAccumulators(Iterable<AccumT> accumulators, Context c) {
+              public AccumT mergeAccumulators(
+                  Iterable<AccumT> accumulators, CombineWithContext.Context c) {
                 return fnWithContext.mergeAccumulators(accumulators, c);
               }
 
               @Override
-              public AccumT compact(AccumT accumulator, Context c) {
+              public AccumT compact(AccumT accumulator, CombineWithContext.Context c) {
                 return fnWithContext.compact(accumulator, c);
               }
 
               @Override
-              public AccumT extractOutput(AccumT accumulator, Context c) {
+              public AccumT extractOutput(AccumT accumulator, CombineWithContext.Context c) {
                 return accumulator;
               }
 
@@ -1723,13 +1822,15 @@ public class Combine {
         postCombine =
             new CombineFnWithContext<InputOrAccum<InputT, AccumT>, AccumT, OutputT>() {
               @Override
-              public AccumT createAccumulator(Context c) {
+              public AccumT createAccumulator(CombineWithContext.Context c) {
                 return fnWithContext.createAccumulator(c);
               }
 
               @Override
               public AccumT addInput(
-                  AccumT accumulator, InputOrAccum<InputT, AccumT> value, Context c) {
+                  AccumT accumulator,
+                  InputOrAccum<InputT, AccumT> value,
+                  CombineWithContext.Context c) {
                 if (value.accum == null) {
                   return fnWithContext.addInput(accumulator, value.input, c);
                 } else {
@@ -1739,17 +1840,18 @@ public class Combine {
               }
 
               @Override
-              public AccumT mergeAccumulators(Iterable<AccumT> accumulators, Context c) {
+              public AccumT mergeAccumulators(
+                  Iterable<AccumT> accumulators, CombineWithContext.Context c) {
                 return fnWithContext.mergeAccumulators(accumulators, c);
               }
 
               @Override
-              public AccumT compact(AccumT accumulator, Context c) {
+              public AccumT compact(AccumT accumulator, CombineWithContext.Context c) {
                 return fnWithContext.compact(accumulator, c);
               }
 
               @Override
-              public OutputT extractOutput(AccumT accumulator, Context c) {
+              public OutputT extractOutput(AccumT accumulator, CombineWithContext.Context c) {
                 return fnWithContext.extractOutput(accumulator, c);
               }
 
@@ -1822,6 +1924,10 @@ public class Combine {
       }
 
       // Combine the hot and cold keys separately.
+      Combine.PerKey<KV<K, Integer>, InputT, AccumT> hotPreCombineTransform =
+          fewKeys
+              ? Combine.fewKeys(hotPreCombine, fnDisplayData)
+              : Combine.perKey(hotPreCombine, fnDisplayData);
       PCollection<KV<K, InputOrAccum<InputT, AccumT>>> precombinedHot =
           split
               .get(hot)
@@ -1830,7 +1936,7 @@ public class Combine {
                       KvCoder.of(inputCoder.getKeyCoder(), VarIntCoder.of()),
                       inputCoder.getValueCoder()))
               .setWindowingStrategyInternal(preCombineStrategy)
-              .apply("PreCombineHot", Combine.perKey(hotPreCombine, fnDisplayData))
+              .apply("PreCombineHot", hotPreCombineTransform)
               .apply(
                   "StripNonce",
                   MapElements.via(
@@ -1865,10 +1971,14 @@ public class Combine {
               .setCoder(KvCoder.of(inputCoder.getKeyCoder(), inputOrAccumCoder));
 
       // Combine the union of the pre-processed hot and cold key results.
+      Combine.PerKey<K, InputOrAccum<InputT, AccumT>, OutputT> postCombineTransform =
+          fewKeys
+              ? Combine.fewKeys(postCombine, fnDisplayData)
+              : Combine.perKey(postCombine, fnDisplayData);
       return PCollectionList.of(precombinedHot)
           .and(preprocessedCold)
           .apply(Flatten.pCollections())
-          .apply("PostCombine", Combine.perKey(postCombine, fnDisplayData));
+          .apply("PostCombine", postCombineTransform);
     }
 
     @Override
@@ -1888,8 +1998,8 @@ public class Combine {
      * paths.
      */
     private static class InputOrAccum<InputT, AccumT> {
-      @Nullable public final InputT input;
-      @Nullable public final AccumT accum;
+      public final @Nullable InputT input;
+      public final @Nullable AccumT accum;
 
       private InputOrAccum(@Nullable InputT input, @Nullable AccumT aggr) {
         this.input = input;
@@ -1981,10 +2091,10 @@ public class Combine {
    * <pre>{@code
    * PCollection<KV<String, Integer>> pc = ...;
    * PCollection<KV<String, Iterable<Integer>>> groupedByKey = pc.apply(
-   *     new GroupByKey<String, Integer>());
-   * PCollection<KV<String, Integer>> sumByKey = groupedByKey.apply(
-   *     Combine.<String, Integer>groupedValues(
-   *         new Sum.SumIntegerFn()));
+   *     GroupByKey.create());
+   * PCollection<KV<String, Integer>> sumByKey =
+   *     groupedByKey.apply(Combine.groupedValues(
+   *         Sum.ofIntegers()));
    * }</pre>
    *
    * <p>See also {@link #perKey}/{@link PerKey Combine.PerKey}, which captures the common pattern of

@@ -17,18 +17,16 @@
  */
 package org.apache.beam.sdk.io.aws.sns;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.client.builder.AwsClientBuilder;
 import com.amazonaws.regions.Regions;
-import com.amazonaws.services.cloudwatch.AmazonCloudWatch;
-import com.amazonaws.services.cloudwatch.AmazonCloudWatchClientBuilder;
 import com.amazonaws.services.sns.AmazonSNS;
 import com.amazonaws.services.sns.AmazonSNSClientBuilder;
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Basic implementation of {@link AwsClientsProvider} used by default in {@link SnsIO}. */
 class BasicSnsProvider implements AwsClientsProvider {
@@ -36,7 +34,7 @@ class BasicSnsProvider implements AwsClientsProvider {
   private final String accessKey;
   private final String secretKey;
   private final Regions region;
-  @Nullable private final String serviceEndpoint;
+  private final @Nullable String serviceEndpoint;
 
   BasicSnsProvider(
       String accessKey, String secretKey, Regions region, @Nullable String serviceEndpoint) {
@@ -54,9 +52,9 @@ class BasicSnsProvider implements AwsClientsProvider {
   }
 
   @Override
-  public AmazonCloudWatch getCloudWatchClient() {
-    AmazonCloudWatchClientBuilder clientBuilder =
-        AmazonCloudWatchClientBuilder.standard().withCredentials(getCredentialsProvider());
+  public AmazonSNS createSnsPublisher() {
+    AmazonSNSClientBuilder clientBuilder =
+        AmazonSNSClientBuilder.standard().withCredentials(getCredentialsProvider());
     if (serviceEndpoint == null) {
       clientBuilder.withRegion(region);
     } else {
@@ -64,13 +62,5 @@ class BasicSnsProvider implements AwsClientsProvider {
           new AwsClientBuilder.EndpointConfiguration(serviceEndpoint, region.getName()));
     }
     return clientBuilder.build();
-  }
-
-  @Override
-  public AmazonSNS createSnsPublisher() {
-    return AmazonSNSClientBuilder.standard()
-        .withCredentials(getCredentialsProvider())
-        .withRegion(region)
-        .build();
   }
 }

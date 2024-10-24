@@ -17,7 +17,7 @@
  */
 package org.apache.beam.runners.spark.translation;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -32,6 +32,7 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.runners.AppliedPTransform;
+import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -39,15 +40,20 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * The EvaluationContext allows us to define pipeline instructions and translate between {@code
  * PObject<T>}s or {@code PCollection<T>}s and Ts or DStreams/RDDs of Ts.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class EvaluationContext {
   private final JavaSparkContext jsc;
   private JavaStreamingContext jssc;
@@ -110,7 +116,7 @@ public class EvaluationContext {
     return input;
   }
 
-  public <T> Map<TupleTag<?>, PValue> getInputs(PTransform<?, ?> transform) {
+  public <T> Map<TupleTag<?>, PCollection<?>> getInputs(PTransform<?, ?> transform) {
     checkArgument(currentTransform != null, "can only be called with non-null currentTransform");
     checkArgument(
         currentTransform.getTransform() == transform, "can only be called with current transform");
@@ -123,7 +129,7 @@ public class EvaluationContext {
     return output;
   }
 
-  public Map<TupleTag<?>, PValue> getOutputs(PTransform<?, ?> transform) {
+  public Map<TupleTag<?>, PCollection<?>> getOutputs(PTransform<?, ?> transform) {
     checkArgument(currentTransform != null, "can only be called with non-null currentTransform");
     checkArgument(
         currentTransform.getTransform() == transform, "can only be called with current transform");
@@ -133,34 +139,66 @@ public class EvaluationContext {
   public Map<TupleTag<?>, Coder<?>> getOutputCoders() {
     return currentTransform.getOutputs().entrySet().stream()
         .filter(e -> e.getValue() instanceof PCollection)
-        .collect(Collectors.toMap(e -> e.getKey(), e -> ((PCollection) e.getValue()).getCoder()));
+        .collect(Collectors.toMap(Map.Entry::getKey, e -> ((PCollection) e.getValue()).getCoder()));
   }
 
   /**
-   * Cache PCollection if {@link #isCacheDisabled()} flag is false and PCollection is used more then
-   * once in Pipeline.
+   * Cache PCollection if SparkPipelineOptions.isCacheDisabled is false or transform isn't
+   * GroupByKey transformation and PCollection is used more then once in Pipeline.
    *
-   * @param pvalue
+   * <p>PCollection is not cached in GroupByKey transformation, because Spark automatically persists
+   * some intermediate data in shuffle operations, even without users calling persist.
+   *
+   * @param pvalue output of transform
+   * @param transform the transform to check
    * @return if PCollection will be cached
    */
-  public boolean shouldCache(PValue pvalue) {
-    if (isCacheDisabled()) {
+  public boolean shouldCache(PTransform<?, ? extends PValue> transform, PValue pvalue) {
+    if (serializableOptions.get().as(SparkPipelineOptions.class).isCacheDisabled()
+        || transform instanceof GroupByKey) {
       return false;
     }
     return pvalue instanceof PCollection && cacheCandidates.getOrDefault(pvalue, 0L) > 1;
   }
 
+  /**
+   * Add single output of transform to context map and possibly cache if it conforms {@link
+   * #shouldCache(PTransform, PValue)}.
+   *
+   * @param transform from which Dataset was created
+   * @param dataset created Dataset from transform
+   */
   public void putDataset(PTransform<?, ? extends PValue> transform, Dataset dataset) {
-    putDataset(getOutput(transform), dataset);
+    putDataset(transform, getOutput(transform), dataset);
   }
 
+  /**
+   * Add output of transform to context map and possibly cache if it conforms {@link
+   * #shouldCache(PTransform, PValue)}. Used when PTransform has multiple outputs.
+   *
+   * @param pvalue one of multiple outputs of transform
+   * @param dataset created Dataset from transform
+   */
   public void putDataset(PValue pvalue, Dataset dataset) {
+    putDataset(null, pvalue, dataset);
+  }
+
+  /**
+   * Add output of transform to context map and possibly cache if it conforms {@link
+   * #shouldCache(PTransform, PValue)}.
+   *
+   * @param transform from which Dataset was created
+   * @param pvalue output of transform
+   * @param dataset created Dataset from transform
+   */
+  private void putDataset(
+      @Nullable PTransform<?, ? extends PValue> transform, PValue pvalue, Dataset dataset) {
     try {
       dataset.setName(pvalue.getName());
     } catch (IllegalStateException e) {
       // name not set, ignore
     }
-    if (shouldCache(pvalue)) {
+    if (shouldCache(transform, pvalue)) {
       // we cache only PCollection
       Coder<?> coder = ((PCollection<?>) pvalue).getCoder();
       Coder<? extends BoundedWindow> wCoder =
@@ -201,8 +239,7 @@ public class EvaluationContext {
   @SuppressWarnings("TypeParameterUnusedInFormals")
   public <T> T get(PValue value) {
     if (pobjects.containsKey(value)) {
-      T result = (T) pobjects.get(value);
-      return result;
+      return (T) pobjects.get(value);
     }
     if (pcollections.containsKey(value)) {
       JavaRDD<?> rdd = ((BoundedDataset) pcollections.get(value)).getRDD();
@@ -254,9 +291,5 @@ public class EvaluationContext {
 
   public String storageLevel() {
     return serializableOptions.get().as(SparkPipelineOptions.class).getStorageLevel();
-  }
-
-  public boolean isCacheDisabled() {
-    return serializableOptions.get().as(SparkPipelineOptions.class).isCacheDisabled();
   }
 }

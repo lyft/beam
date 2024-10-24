@@ -17,7 +17,7 @@
  */
 package org.apache.beam.sdk.extensions.euphoria.core.translate;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.CompositeOperator;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.base.Operator;
@@ -31,6 +31,9 @@ import org.apache.beam.sdk.values.PCollectionList;
  * @param <OutputT> output type
  * @param <OperatorT> operator type
  */
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class CompositeOperatorTranslator<InputT, OutputT, OperatorT extends Operator>
     implements OperatorTranslator<InputT, OutputT, OperatorT> {
 

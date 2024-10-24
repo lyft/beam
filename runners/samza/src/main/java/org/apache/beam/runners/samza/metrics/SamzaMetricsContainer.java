@@ -37,9 +37,11 @@ import org.apache.samza.metrics.MetricsRegistryMap;
  * This class holds the {@link MetricsContainer}s for BEAM metrics, and update the results to Samza
  * metrics.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SamzaMetricsContainer {
   private static final String BEAM_METRICS_GROUP = "BeamMetrics";
-  private static final String DELIMITER = "-";
 
   private final MetricsContainerStepMap metricsContainers = new MetricsContainerStepMap();
   private final MetricsRegistryMap metricsRegistry;
@@ -57,11 +59,12 @@ public class SamzaMetricsContainer {
     return this.metricsContainers;
   }
 
-  public void updateMetrics() {
+  public void updateMetrics(String stepName) {
     assert metricsRegistry != null;
 
     final MetricResults metricResults = asAttemptedOnlyMetricResults(metricsContainers);
-    final MetricQueryResults results = metricResults.queryMetrics(MetricsFilter.builder().build());
+    final MetricQueryResults results =
+        metricResults.queryMetrics(MetricsFilter.builder().addStep(stepName).build());
 
     final CounterUpdater updateCounter = new CounterUpdater();
     results.getCounters().forEach(updateCounter);
@@ -69,7 +72,16 @@ public class SamzaMetricsContainer {
     final GaugeUpdater updateGauge = new GaugeUpdater();
     results.getGauges().forEach(updateGauge);
 
-    // TODO: add distribution metrics to Samza
+    // TODO(https://github.com/apache/beam/issues/21043): add distribution metrics to Samza
+  }
+
+  public void updateExecutableStageBundleMetric(String metricName, long time) {
+    @SuppressWarnings("unchecked")
+    Gauge<Long> gauge = (Gauge<Long>) getSamzaMetricFor(metricName);
+    if (gauge == null) {
+      gauge = metricsRegistry.newGauge(BEAM_METRICS_GROUP, metricName, 0L);
+    }
+    gauge.set(time);
   }
 
   private class CounterUpdater implements Consumer<MetricResult<Long>> {
@@ -103,10 +115,6 @@ public class SamzaMetricsContainer {
   }
 
   private static String getMetricName(MetricResult<?> metricResult) {
-    return metricResult.getStep()
-        + DELIMITER
-        + metricResult.getName().getNamespace()
-        + DELIMITER
-        + metricResult.getName().getName();
+    return metricResult.getKey().toString();
   }
 }

@@ -17,7 +17,7 @@
  */
 package org.apache.beam.runners.core.construction.graph;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import java.util.Collection;
 import java.util.Map;
@@ -31,21 +31,39 @@ import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.core.construction.graph.PipelineNode.PCollectionNode;
 import org.apache.beam.runners.core.construction.graph.PipelineNode.PTransformNode;
 import org.apache.beam.sdk.transforms.Flatten;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * A Fuser that constructs a fused pipeline by fusing as many PCollections into a stage as possible.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class GreedyPCollectionFusers {
   private static final Logger LOG = LoggerFactory.getLogger(GreedyPCollectionFusers.class);
 
   private static final Map<String, FusibilityChecker> URN_FUSIBILITY_CHECKERS =
       ImmutableMap.<String, FusibilityChecker>builder()
           .put(PTransformTranslation.PAR_DO_TRANSFORM_URN, GreedyPCollectionFusers::canFuseParDo)
+          .put(
+              PTransformTranslation.SPLITTABLE_PAIR_WITH_RESTRICTION_URN,
+              GreedyPCollectionFusers::canFuseParDo)
+          .put(
+              PTransformTranslation.SPLITTABLE_PROCESS_KEYED_URN,
+              GreedyPCollectionFusers::cannotFuse)
+          .put(
+              PTransformTranslation.SPLITTABLE_PROCESS_ELEMENTS_URN,
+              GreedyPCollectionFusers::cannotFuse)
+          .put(
+              PTransformTranslation.SPLITTABLE_SPLIT_AND_SIZE_RESTRICTIONS_URN,
+              GreedyPCollectionFusers::canFuseParDo)
+          .put(
+              PTransformTranslation.SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN,
+              GreedyPCollectionFusers::cannotFuse)
           .put(
               PTransformTranslation.COMBINE_PER_KEY_PRECOMBINE_TRANSFORM_URN,
               GreedyPCollectionFusers::canFuseCompatibleEnvironment)
@@ -73,6 +91,15 @@ class GreedyPCollectionFusers {
       ImmutableMap.<String, CompatibilityChecker>builder()
           .put(
               PTransformTranslation.PAR_DO_TRANSFORM_URN,
+              GreedyPCollectionFusers::parDoCompatibility)
+          .put(
+              PTransformTranslation.SPLITTABLE_PAIR_WITH_RESTRICTION_URN,
+              GreedyPCollectionFusers::parDoCompatibility)
+          .put(
+              PTransformTranslation.SPLITTABLE_SPLIT_AND_SIZE_RESTRICTIONS_URN,
+              GreedyPCollectionFusers::parDoCompatibility)
+          .put(
+              PTransformTranslation.SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN,
               GreedyPCollectionFusers::parDoCompatibility)
           .put(
               PTransformTranslation.COMBINE_PER_KEY_PRECOMBINE_TRANSFORM_URN,
@@ -179,12 +206,13 @@ class GreedyPCollectionFusers {
     try {
       ParDoPayload payload = ParDoPayload.parseFrom(parDo.getTransform().getSpec().getPayload());
       if (Maps.filterKeys(
-              parDo.getTransform().getInputsMap(), s -> payload.getTimerSpecsMap().containsKey(s))
+              parDo.getTransform().getInputsMap(),
+              s -> payload.getTimerFamilySpecsMap().containsKey(s))
           .values()
           .contains(candidate.getId())) {
         // Allow fusion across timer PCollections because they are a self loop.
         return true;
-      } else if (payload.getStateSpecsCount() > 0 || payload.getTimerSpecsCount() > 0) {
+      } else if (payload.getStateSpecsCount() > 0 || payload.getTimerFamilySpecsCount() > 0) {
         // Inputs to a ParDo that uses State or Timers must be key-partitioned, and elements for
         // a key must execute serially. To avoid checking if the rest of the stage is
         // key-partitioned and preserves keys, these ParDos do not fuse into an existing stage.
@@ -235,13 +263,13 @@ class GreedyPCollectionFusers {
    */
   private static boolean canFuseCompatibleEnvironment(
       PTransformNode operation,
-      Environment environmemnt,
+      Environment environment,
       @SuppressWarnings("unused") PCollectionNode candidate,
       @SuppressWarnings("unused") Collection<PCollectionNode> stagePCollections,
       QueryablePipeline pipeline) {
     // WindowInto transforms may not have an environment
     Optional<Environment> operationEnvironment = pipeline.getEnvironment(operation);
-    return environmemnt.equals(operationEnvironment.orElse(null));
+    return environment.equals(operationEnvironment.orElse(null));
   }
 
   private static boolean compatibleEnvironments(
@@ -337,8 +365,7 @@ class GreedyPCollectionFusers {
         "Unknown {} {} will not fuse into an existing {}",
         PTransform.class.getSimpleName(),
         transform.getTransform(),
-        ExecutableStage.class.getSimpleName(),
-        PTransform.class.getSimpleName());
+        ExecutableStage.class.getSimpleName());
     return false;
   }
 

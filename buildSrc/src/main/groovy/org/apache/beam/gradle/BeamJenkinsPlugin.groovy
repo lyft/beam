@@ -32,7 +32,7 @@ import org.gradle.api.Project
  * <pre>
  * apply plugin: org.apache.beam.gradle.BeamJenkinsPlugin
  *
- * tasks.withType(FindBugs) {
+ * tasks.withType(SpotBugs) {
  *   reports {
  *     html.enabled = !jenkins.isCIBuild
  *     xml.enabled = jenkins.isCIBuild
@@ -46,8 +46,8 @@ class BeamJenkinsPlugin implements Plugin<Project> {
   void apply(Project project) {
     def extension = project.extensions.create('jenkins', JenkinsPluginExtension)
     extension.isCIBuild = project.findProperty("ciBuild")?.toBoolean() ?:
-            // try to deduce from system env. if all variables are set, we probably on jenkins
-            (System.env['HUDSON_HOME'] && System.env['BUILD_ID'] && System.env['BUILD_NUMBER'])
+        // try to deduce from system env. if all variables are set, we probably on jenkins
+        (System.env['HUDSON_HOME'] && System.env['BUILD_ID'] && System.env['BUILD_NUMBER'])
   }
 
   static class JenkinsPluginExtension {

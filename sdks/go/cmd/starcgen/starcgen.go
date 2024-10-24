@@ -21,14 +21,15 @@
 // reflection based shims used by beam. Reflection is convenient for development,
 // but is an unnecessary expense on pipeline performance.
 //
-// Using This Tool
+// # Using This Tool
 //
 // This tool is intended for use with `go generate`. The recommended convention
 // putting the types and functions used in a separate package from pipeline construction.
 // Then, the tool can be used as follows:
 //
-//   //go:generate go install github.com/apache/beam/sdks/go/cmd/starcgen
-//   //go:generate starcgen --package=<mypackagename>
+//	//go:generate go install github.com/apache/beam/sdks/v2/go/cmd/starcgen
+//	//go:generate starcgen --package=<mypackagename>
+//	//go:generate go fmt
 //
 // This will generate registrations and shim types for all types and functions
 // in the package, in a file `<mypackagename>.shims.go`.
@@ -36,9 +37,9 @@
 // Alternatively, it's possible to specify the specific input files and identifiers within
 // the package for generation.
 //
-//   //go:generate go install github.com/apache/beam/sdks/go/cmd/starcgen
-//   //go:generate starcgen --package=<mypackagename> --inputs=foo.go --identifiers=myFn,myStructFn --output=custom.shims.go
-//
+//	//go:generate go install github.com/apache/beam/sdks/v2/go/cmd/starcgen
+//	//go:generate starcgen --package=<mypackagename> --inputs=foo.go --identifiers=myFn,myStructFn --output=custom.shims.go
+//	//go:generate go fmt
 package main
 
 import (
@@ -54,7 +55,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/apache/beam/sdks/go/pkg/beam/util/starcgenx"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/util/starcgenx"
 )
 
 var (
@@ -170,7 +171,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("error opening %q: %v", *output, err)
 	}
-	if err := Generate(f, *output, pkg, strings.Split(*ids, ","), fset, fs); err != nil {
+	splitIds := make([]string, 0) // If no ids are specified, we should pass an empty slice.
+	if len(*ids) > 0 {
+		splitIds = strings.Split(*ids, ",")
+	}
+	if err := Generate(f, *output, pkg, splitIds, fset, fs); err != nil {
 		log.Fatal(err)
 	}
 }

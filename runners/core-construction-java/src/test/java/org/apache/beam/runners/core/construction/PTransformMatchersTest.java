@@ -17,14 +17,13 @@
  */
 package org.apache.beam.runners.core.construction;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
-import static org.junit.Assert.assertThat;
 
 import java.io.Serializable;
 import java.util.Collections;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
@@ -56,22 +55,23 @@ import org.apache.beam.sdk.transforms.Sum;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.View.CreatePCollectionView;
 import org.apache.beam.sdk.transforms.ViewFn;
+import org.apache.beam.sdk.transforms.resourcehints.ResourceHints;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
-import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindows;
-import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollection.IsBounded;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PCollectionViews;
-import org.apache.beam.sdk.values.PValue;
+import org.apache.beam.sdk.values.PCollectionViews.IterableViewFn;
+import org.apache.beam.sdk.values.PValues;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.beam.sdk.values.TypeDescriptors;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
 import org.hamcrest.Matchers;
 import org.joda.time.Duration;
 import org.junit.Rule;
@@ -81,6 +81,12 @@ import org.junit.runners.JUnit4;
 
 /** Tests for {@link PTransformMatcher}. */
 @RunWith(JUnit4.class)
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  // TODO(https://github.com/apache/beam/issues/21230): Remove when new version of
+  // errorprone is released (2.11.0)
+  "unused"
+})
 public class PTransformMatchersTest implements Serializable {
   @Rule
   public transient TestPipeline p = TestPipeline.create().enableAbandonedNodeEnforcement(false);
@@ -103,7 +109,13 @@ public class PTransformMatchersTest implements Serializable {
             p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of());
     output.setName("dummy output");
 
-    return AppliedPTransform.of("pardo", input.expand(), output.expand(), pardo, p);
+    return AppliedPTransform.of(
+        "pardo",
+        PValues.expandInput(input),
+        PValues.expandOutput(output),
+        pardo,
+        ResourceHints.create(),
+        p);
   }
 
   @Test
@@ -163,15 +175,16 @@ public class PTransformMatchersTest implements Serializable {
   private DoFn<KV<String, Integer>, Integer> splittableDoFn =
       new DoFn<KV<String, Integer>, Integer>() {
         @ProcessElement
-        public void processElement(ProcessContext context, SomeTracker tracker) {}
+        public void processElement(
+            ProcessContext context, RestrictionTracker<Void, Void> tracker) {}
 
         @GetInitialRestriction
-        public Void getInitialRestriction(KV<String, Integer> element) {
+        public Void getInitialRestriction(@Element KV<String, Integer> element) {
           return null;
         }
 
         @NewTracker
-        public SomeTracker newTracker(Void restriction) {
+        public SomeTracker newTracker(@Restriction Void restriction) {
           return null;
         }
       };
@@ -404,7 +417,8 @@ public class PTransformMatchersTest implements Serializable {
     PCollectionView<Iterable<Integer>> view = input.apply(View.asIterable());
 
     // Purposely create a subclass to get a different class then what was expected.
-    ViewFn<?, ?> viewFn = new PCollectionViews.IterableViewFn() {};
+    IterableViewFn<Integer> viewFn =
+        new PCollectionViews.IterableViewFn<Integer>(() -> TypeDescriptors.integers()) {};
     CreatePCollectionView<?, ?> createView = CreatePCollectionView.of(view);
 
     PTransformMatcher matcher = PTransformMatchers.createViewWithViewFn(viewFn.getClass());
@@ -431,6 +445,7 @@ public class PTransformMatchersTest implements Serializable {
                 PCollection.createPrimitiveOutputInternal(
                     p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
             Flatten.pCollections(),
+            ResourceHints.create(),
             p);
 
     assertThat(PTransformMatchers.emptyFlatten().matches(application), is(true));
@@ -450,6 +465,7 @@ public class PTransformMatchersTest implements Serializable {
                 PCollection.createPrimitiveOutputInternal(
                     p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
             Flatten.pCollections(),
+            ResourceHints.create(),
             p);
 
     assertThat(PTransformMatchers.emptyFlatten().matches(application), is(false));
@@ -468,6 +484,7 @@ public class PTransformMatchersTest implements Serializable {
                         p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
                 /* This isn't actually possible to construct, but for the sake of example */
                 Flatten.iterables(),
+                ResourceHints.create(),
                 p);
 
     assertThat(PTransformMatchers.emptyFlatten().matches(application), is(false));
@@ -487,6 +504,7 @@ public class PTransformMatchersTest implements Serializable {
                 PCollection.createPrimitiveOutputInternal(
                     p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
             Flatten.pCollections(),
+            ResourceHints.create(),
             p);
 
     assertThat(PTransformMatchers.flattenWithDuplicateInputs().matches(application), is(false));
@@ -500,7 +518,7 @@ public class PTransformMatchersTest implements Serializable {
     AppliedPTransform application =
         AppliedPTransform.of(
             "Flatten",
-            ImmutableMap.<TupleTag<?>, PValue>builder()
+            ImmutableMap.<TupleTag<?>, PCollection<?>>builder()
                 .put(new TupleTag<Integer>(), duplicate)
                 .put(new TupleTag<Integer>(), duplicate)
                 .build(),
@@ -509,6 +527,7 @@ public class PTransformMatchersTest implements Serializable {
                 PCollection.createPrimitiveOutputInternal(
                     p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
             Flatten.pCollections(),
+            ResourceHints.create(),
             p);
 
     assertThat(PTransformMatchers.flattenWithDuplicateInputs().matches(application), is(true));
@@ -527,6 +546,7 @@ public class PTransformMatchersTest implements Serializable {
                         p, WindowingStrategy.globalDefault(), IsBounded.BOUNDED, VarIntCoder.of())),
                 /* This isn't actually possible to construct, but for the sake of example */
                 Flatten.iterables(),
+                ResourceHints.create(),
                 p);
 
     assertThat(PTransformMatchers.flattenWithDuplicateInputs().matches(application), is(false));
@@ -570,25 +590,11 @@ public class PTransformMatchersTest implements Serializable {
 
   private AppliedPTransform<?, ?, ?> appliedWrite(WriteFiles<Integer, Void, Integer> write) {
     return AppliedPTransform.of(
-        "WriteFiles", Collections.emptyMap(), Collections.emptyMap(), write, p);
-  }
-
-  private static class FakeFilenamePolicy extends FilenamePolicy {
-    @Override
-    public ResourceId windowedFilename(
-        int shardNumber,
-        int numShards,
-        BoundedWindow window,
-        PaneInfo paneInfo,
-        FileBasedSink.OutputFileHints outputFileHints) {
-      throw new UnsupportedOperationException("should not be called");
-    }
-
-    @Nullable
-    @Override
-    public ResourceId unwindowedFilename(
-        int shardNumber, int numShards, FileBasedSink.OutputFileHints outputFileHints) {
-      throw new UnsupportedOperationException("should not be called");
-    }
+        "WriteFiles",
+        Collections.emptyMap(),
+        Collections.emptyMap(),
+        write,
+        ResourceHints.create(),
+        p);
   }
 }

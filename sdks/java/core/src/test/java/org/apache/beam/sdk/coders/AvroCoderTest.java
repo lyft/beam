@@ -17,9 +17,11 @@
  */
 package org.apache.beam.sdk.coders;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -30,8 +32,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -49,14 +51,18 @@ import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.reflect.AvroName;
 import org.apache.avro.reflect.AvroSchema;
-import org.apache.avro.reflect.Nullable;
 import org.apache.avro.reflect.ReflectData;
 import org.apache.avro.reflect.Stringable;
 import org.apache.avro.reflect.Union;
 import org.apache.avro.specific.SpecificData;
+import org.apache.avro.specific.SpecificRecord;
 import org.apache.avro.util.Utf8;
 import org.apache.beam.sdk.coders.Coder.Context;
 import org.apache.beam.sdk.coders.Coder.NonDeterministicException;
+import org.apache.beam.sdk.schemas.TestAvro;
+import org.apache.beam.sdk.schemas.TestAvroNested;
+import org.apache.beam.sdk.schemas.TestEnum;
+import org.apache.beam.sdk.schemas.fixed4;
 import org.apache.beam.sdk.testing.CoderProperties;
 import org.apache.beam.sdk.testing.InterceptingUrlClassLoader;
 import org.apache.beam.sdk.testing.NeedsRunner;
@@ -70,11 +76,16 @@ import org.apache.beam.sdk.util.InstanceBuilder;
 import org.apache.beam.sdk.util.SerializableUtils;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.hamcrest.Description;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.hamcrest.TypeSafeMatcher;
-import org.junit.Assert;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.LocalDate;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -86,23 +97,49 @@ import org.objenesis.strategy.StdInstantiatorStrategy;
 @RunWith(JUnit4.class)
 public class AvroCoderTest {
 
+  public static final DateTime DATETIME_A =
+      new DateTime().withDate(1994, 10, 31).withZone(DateTimeZone.UTC);
+  public static final DateTime DATETIME_B =
+      new DateTime().withDate(1997, 4, 25).withZone(DateTimeZone.UTC);
+  private static final TestAvroNested AVRO_NESTED_SPECIFIC_RECORD = new TestAvroNested(true, 42);
+  private static final TestAvro AVRO_SPECIFIC_RECORD =
+      new TestAvro(
+          true,
+          43,
+          44L,
+          44.1f,
+          44.2d,
+          "mystring",
+          ByteBuffer.wrap(new byte[] {1, 2, 3, 4}),
+          new fixed4(new byte[] {1, 2, 3, 4}),
+          new LocalDate(1979, 3, 14),
+          new DateTime().withDate(1979, 3, 14).withTime(1, 2, 3, 4),
+          TestEnum.abc,
+          AVRO_NESTED_SPECIFIC_RECORD,
+          ImmutableList.of(AVRO_NESTED_SPECIFIC_RECORD, AVRO_NESTED_SPECIFIC_RECORD),
+          ImmutableMap.of("k1", AVRO_NESTED_SPECIFIC_RECORD, "k2", AVRO_NESTED_SPECIFIC_RECORD));
+
   @DefaultCoder(AvroCoder.class)
   private static class Pojo {
     public String text;
     public int count;
 
+    @AvroSchema("{\"type\": \"long\", \"logicalType\": \"timestamp-millis\"}")
+    public DateTime timestamp;
+
     // Empty constructor required for Avro decoding.
     @SuppressWarnings("unused")
     public Pojo() {}
 
-    public Pojo(String text, int count) {
+    public Pojo(String text, int count, DateTime timestamp) {
       this.text = text;
       this.count = count;
+      this.timestamp = timestamp;
     }
 
     // auto-generated
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
       if (this == o) {
         return true;
       }
@@ -118,6 +155,9 @@ public class AvroCoderTest {
       if (text != null ? !text.equals(pojo.text) : pojo.text != null) {
         return false;
       }
+      if (timestamp != null ? !timestamp.equals(pojo.timestamp) : pojo.timestamp != null) {
+        return false;
+      }
 
       return true;
     }
@@ -129,7 +169,15 @@ public class AvroCoderTest {
 
     @Override
     public String toString() {
-      return "Pojo{" + "text='" + text + '\'' + ", count=" + count + '}';
+      return "Pojo{"
+          + "text='"
+          + text
+          + '\''
+          + ", count="
+          + count
+          + ", timestamp="
+          + timestamp
+          + '}';
     }
   }
 
@@ -148,9 +196,9 @@ public class AvroCoderTest {
     CoderProperties.coderSerializable(coder);
     AvroCoder<Pojo> copy = SerializableUtils.clone(coder);
 
-    Pojo pojo = new Pojo("foo", 3);
-    Pojo equalPojo = new Pojo("foo", 3);
-    Pojo otherPojo = new Pojo("bar", -19);
+    Pojo pojo = new Pojo("foo", 3, DATETIME_A);
+    Pojo equalPojo = new Pojo("foo", 3, DATETIME_A);
+    Pojo otherPojo = new Pojo("bar", -19, DATETIME_B);
     CoderProperties.coderConsistentWithEquals(coder, pojo, equalPojo);
     CoderProperties.coderConsistentWithEquals(copy, pojo, equalPojo);
     CoderProperties.coderConsistentWithEquals(coder, pojo, otherPojo);
@@ -161,6 +209,7 @@ public class AvroCoderTest {
    * Tests that {@link AvroCoder} works around issues in Avro where cache classes might be from the
    * wrong ClassLoader, causing confusing "Cannot cast X to X" error messages.
    */
+  @SuppressWarnings("ReturnValueIgnored")
   @Test
   public void testTwoClassLoaders() throws Exception {
     ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
@@ -200,13 +249,13 @@ public class AvroCoderTest {
 
   /**
    * Confirm that we can serialize and deserialize an AvroCoder object and still decode after.
-   * (BEAM-349).
+   * (https://github.com/apache/beam/issues/18022).
    *
    * @throws Exception
    */
   @Test
   public void testTransientFieldInitialization() throws Exception {
-    Pojo value = new Pojo("Hello", 42);
+    Pojo value = new Pojo("Hello", 42, DATETIME_A);
     AvroCoder<Pojo> coder = AvroCoder.of(Pojo.class);
 
     // Serialization of object
@@ -229,7 +278,7 @@ public class AvroCoderTest {
    */
   @Test
   public void testKryoSerialization() throws Exception {
-    Pojo value = new Pojo("Hello", 42);
+    Pojo value = new Pojo("Hello", 42, DATETIME_A);
     AvroCoder<Pojo> coder = AvroCoder.of(Pojo.class);
 
     // Kryo instantiation
@@ -267,10 +316,46 @@ public class AvroCoderTest {
 
   @Test
   public void testPojoEncoding() throws Exception {
-    Pojo value = new Pojo("Hello", 42);
+    Pojo value = new Pojo("Hello", 42, DATETIME_A);
     AvroCoder<Pojo> coder = AvroCoder.of(Pojo.class);
 
     CoderProperties.coderDecodeEncodeEqual(coder, value);
+  }
+
+  @Test
+  public void testSpecificRecordEncoding() throws Exception {
+    AvroCoder<TestAvro> coder =
+        AvroCoder.of(TestAvro.class, AVRO_SPECIFIC_RECORD.getSchema(), false);
+
+    assertTrue(SpecificRecord.class.isAssignableFrom(coder.getType()));
+    CoderProperties.coderDecodeEncodeEqual(coder, AVRO_SPECIFIC_RECORD);
+  }
+
+  @Test
+  public void testReflectRecordEncoding() throws Exception {
+    AvroCoder<TestAvro> coder = AvroCoder.of(TestAvro.class, true);
+    AvroCoder<TestAvro> coderWithSchema =
+        AvroCoder.of(TestAvro.class, AVRO_SPECIFIC_RECORD.getSchema(), true);
+
+    assertTrue(SpecificRecord.class.isAssignableFrom(coder.getType()));
+    assertTrue(SpecificRecord.class.isAssignableFrom(coderWithSchema.getType()));
+
+    CoderProperties.coderDecodeEncodeEqual(coder, AVRO_SPECIFIC_RECORD);
+    CoderProperties.coderDecodeEncodeEqual(coderWithSchema, AVRO_SPECIFIC_RECORD);
+  }
+
+  @Test
+  public void testDisableReflectionEncoding() {
+    try {
+      AvroCoder.of(Pojo.class, false);
+      fail("When userReclectApi is disable, schema should not be generated through reflection");
+    } catch (AvroRuntimeException e) {
+      String message =
+          "avro.shaded.com.google.common.util.concurrent.UncheckedExecutionException: "
+              + "org.apache.avro.AvroRuntimeException: "
+              + "Not a Specific class: class org.apache.beam.sdk.coders.AvroCoderTest$Pojo";
+      assertEquals(message, e.getMessage());
+    }
   }
 
   @Test
@@ -285,7 +370,7 @@ public class AvroCoderTest {
             + "     {\"name\": \"favorite_color\", \"type\": [\"string\", \"null\"]}\n"
             + " ]\n"
             + "}";
-    Schema schema = (new Schema.Parser()).parse(schemaString);
+    Schema schema = new Schema.Parser().parse(schemaString);
 
     GenericRecord before = new GenericData.Record(schema);
     before.put("name", "Bob");
@@ -295,7 +380,7 @@ public class AvroCoderTest {
     AvroCoder<GenericRecord> coder = AvroCoder.of(GenericRecord.class, schema);
 
     CoderProperties.coderDecodeEncodeEqual(coder, before);
-    Assert.assertEquals(schema, coder.getSchema());
+    assertEquals(schema, coder.getSchema());
   }
 
   @Test
@@ -303,7 +388,7 @@ public class AvroCoderTest {
     // This test ensures that the coder doesn't read ahead and buffer data.
     // Reading ahead causes a problem if the stream consists of records of different
     // types.
-    Pojo before = new Pojo("Hello", 42);
+    Pojo before = new Pojo("Hello", 42, DATETIME_A);
 
     AvroCoder<Pojo> coder = AvroCoder.of(Pojo.class);
     SerializableCoder<Integer> intCoder = SerializableCoder.of(Integer.class);
@@ -317,10 +402,10 @@ public class AvroCoderTest {
     ByteArrayInputStream inStream = new ByteArrayInputStream(outStream.toByteArray());
 
     Pojo after = coder.decode(inStream, context);
-    Assert.assertEquals(before, after);
+    assertEquals(before, after);
 
     Integer intAfter = intCoder.decode(inStream, context);
-    Assert.assertEquals(Integer.valueOf(10), intAfter);
+    assertEquals(Integer.valueOf(10), intAfter);
   }
 
   @Test
@@ -330,7 +415,7 @@ public class AvroCoderTest {
     // a coder (this uses the default coders, which may not be AvroCoder).
     PCollection<String> output =
         pipeline
-            .apply(Create.of(new Pojo("hello", 1), new Pojo("world", 2)))
+            .apply(Create.of(new Pojo("hello", 1, DATETIME_A), new Pojo("world", 2, DATETIME_B)))
             .apply(ParDo.of(new GetTextFn()));
 
     PAssert.that(output).containsInAnyOrder("hello", "world");
@@ -340,6 +425,14 @@ public class AvroCoderTest {
   @Test
   public void testAvroCoderIsSerializable() throws Exception {
     AvroCoder<Pojo> coder = AvroCoder.of(Pojo.class);
+
+    // Check that the coder is serializable using the regular JSON approach.
+    SerializableUtils.ensureSerializable(coder);
+  }
+
+  @Test
+  public void testAvroSpecificCoderIsSerializable() throws Exception {
+    AvroCoder<TestAvro> coder = AvroCoder.of(TestAvro.class, false);
 
     // Check that the coder is serializable using the regular JSON approach.
     SerializableUtils.ensureSerializable(coder);
@@ -719,7 +812,7 @@ public class AvroCoderTest {
     coder.encode(size1, outStream1, context);
     coder.encode(size2, outStream2, context);
 
-    assertTrue(Arrays.equals(outStream1.toByteArray(), outStream2.toByteArray()));
+    assertArrayEquals(outStream1.toByteArray(), outStream2.toByteArray());
   }
 
   private static class TreeMapField {
@@ -893,8 +986,7 @@ public class AvroCoderTest {
 
   private static class NullableField {
     @SuppressWarnings("unused")
-    @Nullable
-    private String nullable;
+    private @Nullable String nullable;
   }
 
   @Test
@@ -904,20 +996,17 @@ public class AvroCoderTest {
 
   private static class NullableNonDeterministicField {
     @SuppressWarnings("unused")
-    @Nullable
-    private NonDeterministicArray nullableNonDetArray;
+    private @Nullable NonDeterministicArray nullableNonDetArray;
   }
 
   private static class NullableCyclic {
     @SuppressWarnings("unused")
-    @Nullable
-    private NullableCyclic nullableNullableCyclicField;
+    private @Nullable NullableCyclic nullableNullableCyclicField;
   }
 
   private static class NullableCyclicField {
     @SuppressWarnings("unused")
-    @Nullable
-    private Cyclic nullableCyclicField;
+    private @Nullable Cyclic nullableCyclicField;
   }
 
   @Test
@@ -967,7 +1056,7 @@ public class AvroCoderTest {
     protected GenericWithAnnotation() {}
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
       return other instanceof GenericWithAnnotation
           && onlySomeTypesAllowed.equals(((GenericWithAnnotation<?>) other).onlySomeTypesAllowed);
     }

@@ -18,10 +18,10 @@
 package org.apache.beam.runners.spark.translation.streaming;
 
 import static org.apache.beam.sdk.metrics.MetricResultsMatchers.attemptedMetricsResult;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -30,12 +30,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
-import org.apache.beam.runners.spark.ReuseSparkContextRule;
 import org.apache.beam.runners.spark.SparkPipelineResult;
 import org.apache.beam.runners.spark.TestSparkPipelineOptions;
 import org.apache.beam.runners.spark.TestSparkRunner;
 import org.apache.beam.runners.spark.UsesCheckpointRecovery;
-import org.apache.beam.runners.spark.aggregators.AggregatorsAccumulator;
 import org.apache.beam.runners.spark.io.MicrobatchSource;
 import org.apache.beam.runners.spark.metrics.MetricsAccumulator;
 import org.apache.beam.runners.spark.translation.streaming.utils.EmbeddedKafkaCluster;
@@ -69,10 +67,10 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Optional;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Optional;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.Serializer;
@@ -84,10 +82,11 @@ import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Tests DStream recovery from checkpoint.
@@ -97,6 +96,10 @@ import org.junit.rules.TemporaryFolder;
  * asserted, along with {@link Metrics} values that are expected to resume from previous count and a
  * side-input that is expected to recover as well.
  */
+@RunWith(JUnit4.class)
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class ResumeFromCheckpointStreamingTest implements Serializable {
   private static final EmbeddedKafkaCluster.EmbeddedZookeeper EMBEDDED_ZOOKEEPER =
       new EmbeddedKafkaCluster.EmbeddedZookeeper();
@@ -105,8 +108,6 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
   private static final String TOPIC = "kafka_beam_test_topic";
 
   private transient TemporaryFolder temporaryFolder;
-
-  @Rule public final transient ReuseSparkContextRule noContextReuse = ReuseSparkContextRule.no();
 
   @BeforeClass
   public static void setup() throws IOException {
@@ -138,7 +139,6 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
       for (Map.Entry<String, Instant> en : messages.entrySet()) {
         kafkaProducer.send(new ProducerRecord<>(TOPIC, en.getKey(), en.getValue()));
       }
-      kafkaProducer.close();
     }
   }
 
@@ -254,7 +254,6 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
     return run(Optional.absent(), expectedAssertions);
   }
 
-  @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
   private SparkPipelineResult run(Optional<Instant> stopWatermarkOption, int expectedAssertions) {
     KafkaIO.Read<String, Instant> read =
         KafkaIO.<String, Instant>read()
@@ -262,7 +261,7 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
             .withTopics(Collections.singletonList(TOPIC))
             .withKeyDeserializer(StringDeserializer.class)
             .withValueDeserializer(InstantDeserializer.class)
-            .updateConsumerProperties(ImmutableMap.of("auto.offset.reset", "earliest"))
+            .withConsumerConfigUpdates(ImmutableMap.of("auto.offset.reset", "earliest"))
             .withTimestampFn(KV::getValue)
             .withWatermarkFn(
                 kv -> {
@@ -279,7 +278,7 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
     options.setExpectedAssertions(expectedAssertions);
     options.setRunner(TestSparkRunner.class);
     options.setEnableSparkMetricSinks(false);
-    options.setForceStreaming(true);
+    options.setStreaming(true);
     options.setCheckpointDir(temporaryFolder.getRoot().getPath());
     // timeout is per execution so it can be injected by the caller.
     if (stopWatermarkOption.isPresent()) {
@@ -314,7 +313,6 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
 
   @After
   public void clean() {
-    AggregatorsAccumulator.clear();
     MetricsAccumulator.clear();
     GlobalWatermarkHolder.clear();
     MicrobatchSource.clearCache();
@@ -331,7 +329,7 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
     final PCollectionView<List<String>> view;
     private final Counter aggregator =
         Metrics.counter(ResumeFromCheckpointStreamingTest.class, "processedMessages");
-    Counter counter = Metrics.counter(ResumeFromCheckpointStreamingTest.class, "allMessages");
+    final Counter counter = Metrics.counter(ResumeFromCheckpointStreamingTest.class, "allMessages");
 
     private EOFShallNotPassFn(PCollectionView<List<String>> view) {
       this.view = view;
@@ -352,12 +350,13 @@ public class ResumeFromCheckpointStreamingTest implements Serializable {
 
   /**
    * A custom PAssert that avoids using {@link org.apache.beam.sdk.transforms.Flatten} until
-   * BEAM-1444 is resolved.
+   * https://github.com/apache/beam/issues/18144 is resolved.
    */
   private static class PAssertWithoutFlatten<T>
       extends PTransform<PCollection<Iterable<T>>, PDone> {
     private final T[] expected;
 
+    @SafeVarargs
     private PAssertWithoutFlatten(T... expected) {
       this.expected = expected;
     }

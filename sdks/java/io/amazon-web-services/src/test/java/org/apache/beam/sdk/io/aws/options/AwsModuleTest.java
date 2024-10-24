@@ -17,27 +17,31 @@
  */
 package org.apache.beam.sdk.io.aws.options;
 
+import static org.apache.beam.repackaged.core.org.apache.commons.lang3.reflect.FieldUtils.readField;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.BasicSessionCredentials;
 import com.amazonaws.auth.ClasspathPropertiesFileCredentialsProvider;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper;
 import com.amazonaws.auth.EnvironmentVariableCredentialsProvider;
 import com.amazonaws.auth.PropertiesFileCredentialsProvider;
+import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
 import com.amazonaws.auth.SystemPropertiesCredentialsProvider;
 import com.amazonaws.auth.profile.ProfileCredentialsProvider;
 import com.amazonaws.services.s3.model.SSEAwsKeyManagementParams;
 import com.amazonaws.services.s3.model.SSECustomerKey;
 import com.fasterxml.jackson.databind.Module;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.lang.reflect.Field;
 import java.util.List;
+import org.apache.beam.runners.core.construction.PipelineOptionsTranslation;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 import org.hamcrest.Matchers;
 import org.junit.Test;
@@ -75,6 +79,20 @@ public class AwsModuleTest {
     assertEquals(
         credentialsProvider.getCredentials().getAWSSecretKey(),
         deserializedCredentialsProvider.getCredentials().getAWSSecretKey());
+
+    String sessionToken = "session-token";
+    BasicSessionCredentials sessionCredentials =
+        new BasicSessionCredentials(awsKeyId, awsSecretKey, sessionToken);
+    credentialsProvider = new AWSStaticCredentialsProvider(sessionCredentials);
+    serializedCredentialsProvider = objectMapper.writeValueAsString(credentialsProvider);
+    deserializedCredentialsProvider =
+        objectMapper.readValue(serializedCredentialsProvider, AWSCredentialsProvider.class);
+    BasicSessionCredentials deserializedCredentials =
+        (BasicSessionCredentials) deserializedCredentialsProvider.getCredentials();
+    assertEquals(credentialsProvider.getClass(), deserializedCredentialsProvider.getClass());
+    assertEquals(deserializedCredentials.getAWSAccessKeyId(), awsKeyId);
+    assertEquals(deserializedCredentials.getAWSSecretKey(), awsSecretKey);
+    assertEquals(deserializedCredentials.getSessionToken(), sessionToken);
   }
 
   @Test
@@ -89,11 +107,9 @@ public class AwsModuleTest {
         objectMapper.readValue(serializedCredentialsProvider, AWSCredentialsProvider.class);
 
     assertEquals(credentialsProvider.getClass(), deserializedCredentialsProvider.getClass());
-
-    Field field = PropertiesFileCredentialsProvider.class.getDeclaredField("credentialsFilePath");
-    field.setAccessible(true);
-    String deserializedCredentialsFilePath = (String) field.get(deserializedCredentialsProvider);
-    assertEquals(credentialsFilePath, deserializedCredentialsFilePath);
+    assertEquals(
+        credentialsFilePath,
+        readField(deserializedCredentialsProvider, "credentialsFilePath", true));
   }
 
   @Test
@@ -109,12 +125,26 @@ public class AwsModuleTest {
         objectMapper.readValue(serializedCredentialsProvider, AWSCredentialsProvider.class);
 
     assertEquals(credentialsProvider.getClass(), deserializedCredentialsProvider.getClass());
+    assertEquals(
+        credentialsFilePath,
+        readField(deserializedCredentialsProvider, "credentialsFilePath", true));
+  }
 
-    Field field =
-        ClasspathPropertiesFileCredentialsProvider.class.getDeclaredField("credentialsFilePath");
-    field.setAccessible(true);
-    String deserializedCredentialsFilePath = (String) field.get(deserializedCredentialsProvider);
-    assertEquals(credentialsFilePath, deserializedCredentialsFilePath);
+  @Test
+  public void testSTSAssumeRoleSessionCredentialsProviderSerializationDeserialization()
+      throws Exception {
+    String roleArn = "arn:aws:iam::000111222333:role/TestRole";
+    String roleSessionName = "roleSessionName";
+    STSAssumeRoleSessionCredentialsProvider credentialsProvider =
+        new STSAssumeRoleSessionCredentialsProvider.Builder(roleArn, roleSessionName).build();
+    String serializedCredentialsProvider = objectMapper.writeValueAsString(credentialsProvider);
+    AWSCredentialsProvider deserializedCredentialsProvider =
+        objectMapper.readValue(serializedCredentialsProvider, AWSCredentialsProvider.class);
+
+    assertEquals(credentialsProvider.getClass(), deserializedCredentialsProvider.getClass());
+    assertEquals(roleArn, readField(deserializedCredentialsProvider, "roleArn", true));
+    assertEquals(
+        roleSessionName, readField(deserializedCredentialsProvider, "roleSessionName", true));
   }
 
   @Test
@@ -198,5 +228,38 @@ public class AwsModuleTest {
     assertEquals(1234, valueDes.getProxyPort());
     assertEquals("username", valueDes.getProxyUsername());
     assertEquals("password", valueDes.getProxyPassword());
+  }
+
+  @Test
+  public void testAwsHttpClientConfigurationSerializationDeserialization() throws Exception {
+    ClientConfiguration clientConfiguration = new ClientConfiguration();
+    clientConfiguration.setConnectionTimeout(100);
+    clientConfiguration.setConnectionMaxIdleMillis(1000);
+    clientConfiguration.setSocketTimeout(300);
+
+    final String valueAsJson = objectMapper.writeValueAsString(clientConfiguration);
+    final ClientConfiguration clientConfigurationDeserialized =
+        objectMapper.readValue(valueAsJson, ClientConfiguration.class);
+    assertEquals(100, clientConfigurationDeserialized.getConnectionTimeout());
+    assertEquals(1000, clientConfigurationDeserialized.getConnectionMaxIdleMillis());
+    assertEquals(300, clientConfigurationDeserialized.getSocketTimeout());
+  }
+
+  @Test
+  public void testAwsHttpClientConfigurationSerializationDeserializationProto() throws Exception {
+    AwsOptions awsOptions =
+        PipelineOptionsTranslation.fromProto(
+                PipelineOptionsTranslation.toProto(
+                    PipelineOptionsFactory.fromArgs(
+                            "--clientConfiguration={ \"connectionTimeout\": 100, \"connectionMaxIdleTime\": 1000, \"socketTimeout\": 300, \"proxyPort\": -1, \"requestTimeout\": 1500 }")
+                        .create()))
+            .as(AwsOptions.class);
+    ClientConfiguration clientConfigurationDeserialized = awsOptions.getClientConfiguration();
+
+    assertEquals(100, clientConfigurationDeserialized.getConnectionTimeout());
+    assertEquals(1000, clientConfigurationDeserialized.getConnectionMaxIdleMillis());
+    assertEquals(300, clientConfigurationDeserialized.getSocketTimeout());
+    assertEquals(-1, clientConfigurationDeserialized.getProxyPort());
+    assertEquals(1500, clientConfigurationDeserialized.getRequestTimeout());
   }
 }

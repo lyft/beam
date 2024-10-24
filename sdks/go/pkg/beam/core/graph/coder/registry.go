@@ -16,12 +16,13 @@
 package coder
 
 import (
-	"fmt"
 	"reflect"
+
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
 )
 
 var (
-	coderRegistry     = make(map[uintptr]func(reflect.Type) *CustomCoder)
+	coderRegistry     = make(map[reflect.Type]func(reflect.Type) *CustomCoder)
 	interfaceOrdering []reflect.Type
 )
 
@@ -32,30 +33,27 @@ var (
 // Coders are encoder and decoder pairs, and operate around []bytes.
 //
 // The coder used for a given type follows this ordering:
-//   1. Coders for Known Beam types.
-//   2. Coders registered for specific types
-//   3. Coders registered for interfaces types
-//   4. Default coder (JSON)
+//  1. Coders for Known Beam types.
+//  2. Coders registered for specific types
+//  3. Coders registered for interfaces types
+//  4. Default coder (JSON)
 //
 // Types of kind Interface, are handled specially by the registry, so they may be iterated
 // over to check if element types implement them.
 //
 // Repeated registrations of the same type overrides prior ones.
-func RegisterCoder(t reflect.Type, enc, dec interface{}) {
-	key := tkey(t)
-
+func RegisterCoder(t reflect.Type, enc, dec any) {
 	if _, err := NewCustomCoder(t.String(), t, enc, dec); err != nil {
-		panic(fmt.Sprintf("RegisterCoder failed for type %v: %v", t, err))
+		panic(errors.Wrapf(err, "RegisterCoder failed for type %v", t))
 	}
 
 	if t.Kind() == reflect.Interface {
 		// If it's already in the registry, then it's already in the list
 		// and should be removed.
-		if _, ok := coderRegistry[key]; ok {
+		if _, ok := coderRegistry[t]; ok {
 			var index int
 			for i, iT := range interfaceOrdering {
-				iKey := tkey(iT)
-				if iKey == key {
+				if iT == t {
 					index = i
 					break
 				}
@@ -66,13 +64,13 @@ func RegisterCoder(t reflect.Type, enc, dec interface{}) {
 		interfaceOrdering = append(interfaceOrdering, t)
 	}
 	name := t.String() // Use the real type names for coders.
-	coderRegistry[key] = func(rt reflect.Type) *CustomCoder {
+	coderRegistry[t] = func(rt reflect.Type) *CustomCoder {
 		// We need to provide the concrete type, so that coders that use
 		// the reflect.Type have the proper instance.
 		cc, err := NewCustomCoder(name, rt, enc, dec)
 		if err != nil {
 			// An error on look up shouldn't happen after the validation.
-			panic(fmt.Sprintf("Creating %v CustomCoder for type %v failed: %v", name, rt, err))
+			panic(errors.Wrapf(err, "Creating %v CustomCoder for type %v failed", name, rt))
 		}
 		return cc
 	}
@@ -82,21 +80,14 @@ func RegisterCoder(t reflect.Type, enc, dec interface{}) {
 // first checking for a specific matching type, and then iterating
 // through registered interface coders in reverse registration order.
 func LookupCustomCoder(t reflect.Type) *CustomCoder {
-	key := tkey(t)
-	if maker, ok := coderRegistry[key]; ok {
+	if maker, ok := coderRegistry[t]; ok {
 		return maker(t)
 	}
 	for i := len(interfaceOrdering) - 1; i >= 0; i-- {
 		iT := interfaceOrdering[i]
 		if t.Implements(iT) {
-			key := tkey(iT)
-			return coderRegistry[key](t)
+			return coderRegistry[iT](t)
 		}
 	}
 	return nil
-}
-
-// tkey returns the uintptr for a given type as the key.
-func tkey(t reflect.Type) uintptr {
-	return reflect.ValueOf(t).Pointer()
 }

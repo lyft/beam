@@ -17,15 +17,16 @@
  */
 package org.apache.beam.runners.core.construction;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import java.util.Collection;
 import java.util.Map;
 import org.apache.beam.sdk.runners.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 
 /** Utilities for extracting subsets of inputs from an {@link AppliedPTransform}. */
 public class TransformInputs {
@@ -36,7 +37,7 @@ public class TransformInputs {
   public static Collection<PValue> nonAdditionalInputs(AppliedPTransform<?, ?, ?> application) {
     ImmutableList.Builder<PValue> mainInputs = ImmutableList.builder();
     PTransform<?, ?> transform = application.getTransform();
-    for (Map.Entry<TupleTag<?>, PValue> input : application.getInputs().entrySet()) {
+    for (Map.Entry<TupleTag<?>, PCollection<?>> input : application.getInputs().entrySet()) {
       if (!transform.getAdditionalInputs().containsKey(input.getKey())) {
         mainInputs.add(input.getValue());
       }

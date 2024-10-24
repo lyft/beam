@@ -26,22 +26,24 @@ import com.google.api.services.bigquery.model.JobReference;
 import com.google.api.services.bigquery.model.JobStatus;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.ShardedKeyCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.extensions.gcp.util.BackOffAdapter;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryHelpers.PendingJob;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryHelpers.PendingJobManager;
 import org.apache.beam.sdk.testing.CoderProperties;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.IntervalWindow;
-import org.apache.beam.sdk.util.BackOffAdapter;
 import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.util.FluentBackoff;
 import org.apache.beam.sdk.util.WindowedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Sets;
 import org.joda.time.Duration;
 import org.junit.Assert;
 import org.junit.Rule;
@@ -49,7 +51,6 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.testng.collections.Sets;
 
 /** Tests for {@link BigQueryHelpers}. */
 @RunWith(JUnit4.class)
@@ -57,8 +58,25 @@ public class BigQueryHelpersTest {
   @Rule public transient ExpectedException thrown = ExpectedException.none();
 
   @Test
-  public void testTableParsing() {
+  public void testTablesspecParsingLegacySql() {
     TableReference ref = BigQueryHelpers.parseTableSpec("my-project:data_set.table_name");
+    assertEquals("my-project", ref.getProjectId());
+    assertEquals("data_set", ref.getDatasetId());
+    assertEquals("table_name", ref.getTableId());
+  }
+
+  @Test
+  public void testTablesspecParsingStandardSql() {
+    TableReference ref = BigQueryHelpers.parseTableSpec("my-project.data_set.table_name");
+    assertEquals("my-project", ref.getProjectId());
+    assertEquals("data_set", ref.getDatasetId());
+    assertEquals("table_name", ref.getTableId());
+  }
+
+  @Test
+  public void testTableUrnParsing() {
+    TableReference ref =
+        BigQueryHelpers.parseTableUrn("projects/my-project/datasets/data_set/tables/table_name");
     assertEquals("my-project", ref.getProjectId());
     assertEquals("data_set", ref.getDatasetId());
     assertEquals("table_name", ref.getTableId());
@@ -77,6 +95,19 @@ public class BigQueryHelpersTest {
     assertEquals(null, ref.getProjectId());
     assertEquals("data_set", ref.getDatasetId());
     assertEquals("table_name", ref.getTableId());
+  }
+
+  @Test
+  public void testTableParsingError0() {
+    String expectedMessage =
+        "Table specification [foo_bar_baz] is not in one of the expected formats ("
+            + " [project_id]:[dataset_id].[table_id],"
+            + " [project_id].[dataset_id].[table_id],"
+            + " [dataset_id].[table_id])";
+
+    thrown.expect(IllegalArgumentException.class);
+    thrown.expectMessage(expectedMessage);
+    BigQueryHelpers.parseTableSpec("foo_bar_baz");
   }
 
   @Test
@@ -134,14 +165,16 @@ public class BigQueryHelpersTest {
 
   @Test
   public void testTableRowInfoCoderSerializable() {
-    CoderProperties.coderSerializable(TableRowInfoCoder.of());
+    CoderProperties.coderSerializable(TableRowInfoCoder.of(TableRowJsonCoder.of()));
   }
 
   @Test
   public void testComplexCoderSerializable() {
     CoderProperties.coderSerializable(
         WindowedValue.getFullCoder(
-            KvCoder.of(ShardedKeyCoder.of(StringUtf8Coder.of()), TableRowInfoCoder.of()),
+            KvCoder.of(
+                ShardedKeyCoder.of(StringUtf8Coder.of()),
+                TableRowInfoCoder.of(TableRowJsonCoder.of())),
             IntervalWindow.getCoder()));
   }
 
@@ -202,5 +235,27 @@ public class BigQueryHelpersTest {
     Set<String> expectedJobs =
         ImmutableSet.of("JOB_0-5", "JOB_1-5", "JOB_2-5", "JOB_3-5", "JOB_4-5");
     assertEquals(expectedJobs, succeeded);
+  }
+
+  @Test
+  public void testCreateTempTableReference() {
+    String projectId = "this-is-my-project";
+    String jobUuid = "this-is-my-job";
+    TableReference noDataset =
+        BigQueryResourceNaming.createTempTableReference(projectId, jobUuid, Optional.empty());
+
+    assertEquals(noDataset.getProjectId(), projectId);
+    assertEquals(noDataset.getDatasetId(), "temp_dataset_" + jobUuid);
+    assertEquals(noDataset.getTableId(), "temp_table_" + jobUuid);
+
+    Optional<String> dataset = Optional.ofNullable("my-tmp-dataset");
+    TableReference tempTableReference =
+        BigQueryResourceNaming.createTempTableReference(projectId, jobUuid, dataset);
+
+    assertEquals(tempTableReference.getProjectId(), noDataset.getProjectId());
+    assertEquals(tempTableReference.getDatasetId(), dataset.get());
+    assertEquals(tempTableReference.getTableId(), noDataset.getTableId());
+
+    assertEquals(dataset.get(), noDataset.setDatasetId(dataset.get()).getDatasetId());
   }
 }

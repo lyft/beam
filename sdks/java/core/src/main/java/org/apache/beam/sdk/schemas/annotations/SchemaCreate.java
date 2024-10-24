@@ -22,8 +22,6 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.annotations.Experimental.Kind;
 
 /**
  * Can be put on a constructor or a static method, in which case that constructor or method will be
@@ -32,12 +30,12 @@ import org.apache.beam.sdk.annotations.Experimental.Kind;
  * <p>For example, the following Java POJO.
  *
  * <pre><code>
- *   {@literal @}DefaultSchema(JavaBeanSchema.class)
+ * {@literal @}DefaultSchema(JavaBeanSchema.class)
  *  class MyClass {
  *    public final String user;
  *    public final int age;
  *
- *    {@literal @}SchemaCreate
+ *   {@literal @}SchemaCreate
  *    public MyClass(String user, int age) {
  *      this.user = user;
  *      this.age = age;
@@ -53,14 +51,14 @@ import org.apache.beam.sdk.annotations.Experimental.Kind;
  *
  * <pre><code>
  * {@literal @}DefaultSchema(JavaBeanSchema.class)
- * class MyClass {
- *   public final String user;
- *   public final int age;
+ *  class MyClass {
+ *    public final String user;
+ *    public final int age;
  *
- *   private MyClass(String user, int age) { this.user = user; this.age = age; }
+ *    private MyClass(String user, int age) { this.user = user; this.age = age; }
  *
  *   {@literal @}SchemaCreate
- *   public static MyClass create(String user, int age) {
+ *    public static MyClass create(String user, int age) {
  *      return new MyClass(user, age);
  *    }
  * }
@@ -69,6 +67,7 @@ import org.apache.beam.sdk.annotations.Experimental.Kind;
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.CONSTRUCTOR, ElementType.METHOD})
-@SuppressWarnings("rawtypes")
-@Experimental(Kind.SCHEMAS)
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
 public @interface SchemaCreate {}

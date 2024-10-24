@@ -21,7 +21,7 @@ import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.TableDataInsertAllResponse;
 import java.io.Serializable;
 import java.util.Set;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
 
 /** A retry policy for streaming BigQuery inserts. */
 public abstract class InsertRetryPolicy implements Serializable {
@@ -33,7 +33,11 @@ public abstract class InsertRetryPolicy implements Serializable {
    */
   public static class Context {
     // A list of all errors corresponding to an attempted insert of a single record.
-    TableDataInsertAllResponse.InsertErrors errors;
+    final TableDataInsertAllResponse.InsertErrors errors;
+
+    public TableDataInsertAllResponse.InsertErrors getInsertErrors() {
+      return errors;
+    }
 
     public Context(TableDataInsertAllResponse.InsertErrors errors) {
       this.errors = errors;
@@ -42,7 +46,7 @@ public abstract class InsertRetryPolicy implements Serializable {
 
   // A list of known persistent errors for which retrying never helps.
   static final Set<String> PERSISTENT_ERRORS =
-      ImmutableSet.of("invalid", "invalidQuery", "notImplemented");
+      ImmutableSet.of("invalid", "invalidQuery", "notImplemented", "row-too-large", "parseError");
 
   /** Return true if this failure should be retried. */
   public abstract boolean shouldRetry(Context context);
@@ -72,8 +76,8 @@ public abstract class InsertRetryPolicy implements Serializable {
     return new InsertRetryPolicy() {
       @Override
       public boolean shouldRetry(Context context) {
-        if (context.errors.getErrors() != null) {
-          for (ErrorProto error : context.errors.getErrors()) {
+        if (context.getInsertErrors().getErrors() != null) {
+          for (ErrorProto error : context.getInsertErrors().getErrors()) {
             if (error.getReason() != null && PERSISTENT_ERRORS.contains(error.getReason())) {
               return false;
             }

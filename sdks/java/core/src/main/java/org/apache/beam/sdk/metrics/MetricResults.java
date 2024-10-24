@@ -17,16 +17,12 @@
  */
 package org.apache.beam.sdk.metrics;
 
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.PipelineResult;
-import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.annotations.Experimental.Kind;
 
 /**
  * Methods for interacting with the metrics of a pipeline that has been executed. Accessed via
  * {@link PipelineResult#metrics()}.
  */
-@Experimental(Kind.METRICS)
 public abstract class MetricResults {
   /**
    * Query for all metric values that match a given filter.
@@ -59,5 +55,14 @@ public abstract class MetricResults {
    * // applications.
    * }</pre>
    */
-  public abstract MetricQueryResults queryMetrics(@Nullable MetricsFilter filter);
+  public abstract MetricQueryResults queryMetrics(MetricsFilter filter);
+
+  public MetricQueryResults allMetrics() {
+    return queryMetrics(MetricsFilter.builder().build());
+  }
+
+  @Override
+  public String toString() {
+    return allMetrics().toString();
+  }
 }

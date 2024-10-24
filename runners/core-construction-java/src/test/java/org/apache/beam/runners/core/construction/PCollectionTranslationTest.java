@@ -17,8 +17,8 @@
  */
 package org.apache.beam.runners.core.construction;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertThat;
 
 import com.google.auto.value.AutoValue;
 import java.io.IOException;
@@ -52,7 +52,7 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollection.IsBounded;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.junit.Test;
@@ -123,7 +123,11 @@ public class PCollectionTranslationTest {
     assertThat(decodedCollection.getCoder(), equalTo(testCollection.getCoder()));
     assertThat(
         decodedCollection.getWindowingStrategy(),
-        equalTo(testCollection.getWindowingStrategy().fixDefaults()));
+        equalTo(
+            testCollection
+                .getWindowingStrategy()
+                .withEnvironmentId(sdkComponents.getOnlyEnvironmentId())
+                .fixDefaults()));
     assertThat(decodedCollection.isBounded(), equalTo(testCollection.isBounded()));
   }
 
@@ -141,7 +145,13 @@ public class PCollectionTranslationTest {
     IsBounded decodedIsBounded = PCollectionTranslation.isBounded(protoCollection);
 
     assertThat(decodedCoder, equalTo(testCollection.getCoder()));
-    assertThat(decodedStrategy, equalTo(testCollection.getWindowingStrategy().fixDefaults()));
+    assertThat(
+        decodedStrategy,
+        equalTo(
+            testCollection
+                .getWindowingStrategy()
+                .withEnvironmentId(sdkComponents.getOnlyEnvironmentId())
+                .fixDefaults()));
     assertThat(decodedIsBounded, equalTo(testCollection.isBounded()));
   }
 

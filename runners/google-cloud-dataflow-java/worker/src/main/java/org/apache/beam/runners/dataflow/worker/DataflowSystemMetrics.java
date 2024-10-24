@@ -20,7 +20,7 @@ package org.apache.beam.runners.dataflow.worker;
 import org.apache.beam.runners.dataflow.worker.counters.CounterName;
 import org.apache.beam.runners.dataflow.worker.counters.NameContext;
 import org.apache.beam.sdk.metrics.MetricName;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 
 /** This holds system metrics related constants used in Batch and Streaming. */
 public class DataflowSystemMetrics {
@@ -35,10 +35,13 @@ public class DataflowSystemMetrics {
     WINDMILL_SHUFFLE_BYTES_READ("WindmillShuffleBytesRead"),
     WINDMILL_STATE_BYTES_READ("WindmillStateBytesRead"),
     WINDMILL_STATE_BYTES_WRITTEN("WindmillStateBytesWritten"),
+    WINDMILL_MAX_WORK_ITEM_COMMIT_BYTES("WindmillMaxWorkItemCommitBytes"),
     JAVA_HARNESS_USED_MEMORY("dataflow_java_harness_used_memory"),
     JAVA_HARNESS_MAX_MEMORY("dataflow_java_harness_max_memory"),
     JAVA_HARNESS_RESTARTS("dataflow_java_harness_restarts"),
-    WINDMILL_QUOTA_THROTTLING("dataflow_streaming_engine_throttled_msecs");
+    TIME_AT_MAX_ACTIVE_THREADS("dataflow_time_at_max_active_threads"),
+    WINDMILL_QUOTA_THROTTLING("dataflow_streaming_engine_throttled_msecs"),
+    MEMORY_THRASHING("dataflow_streaming_engine_user_worker_thrashing");
 
     private final String name;
 

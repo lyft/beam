@@ -24,11 +24,14 @@ import com.google.api.services.dataflow.model.CounterStructuredName;
 import com.google.api.services.dataflow.model.CounterStructuredNameAndMetadata;
 import com.google.api.services.dataflow.model.CounterUpdate;
 import com.google.api.services.dataflow.model.DistributionUpdate;
-import org.apache.beam.runners.core.construction.metrics.MetricKey;
 import org.apache.beam.runners.core.metrics.DistributionData;
+import org.apache.beam.sdk.metrics.MetricKey;
 import org.apache.beam.sdk.metrics.MetricName;
 
 /** Convertor from Metrics to {@link CounterUpdate} protos. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class MetricsToCounterUpdateConverter {
 
   private MetricsToCounterUpdateConverter() {}
@@ -52,6 +55,7 @@ public class MetricsToCounterUpdateConverter {
   /** Well-defined {@code kind} strings for use in {@link CounterUpdate} protos. */
   public enum Kind {
     DISTRIBUTION("DISTRIBUTION"),
+    MEAN("MEAN"),
     SUM("SUM");
 
     private final String kind;

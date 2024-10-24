@@ -28,10 +28,13 @@ import static org.apache.beam.runners.core.construction.PTransformTranslation.IM
 import static org.apache.beam.runners.core.construction.PTransformTranslation.MAP_WINDOWS_TRANSFORM_URN;
 import static org.apache.beam.runners.core.construction.PTransformTranslation.PAR_DO_TRANSFORM_URN;
 import static org.apache.beam.runners.core.construction.PTransformTranslation.READ_TRANSFORM_URN;
+import static org.apache.beam.runners.core.construction.PTransformTranslation.SPLITTABLE_PAIR_WITH_RESTRICTION_URN;
 import static org.apache.beam.runners.core.construction.PTransformTranslation.SPLITTABLE_PROCESS_ELEMENTS_URN;
 import static org.apache.beam.runners.core.construction.PTransformTranslation.SPLITTABLE_PROCESS_KEYED_URN;
+import static org.apache.beam.runners.core.construction.PTransformTranslation.SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN;
+import static org.apache.beam.runners.core.construction.PTransformTranslation.SPLITTABLE_SPLIT_AND_SIZE_RESTRICTIONS_URN;
 import static org.apache.beam.runners.core.construction.PTransformTranslation.TEST_STREAM_TRANSFORM_URN;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -58,19 +61,20 @@ import org.apache.beam.runners.core.construction.NativeTransforms;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.core.construction.graph.PipelineNode.PCollectionNode;
 import org.apache.beam.runners.core.construction.graph.PipelineNode.PTransformNode;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.InvalidProtocolBufferException;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Sets;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.MutableNetwork;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.Network;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.NetworkBuilder;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Sets;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.MutableNetwork;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.Network;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.NetworkBuilder;
 
 /**
  * A {@link Pipeline} which has additional methods to relate nodes in the graph relative to each
  * other.
  */
+@SuppressWarnings({"nullness", "keyfor"}) // TODO(https://github.com/apache/beam/issues/20497)
 public class QueryablePipeline {
   // TODO: Is it better to have the signatures here require nodes in almost all contexts, or should
   // they all take strings? Nodes gives some degree of type signalling that names might not, but
@@ -172,8 +176,11 @@ public class QueryablePipeline {
           COMBINE_PER_KEY_PRECOMBINE_TRANSFORM_URN,
           COMBINE_PER_KEY_MERGE_ACCUMULATORS_TRANSFORM_URN,
           COMBINE_PER_KEY_EXTRACT_OUTPUTS_TRANSFORM_URN,
+          SPLITTABLE_PAIR_WITH_RESTRICTION_URN,
           SPLITTABLE_PROCESS_KEYED_URN,
-          SPLITTABLE_PROCESS_ELEMENTS_URN);
+          SPLITTABLE_PROCESS_ELEMENTS_URN,
+          SPLITTABLE_SPLIT_AND_SIZE_RESTRICTIONS_URN,
+          SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN);
 
   /** Returns true if the provided transform is a primitive. */
   private static boolean isPrimitiveTransform(PTransform transform) {
@@ -380,7 +387,11 @@ public class QueryablePipeline {
   }
 
   private Set<String> getLocalSideInputNames(PTransform transform) {
-    if (PAR_DO_TRANSFORM_URN.equals(transform.getSpec().getUrn())) {
+    if (PAR_DO_TRANSFORM_URN.equals(transform.getSpec().getUrn())
+        || SPLITTABLE_PAIR_WITH_RESTRICTION_URN.equals(transform.getSpec().getUrn())
+        || SPLITTABLE_SPLIT_AND_SIZE_RESTRICTIONS_URN.equals(transform.getSpec().getUrn())
+        || SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN.equals(
+            transform.getSpec().getUrn())) {
       try {
         return ParDoPayload.parseFrom(transform.getSpec().getPayload()).getSideInputsMap().keySet();
       } catch (InvalidProtocolBufferException e) {
@@ -406,7 +417,9 @@ public class QueryablePipeline {
   private Set<String> getLocalTimerNames(PTransform transform) {
     if (PAR_DO_TRANSFORM_URN.equals(transform.getSpec().getUrn())) {
       try {
-        return ParDoPayload.parseFrom(transform.getSpec().getPayload()).getTimerSpecsMap().keySet();
+        return ParDoPayload.parseFrom(transform.getSpec().getPayload())
+            .getTimerFamilySpecsMap()
+            .keySet();
       } catch (InvalidProtocolBufferException e) {
         throw new RuntimeException(e);
       }

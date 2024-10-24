@@ -18,18 +18,15 @@
 package org.apache.beam.runners.core.construction;
 
 import java.util.List;
-import org.apache.beam.sdk.annotations.Experimental;
-import org.apache.beam.sdk.annotations.Experimental.Kind;
+import org.apache.beam.runners.core.construction.CoderTranslation.TranslationContext;
 import org.apache.beam.sdk.coders.Coder;
 
 /**
  * An interface that translates coders to components and back.
  *
- * <p>This interface is highly experimental, and incomplete. Coders must in the general case have
- * the capability to encode an additional payload, which is not currently supported. This exists as
- * a temporary measure.
+ * <p>This interface is incomplete. Coders must in the general case have the capability to encode an
+ * additional payload, which is not currently supported. This exists as a temporary measure.
  */
-@Experimental(Kind.CORE_RUNNERS_ONLY)
 public interface CoderTranslator<T extends Coder<?>> {
   /** Extract all component {@link Coder coders} within a coder. */
   List<? extends Coder<?>> getComponents(T from);
@@ -44,6 +41,9 @@ public interface CoderTranslator<T extends Coder<?>> {
     return new byte[0];
   }
 
-  /** Create a {@link Coder} from its component {@link Coder coders}. */
-  T fromComponents(List<Coder<?>> components, byte[] payload);
+  /**
+   * Create a {@link Coder} from its component {@link Coder coders} using the specified translation
+   * context.
+   */
+  T fromComponents(List<Coder<?>> components, byte[] payload, TranslationContext context);
 }

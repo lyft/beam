@@ -17,24 +17,27 @@
  */
 
 plugins { id 'org.apache.beam.module' }
-applyJavaNature()
+applyJavaNature(
+  automaticModuleName: 'org.apache.beam.sdk.fn',
+)
 
 description = "Apache Beam :: SDKs :: Java :: Fn Execution"
 ext.summary = """Contains code shared across the Beam Java SDK Harness and Java Runners to execute using
 the Beam Portability Framework."""
 
 dependencies {
-  shadow project(path: ":beam-model-pipeline", configuration: "shadow")
-  shadow project(path: ":beam-model-fn-execution", configuration: "shadow")
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow library.java.vendored_grpc_1_13_1
-  shadow library.java.vendored_guava_20_0
-  shadow library.java.slf4j_api
-  shadow library.java.joda_time
+  implementation project(path: ":model:pipeline", configuration: "shadow")
+  implementation project(path: ":model:fn-execution", configuration: "shadow")
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation library.java.vendored_grpc_1_54_0
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation library.java.slf4j_api
+  implementation library.java.joda_time
   provided library.java.junit
-  testCompile library.java.junit
-  testCompile library.java.hamcrest_core
-  testCompile library.java.hamcrest_library
-  testCompile library.java.mockito_core
-  testCompile library.java.slf4j_jdk14
+  testImplementation project(path: ":sdks:java:core", configuration: "shadowTest")
+  testImplementation library.java.junit
+  testImplementation library.java.mockito_core
+  testImplementation library.java.commons_lang3
+  testImplementation "com.github.stefanbirkner:system-rules:1.19.0"
+  testRuntimeOnly library.java.slf4j_jdk14
 }

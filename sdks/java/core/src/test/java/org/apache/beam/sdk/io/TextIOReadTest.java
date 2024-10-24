@@ -27,38 +27,47 @@ import static org.apache.beam.sdk.io.Compression.GZIP;
 import static org.apache.beam.sdk.io.Compression.UNCOMPRESSED;
 import static org.apache.beam.sdk.io.Compression.ZIP;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
-import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasValue;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeFalse;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import javax.annotation.Nullable;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.io.FileBasedSource.FileBasedReader;
 import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
+import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -66,35 +75,41 @@ import org.apache.beam.sdk.testing.NeedsRunner;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.SourceTestUtils;
 import org.apache.beam.sdk.testing.TestPipeline;
-import org.apache.beam.sdk.testing.ValidatesRunner;
+import org.apache.beam.sdk.testing.UsesUnboundedSplittableParDo;
 import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.ToString;
 import org.apache.beam.sdk.transforms.Watch;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.sdk.transforms.display.DisplayDataEvaluator;
 import org.apache.beam.sdk.transforms.windowing.AfterPane;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Repeatedly;
 import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.util.CoderUtils;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Charsets;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Joiner;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Charsets;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Joiner;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.deflate.DeflateCompressorOutputStream;
+import org.apache.commons.lang3.SystemUtils;
 import org.joda.time.Duration;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.experimental.runners.Enclosed;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.junit.runners.Parameterized;
 
 /** Tests for {@link TextIO.Read}. */
+@RunWith(Enclosed.class)
 public class TextIOReadTest {
   private static final int LINES_NUMBER_FOR_LARGE = 1000;
   private static final List<String> EMPTY = Collections.emptyList();
@@ -162,6 +177,7 @@ public class TextIOReadTest {
    * <ul>
    *   <li>TextIO.read().from(filename).withCompression(compressionType)
    *   <li>TextIO.read().from(filename).withCompression(compressionType) .withHintMatchesManyFiles()
+   *   <li>TextIO.readFiles().withCompression(compressionType)
    *   <li>TextIO.readAll().withCompression(compressionType)
    * </ul>
    */
@@ -172,17 +188,24 @@ public class TextIOReadTest {
 
     PAssert.that(p.apply("Read_" + file + "_" + compression.toString(), read))
         .containsInAnyOrder(expected);
-
     PAssert.that(
             p.apply(
                 "Read_" + file + "_" + compression.toString() + "_many",
                 read.withHintMatchesManyFiles()))
         .containsInAnyOrder(expected);
 
-    TextIO.ReadAll readAll = TextIO.readAll().withCompression(compression);
     PAssert.that(
-            p.apply("Create_" + file, Create.of(file.getPath()))
-                .apply("Read_" + compression.toString(), readAll))
+            p.apply("Create_Paths_ReadFiles_" + file, Create.of(file.getPath()))
+                .apply("Match_" + file, FileIO.matchAll())
+                .apply("ReadMatches_" + file, FileIO.readMatches().withCompression(compression))
+                .apply("ReadFiles_" + compression.toString(), TextIO.readFiles()))
+        .containsInAnyOrder(expected);
+
+    PAssert.that(
+            p.apply("Create_Paths_ReadAll_" + file, Create.of(file.getPath()))
+                .apply(
+                    "ReadAll_" + compression.toString(),
+                    TextIO.readAll().withCompression(compression)))
         .containsInAnyOrder(expected);
   }
 
@@ -222,13 +245,15 @@ public class TextIOReadTest {
   }
 
   private static TextSource prepareSource(
-      TemporaryFolder temporaryFolder, byte[] data, byte[] delimiter) throws IOException {
+      TemporaryFolder temporaryFolder, byte[] data, @Nullable byte[] delimiter) throws IOException {
     Path path = temporaryFolder.newFile().toPath();
     Files.write(path, data);
+    return getTextSource(path.toString(), delimiter);
+  }
+
+  public static TextSource getTextSource(String path, @Nullable byte[] delimiter) {
     return new TextSource(
-        ValueProvider.StaticValueProvider.of(path.toString()),
-        EmptyMatchTreatment.DISALLOW,
-        delimiter);
+        ValueProvider.StaticValueProvider.of(path), EmptyMatchTreatment.DISALLOW, delimiter);
   }
 
   private static String getFileSuffix(Compression compression) {
@@ -322,7 +347,7 @@ public class TextIOReadTest {
 
   /** Tests for reading files with various delimiters. */
   @RunWith(Parameterized.class)
-  public static class ReadWithDelimiterTest {
+  public static class ReadWithDefaultDelimiterTest {
     private static final ImmutableList<String> EXPECTED = ImmutableList.of("asdf", "hjkl", "xyz");
     @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
 
@@ -348,8 +373,57 @@ public class TextIOReadTest {
     public ImmutableList<String> expected;
 
     @Test
-    public void testReadLinesWithDelimiter() throws Exception {
+    public void testReadLinesWithDefaultDelimiter() throws Exception {
       runTestReadWithData(line.getBytes(UTF_8), expected);
+    }
+
+    @Test
+    public void testReadLinesWithDefaultDelimiterAndZeroAndOneLengthReturningChannel()
+        throws Exception {
+      Path path = tempFolder.newFile().toPath();
+      Files.write(path, line.getBytes(UTF_8));
+      Metadata metadata = FileSystems.matchSingleFileSpec(path.toString());
+      FileBasedSource source =
+          getTextSource(path.toString(), null)
+              .createForSubrangeOfFile(metadata, 0, metadata.sizeBytes());
+      FileBasedReader<String> reader =
+          source.createSingleFileReader(PipelineOptionsFactory.create());
+      ReadableByteChannel channel =
+          FileSystems.open(
+              FileSystems.matchSingleFileSpec(source.getFileOrPatternSpec()).resourceId());
+      InputStream stream = Channels.newInputStream(channel);
+      reader.startReading(
+          // Placeholder channel that only yields 0- and 1-length buffers.
+          // Data is read at most one byte at a time from line parameter.
+          new ReadableByteChannel() {
+            int readCount = 0;
+
+            @Override
+            public int read(ByteBuffer dst) throws IOException {
+              if (++readCount % 3 == 0) {
+                if (dst.hasRemaining()) {
+                  int value = stream.read();
+                  if (value == -1) {
+                    return -1;
+                  }
+                  dst.put((byte) value);
+                  return 1;
+                }
+              }
+              return 0;
+            }
+
+            @Override
+            public boolean isOpen() {
+              return channel.isOpen();
+            }
+
+            @Override
+            public void close() throws IOException {
+              stream.close();
+            }
+          });
+      assertEquals(expected, SourceTestUtils.readFromStartedReader(reader));
     }
 
     @Test
@@ -367,6 +441,96 @@ public class TextIOReadTest {
       List<String> actual = SourceTestUtils.readFromSource(source, PipelineOptionsFactory.create());
       assertThat(
           actual, containsInAnyOrder(new ArrayList<>(expectedResults).toArray(new String[0])));
+    }
+  }
+
+  /** Tests for reading files with various delimiters. */
+  @RunWith(Parameterized.class)
+  public static class ReadWithCustomDelimiterTest {
+    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
+
+    @Parameterized.Parameters(name = "{index}: {0}")
+    public static Iterable<Object[]> data() {
+      return ImmutableList.<Object[]>builder()
+          .add(new Object[] {"first|*second|*|*third"})
+          .add(new Object[] {"first|*second|*|*third|"})
+          .add(new Object[] {"first|*second|*|*third*"})
+          .add(new Object[] {"first|*second|*|*third|*"})
+          .add(new Object[] {"|first|*second|*|*third"})
+          .add(new Object[] {"|first|*second|*|*third|"})
+          .add(new Object[] {"|first|*second|*|*third*"})
+          .add(new Object[] {"|first|*second|*|*third|*"})
+          .add(new Object[] {"*first|*second|*|*third"})
+          .add(new Object[] {"*first|*second|*|*third|"})
+          .add(new Object[] {"*first|*second|*|*third*"})
+          .add(new Object[] {"*first|*second|*|*third|*"})
+          .add(new Object[] {"|*first|*second|*|*third"})
+          .add(new Object[] {"|*first|*second|*|*third|"})
+          .add(new Object[] {"|*first|*second|*|*third*"})
+          .add(new Object[] {"|*first|*second|*|*third|*"})
+          .build();
+    }
+
+    @Parameterized.Parameter(0)
+    public String testCase;
+
+    @Test
+    public void testReadLinesWithCustomDelimiter() throws Exception {
+      SourceTestUtils.assertSplitAtFractionExhaustive(
+          TextIOReadTest.prepareSource(tempFolder, testCase.getBytes(UTF_8), new byte[] {'|', '*'}),
+          PipelineOptionsFactory.create());
+    }
+
+    @Test
+    public void testReadLinesWithCustomDelimiterAndZeroAndOneLengthReturningChannel()
+        throws Exception {
+      byte[] delimiter = new byte[] {'|', '*'};
+      Path path = tempFolder.newFile().toPath();
+      Files.write(path, testCase.getBytes(UTF_8));
+      Metadata metadata = FileSystems.matchSingleFileSpec(path.toString());
+      FileBasedSource source =
+          getTextSource(path.toString(), delimiter)
+              .createForSubrangeOfFile(metadata, 0, metadata.sizeBytes());
+      FileBasedReader<String> reader =
+          source.createSingleFileReader(PipelineOptionsFactory.create());
+      ReadableByteChannel channel =
+          FileSystems.open(
+              FileSystems.matchSingleFileSpec(source.getFileOrPatternSpec()).resourceId());
+      InputStream stream = Channels.newInputStream(channel);
+      reader.startReading(
+          // Placeholder channel that only yields 0- and 1-length buffers.
+          // Data is read at most one byte at a time from testCase parameter.
+          new ReadableByteChannel() {
+            int readCount = 0;
+
+            @Override
+            public int read(ByteBuffer dst) throws IOException {
+              if (++readCount % 3 == 0) {
+                if (dst.hasRemaining()) {
+                  int value = stream.read();
+                  if (value == -1) {
+                    return -1;
+                  }
+                  dst.put((byte) value);
+                  return 1;
+                }
+              }
+              return 0;
+            }
+
+            @Override
+            public boolean isOpen() {
+              return channel.isOpen();
+            }
+
+            @Override
+            public void close() throws IOException {
+              stream.close();
+            }
+          });
+      assertEquals(
+          SourceTestUtils.readFromSource(source, PipelineOptionsFactory.create()),
+          SourceTestUtils.readFromStartedReader(reader));
     }
   }
 
@@ -435,24 +599,6 @@ public class TextIOReadTest {
     }
 
     @Test
-    public void testSplittingSourceWithCustomDelimiter() throws Exception {
-      List<String> testCases = Lists.newArrayList();
-      String infix = "first|*second|*|*third";
-      String[] affixes = new String[] {"", "|", "*", "|*"};
-      for (String prefix : affixes) {
-        for (String suffix : affixes) {
-          testCases.add(prefix + infix + suffix);
-        }
-      }
-      for (String testCase : testCases) {
-        SourceTestUtils.assertSplitAtFractionExhaustive(
-            TextIOReadTest.prepareSource(
-                tempFolder, testCase.getBytes(UTF_8), new byte[] {'|', '*'}),
-            PipelineOptionsFactory.create());
-      }
-    }
-
-    @Test
     @Category(NeedsRunner.class)
     public void testReadStrings() throws Exception {
       runTestRead(LINES_ARRAY);
@@ -469,9 +615,10 @@ public class TextIOReadTest {
       File emptyFile = tempFolder.newFile();
       p.enableAbandonedNodeEnforcement(false);
 
-      assertEquals("TextIO.Read/Read.out", p.apply(TextIO.read().from("somefile")).getName());
-      assertEquals(
-          "MyRead/Read.out", p.apply("MyRead", TextIO.read().from(emptyFile.getPath())).getName());
+      assertThat(p.apply(TextIO.read().from("somefile")).getName(), startsWith("TextIO.Read/Read"));
+      assertThat(
+          p.apply("MyRead", TextIO.read().from(emptyFile.getPath())).getName(),
+          startsWith("MyRead/Read"));
     }
 
     @Test
@@ -482,20 +629,6 @@ public class TextIOReadTest {
 
       assertThat(displayData, hasDisplayItem("filePattern", "foo.*"));
       assertThat(displayData, hasDisplayItem("compressionType", BZIP2.toString()));
-    }
-
-    @Test
-    @Category(ValidatesRunner.class)
-    public void testPrimitiveReadDisplayData() {
-      DisplayDataEvaluator evaluator = DisplayDataEvaluator.create();
-
-      TextIO.Read read = TextIO.read().from("foobar");
-
-      Set<DisplayData> displayData = evaluator.displayDataForPrimitiveSourceTransforms(read);
-      assertThat(
-          "TextIO.Read should include the file prefix in its primitive display data",
-          displayData,
-          hasItem(hasDisplayItem(hasValue(startsWith("foobar")))));
     }
 
     /** Options for testing. */
@@ -693,7 +826,6 @@ public class TextIOReadTest {
 
         // Split. 0.1 is in line1, so should now be able to detect last record.
         remainder = readerOrig.splitAtFraction(0.1);
-        System.err.println(readerOrig.getCurrentSource());
         assertNotNull(remainder);
 
         // First record, after splitting.
@@ -754,6 +886,8 @@ public class TextIOReadTest {
 
     @Test
     public void testInitialSplitAutoModeGz() throws Exception {
+      // TODO: Java core test failing on windows, https://github.com/apache/beam/issues/20470
+      assumeFalse(SystemUtils.IS_OS_WINDOWS);
       PipelineOptions options = TestPipeline.testingPipelineOptions();
       long desiredBundleSize = 1000;
       File largeGz = writeToFile(LARGE, tempFolder, "large.gz", GZIP);
@@ -823,8 +957,51 @@ public class TextIOReadTest {
       p.run();
     }
 
+    private List<KV<String, String>> filenameKV(Path path, String fn, List<String> input) {
+      return input.stream()
+          .map(l -> KV.of(path.resolve(fn).toString(), l))
+          .collect(Collectors.toList());
+    }
+
     @Test
     @Category(NeedsRunner.class)
+    public void testReadFilesWithFilename() throws IOException {
+      Path tempFolderPath = tempFolder.getRoot().toPath();
+      writeToFile(TINY, tempFolder, "readAllTiny1.zip", ZIP);
+      writeToFile(TINY, tempFolder, "readAllTiny2.txt", UNCOMPRESSED);
+      writeToFile(LARGE, tempFolder, "readAllLarge1.zip", ZIP);
+      writeToFile(LARGE, tempFolder, "readAllLarge2.txt", UNCOMPRESSED);
+
+      SerializableFunction<String, ? extends FileBasedSource<String>> createSource =
+          input ->
+              new TextSource(
+                  ValueProvider.StaticValueProvider.of(input),
+                  EmptyMatchTreatment.DISALLOW,
+                  new byte[] {'\n'});
+
+      PCollection<KV<String, String>> lines =
+          p.apply(
+                  Create.of(
+                      tempFolderPath.resolve("readAllTiny*").toString(),
+                      tempFolderPath.resolve("readAllLarge*").toString()))
+              .apply(FileIO.matchAll())
+              .apply(FileIO.readMatches().withCompression(AUTO))
+              .apply(
+                  new ReadAllViaFileBasedSourceWithFilename<>(
+                      10, createSource, KvCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of())));
+
+      PAssert.that(lines)
+          .containsInAnyOrder(
+              Iterables.concat(
+                  filenameKV(tempFolderPath, "readAllTiny1.zip", TINY),
+                  filenameKV(tempFolderPath, "readAllTiny2.txt", TINY),
+                  filenameKV(tempFolderPath, "readAllLarge1.zip", LARGE),
+                  filenameKV(tempFolderPath, "readAllLarge2.txt", LARGE)));
+      p.run();
+    }
+
+    @Test
+    @Category({NeedsRunner.class, UsesUnboundedSplittableParDo.class})
     public void testReadWatchForNewFiles() throws IOException, InterruptedException {
       final Path basePath = tempFolder.getRoot().toPath().resolve("readWatch");
       basePath.toFile().mkdir();
@@ -852,6 +1029,123 @@ public class TextIOReadTest {
 
       PAssert.that(lines).containsInAnyOrder("0", "1", "2", "3", "4", "5", "6", "7", "8", "9");
       p.run();
+    }
+  }
+
+  /** Tests for TextSource class. */
+  @RunWith(JUnit4.class)
+  public static class TextSourceTest {
+    @Rule public transient TestPipeline pipeline = TestPipeline.create();
+
+    @Test
+    @Category(NeedsRunner.class)
+    public void testRemoveUtf8BOM() throws Exception {
+      Path p1 = createTestFile("test_txt_ascii", Charset.forName("US-ASCII"), "1,p1", "2,p1");
+      Path p2 =
+          createTestFile(
+              "test_txt_utf8_no_bom",
+              Charset.forName("UTF-8"),
+              "1,p2-Japanese:テスト",
+              "2,p2-Japanese:テスト");
+      Path p3 =
+          createTestFile(
+              "test_txt_utf8_bom",
+              Charset.forName("UTF-8"),
+              "\uFEFF1,p3-テストBOM",
+              "\uFEFF2,p3-テストBOM");
+      PCollection<String> contents =
+          pipeline
+              .apply("Create", Create.of(p1.toString(), p2.toString(), p3.toString()))
+              .setCoder(StringUtf8Coder.of())
+              // PCollection<String>
+              .apply("Read file", new TextIOReadTest.TextSourceTest.TextFileReadTransform());
+      // PCollection<KV<String, String>>: tableName, line
+
+      // Validate that the BOM bytes (\uFEFF) at the beginning of the first line have been removed.
+      PAssert.that(contents)
+          .containsInAnyOrder(
+              "1,p1",
+              "2,p1",
+              "1,p2-Japanese:テスト",
+              "2,p2-Japanese:テスト",
+              "1,p3-テストBOM",
+              "\uFEFF2,p3-テストBOM");
+
+      pipeline.run();
+    }
+
+    @Test
+    @Category(NeedsRunner.class)
+    public void testPreserveNonBOMBytes() throws Exception {
+      // Contains \uFEFE, not UTF BOM.
+      Path p1 =
+          createTestFile(
+              "test_txt_utf_bom", Charset.forName("UTF-8"), "\uFEFE1,p1テスト", "\uFEFE2,p1テスト");
+      PCollection<String> contents =
+          pipeline
+              .apply("Create", Create.of(p1.toString()))
+              .setCoder(StringUtf8Coder.of())
+              // PCollection<String>
+              .apply("Read file", new TextIOReadTest.TextSourceTest.TextFileReadTransform());
+
+      PAssert.that(contents).containsInAnyOrder("\uFEFE1,p1テスト", "\uFEFE2,p1テスト");
+
+      pipeline.run();
+    }
+
+    private static class FileReadDoFn extends DoFn<FileIO.ReadableFile, String> {
+
+      @ProcessElement
+      public void processElement(ProcessContext c) {
+        FileIO.ReadableFile file = c.element();
+        ValueProvider<String> filenameProvider =
+            ValueProvider.StaticValueProvider.of(file.getMetadata().resourceId().getFilename());
+        // Create a TextSource, passing null as the delimiter to use the default
+        // delimiters ('\n', '\r', or '\r\n').
+        TextSource textSource = new TextSource(filenameProvider, null, null);
+        try {
+          BoundedSource.BoundedReader<String> reader =
+              textSource
+                  .createForSubrangeOfFile(file.getMetadata(), 0, file.getMetadata().sizeBytes())
+                  .createReader(c.getPipelineOptions());
+          for (boolean more = reader.start(); more; more = reader.advance()) {
+            c.output(reader.getCurrent());
+          }
+        } catch (IOException e) {
+          throw new RuntimeException(
+              "Unable to readFile: " + file.getMetadata().resourceId().toString());
+        }
+      }
+    }
+
+    /** A transform that reads CSV file records. */
+    private static class TextFileReadTransform
+        extends PTransform<PCollection<String>, PCollection<String>> {
+      public TextFileReadTransform() {}
+
+      @Override
+      public PCollection<String> expand(PCollection<String> files) {
+        return files
+            // PCollection<String>
+            .apply(FileIO.matchAll().withEmptyMatchTreatment(EmptyMatchTreatment.DISALLOW))
+            // PCollection<Match.Metadata>
+            .apply(FileIO.readMatches())
+            // PCollection<FileIO.ReadableFile>
+            .apply("Read lines", ParDo.of(new TextIOReadTest.TextSourceTest.FileReadDoFn()));
+        // PCollection<String>: line
+      }
+    }
+
+    private Path createTestFile(String filename, Charset charset, String... lines)
+        throws IOException {
+      Path path = Files.createTempFile(filename, ".csv");
+      try (BufferedWriter writer = Files.newBufferedWriter(path, charset)) {
+        for (String line : lines) {
+          writer.write(line);
+          writer.write('\n');
+        }
+      }
+      return path;
     }
   }
 }

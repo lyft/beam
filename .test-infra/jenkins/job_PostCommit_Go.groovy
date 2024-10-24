@@ -22,22 +22,22 @@ import PostcommitJobBuilder
 // This is the Go postcommit which runs a gradle build, and the current set
 // of postcommit tests.
 PostcommitJobBuilder.postCommitJob('beam_PostCommit_Go', 'Run Go PostCommit',
-  './gradlew :goPostCommit', this) {
-  description('Runs Go PostCommit tests against master.')
-  previousNames(/beam_PostCommit_Go_GradleBuild/)
+    'Go PostCommit (\"Run Go PostCommit\")', this) {
+      description('Runs Go PostCommit tests against master.')
+      previousNames(/beam_PostCommit_Go_GradleBuild/)
 
-  // Set common parameters.
-  commonJobProperties.setTopLevelMainJobProperties(
-    delegate,
-    'master',
-    150)
+      // Set common parameters.
+      commonJobProperties.setTopLevelMainJobProperties(
+          delegate,
+          'master',
+          300) // increased to 5 hours.
 
-  steps {
-    gradle {
-      rootBuildScriptDir(commonJobProperties.checkoutDir)
-      tasks(':goPostCommit')
-      commonJobProperties.setGradleSwitches(delegate)
-      switches('--no-parallel')
+      steps {
+        gradle {
+          rootBuildScriptDir(commonJobProperties.checkoutDir)
+          tasks(':goPostCommit')
+          commonJobProperties.setGradleSwitches(delegate)
+          switches('--no-parallel')
+        }
+      }
     }
-  }
-}

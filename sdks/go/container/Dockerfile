@@ -16,8 +16,13 @@
 # limitations under the License.
 ###############################################################################
 
-FROM debian:stretch
-MAINTAINER "Apache Beam <dev@beam.apache.org>"
+FROM debian:bullseye
+LABEL Author "Apache Beam <dev@beam.apache.org>"
+
+ARG TARGETOS
+ARG TARGETARCH
+
+ARG pull_licenses
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -25,6 +30,16 @@ RUN apt-get update && \
         && \
     rm -rf /var/lib/apt/lists/*
 
-ADD target/linux_amd64/boot /opt/apache/beam/
+ADD target/${TARGETOS}_${TARGETARCH}/boot /opt/apache/beam/
+
+COPY target/LICENSE /opt/apache/beam/
+COPY target/NOTICE /opt/apache/beam/
+
+# Add Go licenses.
+COPY target/go-licenses/* /opt/apache/beam/third_party_licenses/golang/
+RUN if [ "$pull_licenses" = "false" ] ; then \
+    # Remove above golang license and dir if pull licenses false
+    rm -rf /opt/apache/beam/third_party_licenses ; \
+   fi
 
 ENTRYPOINT ["/opt/apache/beam/boot"]

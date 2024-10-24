@@ -23,6 +23,7 @@ import static org.apache.beam.sdk.io.kudu.KuduTestUtils.GenerateUpsert;
 import static org.apache.beam.sdk.io.kudu.KuduTestUtils.SCHEMA;
 import static org.apache.beam.sdk.io.kudu.KuduTestUtils.createTableOptions;
 import static org.apache.beam.sdk.io.kudu.KuduTestUtils.rowCount;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 
 import java.util.Arrays;
@@ -45,13 +46,12 @@ import org.apache.kudu.client.KuduPredicate;
 import org.apache.kudu.client.KuduTable;
 import org.apache.kudu.client.RowResult;
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * A test of {@link org.apache.beam.sdk.io.kudu.KuduIO} on an independent Kudu instance.
@@ -86,8 +86,8 @@ import org.slf4j.LoggerFactory;
  *   127.0.0.1 localhost e94929167e2a
  * </pre>
  */
+@RunWith(JUnit4.class)
 public class KuduIOIT {
-  private static final Logger LOG = LoggerFactory.getLogger(KuduIOIT.class);
 
   /** KuduIOIT options. */
   public interface KuduPipelineOptions extends IOTestPipelineOptions {
@@ -222,7 +222,7 @@ public class KuduIOIT {
                 .withFormatFn(new GenerateUpsert()));
     writePipeline.run().waitUntilFinish();
 
-    Assert.assertThat(
+    assertThat(
         "Wrong number of records in table",
         rowCount(kuduTable),
         equalTo(options.getNumberOfRecords()));

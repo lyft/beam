@@ -33,6 +33,7 @@ import com.google.api.services.cloudresourcemanager.CloudResourceManager.Project
 import com.google.api.services.cloudresourcemanager.model.Project;
 import com.google.api.services.storage.model.Bucket;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -40,13 +41,13 @@ import org.apache.beam.sdk.extensions.gcp.auth.TestCredential;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions.DefaultProjectFactory;
 import org.apache.beam.sdk.extensions.gcp.options.GcpOptions.GcpTempLocationFactory;
 import org.apache.beam.sdk.extensions.gcp.storage.NoopPathValidator;
+import org.apache.beam.sdk.extensions.gcp.util.GcsUtil;
+import org.apache.beam.sdk.extensions.gcp.util.gcsfs.GcsPath;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.RestoreSystemProperties;
-import org.apache.beam.sdk.util.GcsUtil;
-import org.apache.beam.sdk.util.gcsfs.GcsPath;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.io.Files;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.io.Files;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -63,7 +64,7 @@ public class GcpOptionsTest {
 
   /** Tests for the majority of methods. */
   @RunWith(JUnit4.class)
-  public static class Common {
+  public static class CommonTests {
     @Rule public TestRule restoreSystemProperties = new RestoreSystemProperties();
     @Rule public TemporaryFolder tmpFolder = new TemporaryFolder();
     @Rule public ExpectedException thrown = ExpectedException.none();
@@ -159,21 +160,6 @@ public class GcpOptionsTest {
       options.getGcpTempLocation();
     }
 
-    @Test
-    public void testDefaultGcpTempLocationDoesNotExist() {
-      GcpOptions options = PipelineOptionsFactory.as(GcpOptions.class);
-      String tempLocation = "gs://does/not/exist";
-      options.setTempLocation(tempLocation);
-      thrown.expect(IllegalArgumentException.class);
-      thrown.expectMessage(
-          "Error constructing default value for gcpTempLocation: tempLocation is not"
-              + " a valid GCS path");
-      thrown.expectCause(
-          hasMessage(containsString("Output path does not exist or is not writeable")));
-
-      options.getGcpTempLocation();
-    }
-
     private static void makePropertiesFileWithProject(File path, String projectId)
         throws IOException {
       String properties =
@@ -185,7 +171,7 @@ public class GcpOptionsTest {
                   + "[dataflow]%n"
                   + "magic = true%n",
               projectId);
-      Files.write(properties, path, StandardCharsets.UTF_8);
+      Files.asCharSink(path, StandardCharsets.UTF_8).write(properties);
     }
 
     private static String runGetProjectTest(File path, Map<String, String> environment)
@@ -199,7 +185,7 @@ public class GcpOptionsTest {
 
   /** Tests related to determining the GCP temp location. */
   @RunWith(JUnit4.class)
-  public static class GcpTempLocation {
+  public static class GcpTempLocationTest {
     @Rule public ExpectedException thrown = ExpectedException.none();
     @Mock private GcsUtil mockGcsUtil;
     @Mock private CloudResourceManager mockCrmClient;
@@ -218,6 +204,23 @@ public class GcpOptionsTest {
       when(mockCrmClient.projects()).thenReturn(mockProjects);
       when(mockProjects.get(any(String.class))).thenReturn(mockGet);
       fakeProject = new Project().setProjectNumber(1L);
+    }
+
+    @Test
+    public void testDefaultGcpTempLocationDoesNotExist() throws IOException {
+      String tempLocation = "gs://does/not/exist";
+      options.setTempLocation(tempLocation);
+      doThrow(new FileNotFoundException())
+          .when(mockGcsUtil)
+          .verifyBucketAccessible(any(GcsPath.class));
+      thrown.expect(IllegalArgumentException.class);
+      thrown.expectMessage(
+          "Error constructing default value for gcpTempLocation: tempLocation is not"
+              + " a valid GCS path");
+      thrown.expectCause(
+          hasMessage(containsString("Output path does not exist or is not writeable")));
+
+      options.as(GcpOptions.class).getGcpTempLocation();
     }
 
     @Test
@@ -267,6 +270,16 @@ public class GcpOptionsTest {
 
       thrown.expect(IllegalArgumentException.class);
       thrown.expectMessage("Bucket owner does not match the project");
+      GcpTempLocationFactory.tryCreateDefaultBucket(options, mockCrmClient);
+    }
+
+    @Test
+    public void testCreateBucketCreateWithKmsFails() throws Exception {
+      doReturn(fakeProject).when(mockGet).execute();
+      options.as(GcpOptions.class).setDataflowKmsKey("kms_key");
+
+      thrown.expect(RuntimeException.class);
+      thrown.expectMessage("dataflowKmsKey");
       GcpTempLocationFactory.tryCreateDefaultBucket(options, mockCrmClient);
     }
 

@@ -17,19 +17,50 @@
  */
 
 plugins { id 'org.apache.beam.module' }
-applyJavaNature(exportJavadoc: false)
+applyJavaNature(
+    exportJavadoc: false,
+    automaticModuleName: 'org.apache.beam.sdk.testutils',
+    archivesBaseName: 'beam-sdks-java-test-utils'
+)
 
 description = "Apache Beam :: SDKs :: Java :: Test Utils"
 
 dependencies {
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow library.java.vendored_guava_20_0
-  shadow library.java.google_cloud_bigquery
-  shadow project(path: ":beam-sdks-java-extensions-google-cloud-platform-core", configuration: "shadow")
+  implementation enforcedPlatform(library.java.google_cloud_platform_libraries_bom)
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation library.java.google_cloud_bigquery
+  implementation library.java.google_code_gson
+  implementation library.java.joda_time
+  implementation library.java.commons_compress
+  implementation library.java.commons_lang3
+  implementation library.java.http_client
+  implementation library.java.http_core
+  implementation library.java.slf4j_api
+  provided library.java.jmh_core
 
-  shadowTest library.java.junit
-  shadowTest library.java.mockito_core
-  shadowTest library.java.hamcrest_core
-  shadowTest library.java.hamcrest_library
-  shadowTest project(path: ":beam-runners-direct-java", configuration: "shadowTest")
+  testImplementation library.java.junit
+  testRuntimeOnly project(path: ":runners:direct-java", configuration: "shadowTest")
+}
+
+task verifyJavaVersion(type: Test) {
+  filter {
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyCodeIsCompiledWithJava8'
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyTestCodeIsCompiledWithJava11'
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyRunningJVMVersionIs11'
+  }
+  doLast {
+    println 'Java verified'
+  }
+}
+
+task verifyJavaVersion17(type: Test) {
+  filter {
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyCodeIsCompiledWithJava8'
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyTestCodeIsCompiledWithJava17'
+    includeTestsMatching 'org.apache.beam.sdk.testutils.jvmverification.JvmVerification.verifyRunningJVMVersionIs17'
+  }
+  doLast {
+    println 'Java verified'
+  }
 }

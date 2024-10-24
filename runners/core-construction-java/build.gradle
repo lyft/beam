@@ -17,7 +17,24 @@
  */
 
 plugins { id 'org.apache.beam.module' }
-applyJavaNature()
+applyJavaNature(
+  classesTriggerCheckerBugs: [
+    'WindowIntoTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'FlattenTranslator': 'https://github.com/typetools/checker-framework/issues/3791',
+    'WriteFilesTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'CreatePCollectionViewTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'ReshuffleTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'TestStreamTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'ImpulseTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'CombineTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'SplittableParDo': 'https://github.com/typetools/checker-framework/issues/3791',
+    'ReadTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'GroupByKeyTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'ParDoTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+    'GroupIntoBatchesTranslation': 'https://github.com/typetools/checker-framework/issues/3791',
+  ],
+  automaticModuleName: 'org.apache.beam.runners.core.construction',
+)
 
 description = "Apache Beam :: Runners :: Core Construction Java"
 ext.summary = """Beam Runners Core provides utilities to aid runner authors interact with a Pipeline
@@ -33,38 +50,30 @@ test {
 }
 
 dependencies {
-  shadow project(path: ":beam-model-pipeline", configuration: "shadow")
-  shadow project(path: ":beam-model-job-management", configuration: "shadow")
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow library.java.vendored_grpc_1_13_1
-  shadow library.java.vendored_guava_20_0
-  shadow library.java.jackson_core
-  shadow library.java.jackson_databind
-  shadow library.java.joda_time
-  shadow library.java.slf4j_api
-  shadowTest library.java.hamcrest_core
-  shadowTest library.java.hamcrest_library
-  shadowTest library.java.junit
-  shadowTest library.java.mockito_core
-  shadowTest library.java.jackson_annotations
-  shadowTest library.java.jackson_dataformat_yaml
-  shadowTest project(path: ":beam-model-fn-execution", configuration: "shadow")
-}
-
-task runExpansionService (type: JavaExec) {
-  main = "org.apache.beam.runners.core.construction.ExpansionService"
-  classpath = sourceSets.main.runtimeClasspath
-  args = [project.findProperty("constructionService.port") ?: "8097"]
-}
-
-task testExpansionService(type: Jar) {
-  dependsOn = [shadowJar, shadowTestJar]
-  manifest {
-    attributes(
-            'Main-Class': 'org.apache.beam.runners.core.construction.TestExpansionService'
-    )
-  }
-  from { configurations.testRuntime.collect { it.isDirectory() ? it : zipTree(it) }}
-  from sourceSets.main.output
-  from sourceSets.test.output
+  implementation project(path: ":model:pipeline", configuration: "shadow")
+  implementation project(path: ":model:job-management", configuration: "shadow")
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation project(path: ":sdks:java:extensions:avro")
+  implementation project(path: ":sdks:java:fn-execution")
+  implementation library.java.vendored_grpc_1_54_0
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation library.java.classgraph
+  implementation library.java.jackson_core
+  implementation library.java.jackson_databind
+  implementation library.java.joda_time
+  implementation library.java.slf4j_api
+  implementation library.java.jackson_annotations
+  implementation library.java.avro
+  compileOnly library.java.error_prone_annotations
+  // Avro 1.8 leaks an older version of parameter that conflicts in runtime with the dependencies
+  // of some runners so we need to fix it to a more recent but still compatible version.
+  runtimeOnly "com.thoughtworks.paranamer:paranamer:2.8"
+  testImplementation library.java.junit
+  testImplementation library.java.mockito_core
+  testImplementation library.java.jackson_annotations
+  testImplementation library.java.jackson_dataformat_yaml
+  testImplementation project(path: ":model:fn-execution", configuration: "shadow")
+  testImplementation project(path: ":sdks:java:core", configuration: "testRuntimeMigration")
+  testImplementation project(path: ":sdks:java:extensions:avro")
+  testRuntimeOnly library.java.slf4j_jdk14
 }

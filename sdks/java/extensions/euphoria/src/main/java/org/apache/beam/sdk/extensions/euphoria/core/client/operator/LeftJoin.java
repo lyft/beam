@@ -20,7 +20,6 @@ package org.apache.beam.sdk.extensions.euphoria.core.client.operator;
 import static java.util.Objects.requireNonNull;
 
 import java.util.Optional;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.extensions.euphoria.core.annotation.audience.Audience;
 import org.apache.beam.sdk.extensions.euphoria.core.client.functional.BinaryFunctor;
 import org.apache.beam.sdk.extensions.euphoria.core.client.functional.UnaryFunction;
@@ -28,6 +27,7 @@ import org.apache.beam.sdk.extensions.euphoria.core.client.io.Collector;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TypeDescriptor;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Left outer join of two input datasets producing single new dataset.
@@ -53,6 +53,9 @@ import org.apache.beam.sdk.values.TypeDescriptor;
  * </ol>
  */
 @Audience(Audience.Type.CLIENT)
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class LeftJoin {
 
   /**
@@ -131,10 +134,10 @@ public class LeftJoin {
     public <FirstT, SecondT> ByBuilder<FirstT, SecondT> of(
         PCollection<FirstT> left, PCollection<SecondT> right) {
       @SuppressWarnings("unchecked")
-      final Builder<FirstT, SecondT, ?> casted = (Builder) this;
-      casted.left = requireNonNull(left);
-      casted.right = requireNonNull(right);
-      return casted;
+      final Builder<FirstT, SecondT, ?> cast = (Builder) this;
+      cast.left = requireNonNull(left);
+      cast.right = requireNonNull(right);
+      return cast;
     }
 
     @Override
@@ -143,11 +146,11 @@ public class LeftJoin {
         UnaryFunction<RightT, T> rightKeyExtractor,
         @Nullable TypeDescriptor<T> keyType) {
       @SuppressWarnings("unchecked")
-      final Builder<LeftT, RightT, T> casted = (Builder) this;
-      casted.leftKeyExtractor = requireNonNull(leftKeyExtractor);
-      casted.rightKeyExtractor = requireNonNull(rightKeyExtractor);
-      casted.keyType = keyType;
-      return casted;
+      final Builder<LeftT, RightT, T> cast = (Builder) this;
+      cast.leftKeyExtractor = requireNonNull(leftKeyExtractor);
+      cast.rightKeyExtractor = requireNonNull(rightKeyExtractor);
+      cast.keyType = keyType;
+      return cast;
     }
 
     @Override

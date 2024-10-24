@@ -17,10 +17,14 @@
  */
 package org.apache.beam.sdk.extensions.sql.meta.provider;
 
+import java.util.Collections;
 import java.util.Map;
-import org.apache.beam.sdk.extensions.sql.BeamSqlTable;
+import java.util.Set;
+import org.apache.beam.sdk.extensions.sql.impl.BeamCalciteSchema;
 import org.apache.beam.sdk.extensions.sql.impl.JdbcDriver;
+import org.apache.beam.sdk.extensions.sql.meta.BeamSqlTable;
 import org.apache.beam.sdk.extensions.sql.meta.Table;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * A {@code TableProvider} handles the metadata CRUD of a specified kind of tables.
@@ -32,6 +36,9 @@ import org.apache.beam.sdk.extensions.sql.meta.Table;
  * automatically loaded by CLI or other cases when {@link JdbcDriver} is used with default
  * connection parameters.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public interface TableProvider {
   /** Gets the table type this provider handles. */
   String getTableType();
@@ -49,6 +56,27 @@ public interface TableProvider {
   /** Get all tables from this provider. */
   Map<String, Table> getTables();
 
+  /** Get a specific table from this provider it is present, or null if it is not present. */
+  default @Nullable Table getTable(String tableName) {
+    return getTables().get(tableName);
+  }
+
   /** Build a {@link BeamSqlTable} using the given table meta info. */
   BeamSqlTable buildBeamSqlTable(Table table);
+
+  /**
+   * Returns all sub-providers, e.g. sub-schemas. Temporary, this logic needs to live in {@link
+   * BeamCalciteSchema}.
+   */
+  default Set<String> getSubProviders() {
+    return Collections.emptySet();
+  }
+
+  /**
+   * Returns a sub-provider, e.g. sub-schema. Temporary, this logic needs to live in {@link
+   * BeamCalciteSchema}.
+   */
+  default TableProvider getSubProvider(String name) {
+    return null;
+  }
 }

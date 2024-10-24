@@ -17,9 +17,9 @@
  */
 package org.apache.beam.sdk.util;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
 import org.joda.time.Duration;
 
 /**
@@ -27,6 +27,9 @@ import org.joda.time.Duration;
  *
  * @see #DEFAULT for the default configuration parameters.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public final class FluentBackoff {
 
   private static final double DEFAULT_EXPONENT = 1.5;
@@ -201,7 +204,7 @@ public final class FluentBackoff {
       nextBackoffMillis = Math.min(nextBackoffMillis, remainingCumulative.getMillis());
 
       // Update state and return backoff.
-      currentCumulativeBackoff = currentCumulativeBackoff.plus(nextBackoffMillis);
+      currentCumulativeBackoff = currentCumulativeBackoff.plus(Duration.millis(nextBackoffMillis));
       currentRetry += 1;
       return nextBackoffMillis;
     }

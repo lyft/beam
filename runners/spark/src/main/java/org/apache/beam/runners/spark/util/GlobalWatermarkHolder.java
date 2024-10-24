@@ -17,7 +17,7 @@
  */
 package org.apache.beam.runners.spark.util;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.Serializable;
 import java.util.HashMap;
@@ -28,11 +28,11 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import javax.annotation.Nonnull;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.CacheBuilder;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.CacheLoader;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.LoadingCache;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.CacheBuilder;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.CacheLoader;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.LoadingCache;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
 import org.apache.spark.SparkEnv;
 import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.storage.BlockId;
@@ -55,6 +55,10 @@ import scala.reflect.ClassTag;
  * <p>For each source, holds a queue for the watermarks of each micro-batch that was read, and
  * advances the watermarks according to the queue (first-in-first-out).
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class GlobalWatermarkHolder {
 
   private static final Logger LOG = LoggerFactory.getLogger(GlobalWatermarkHolder.class);
@@ -98,7 +102,6 @@ public class GlobalWatermarkHolder {
   /**
    * Returns the {@link Broadcast} containing the {@link SparkWatermarks} mapped to their sources.
    */
-  @SuppressWarnings("unchecked")
   public static Map<Integer, SparkWatermarks> get(Long cacheInterval) {
     if (canBypassRemoteWatermarkFetching()) {
       /*
@@ -142,7 +145,7 @@ public class GlobalWatermarkHolder {
    * Advances the watermarks to the next-in-line watermarks. SparkWatermarks are monotonically
    * increasing.
    */
-  public static void advance(final String batchId) {
+  private static void advance(final String batchId) {
     synchronized (GlobalWatermarkHolder.class) {
       final BlockManager blockManager = SparkEnv.get().blockManager();
       final Map<Integer, SparkWatermarks> newWatermarks = computeNewWatermarks(blockManager);
@@ -249,7 +252,7 @@ public class GlobalWatermarkHolder {
         WATERMARKS_BLOCK_ID, newWatermarks, StorageLevel.MEMORY_ONLY(), true, WATERMARKS_TAG);
     // if an executor tries to fetch the watermark block here, it still may fail to do so since
     // the put operation might not have been executed yet
-    // see also https://issues.apache.org/jira/browse/BEAM-2789
+    // see also https://github.com/apache/beam/issues/18426
     LOG.info("Put new watermark block: {}", newWatermarks);
   }
 
@@ -285,7 +288,6 @@ public class GlobalWatermarkHolder {
 
   private static class WatermarksLoader extends CacheLoader<String, Map<Integer, SparkWatermarks>> {
 
-    @SuppressWarnings("unchecked")
     @Override
     public Map<Integer, SparkWatermarks> load(@Nonnull String key) throws Exception {
       final BlockManager blockManager = SparkEnv.get().blockManager();

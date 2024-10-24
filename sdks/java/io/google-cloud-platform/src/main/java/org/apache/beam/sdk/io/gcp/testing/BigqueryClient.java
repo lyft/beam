@@ -17,8 +17,8 @@
  */
 package org.apache.beam.sdk.io.gcp.testing;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.json.JsonFactory;
@@ -52,6 +52,7 @@ import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.auth.oauth2.GoogleCredentials;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -59,12 +60,13 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.util.BackOffAdapter;
+import org.apache.beam.sdk.annotations.Internal;
+import org.apache.beam.sdk.extensions.gcp.util.BackOffAdapter;
+import org.apache.beam.sdk.extensions.gcp.util.Transport;
 import org.apache.beam.sdk.util.FluentBackoff;
-import org.apache.beam.sdk.util.Transport;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,7 +79,7 @@ import org.slf4j.LoggerFactory;
  * <p>Get a new Bigquery client:
  *
  * <pre>{@code [
- *    BigqueryClient client = BigqueryClient.getNewBigquerryClient(applicationName);
+ *    BigqueryClient client = BigqueryClient.getNewBigqueryClient(applicationName);
  * ]}</pre>
  *
  * <p>Execute a query with retries:
@@ -110,10 +112,16 @@ import org.slf4j.LoggerFactory;
  *    client.insertDataToTable(projectId, datasetId, tableName, rows)
  * ]}</pre>
  */
+@Internal
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class BigqueryClient {
   private static final Logger LOG = LoggerFactory.getLogger(BigqueryClient.class);
   // The maximum number of retries to execute a BigQuery RPC
   static final int MAX_QUERY_RETRIES = 4;
+  // How long should BQ jobs.query call wait for query completion. Default is 10 seconds.
+  static final Long QUERY_TIMEOUT_MS = 20_000L;
 
   // The initial backoff for executing a BigQuery RPC
   private static final Duration INITIAL_BACKOFF = Duration.standardSeconds(1L);
@@ -142,7 +150,7 @@ public class BigqueryClient {
     return credential;
   }
 
-  public static Bigquery getNewBigquerryClient(String applicationName) {
+  public static Bigquery getNewBigqueryClient(String applicationName) {
     HttpTransport transport = Transport.getTransport();
     JsonFactory jsonFactory = Transport.getJsonFactory();
     Credentials credential = getDefaultCredential();
@@ -156,17 +164,22 @@ public class BigqueryClient {
   }
 
   public BigqueryClient(String applicationName) {
-    bqClient = BigqueryClient.getNewBigquerryClient(applicationName);
+    bqClient = BigqueryClient.getNewBigqueryClient(applicationName);
   }
 
   @Nonnull
   public QueryResponse queryWithRetries(String query, String projectId)
       throws IOException, InterruptedException {
-    return queryWithRetries(query, projectId, false);
+    return queryWithRetries(query, projectId, false, false);
   }
 
-  @Nullable
-  private Object getTypedCellValue(TableFieldSchema fieldSchema, Object v) {
+  @Nonnull
+  public QueryResponse queryWithRetriesUsingStandardSql(String query, String projectId)
+      throws IOException, InterruptedException {
+    return queryWithRetries(query, projectId, false, true);
+  }
+
+  private @Nullable Object getTypedCellValue(TableFieldSchema fieldSchema, Object v) {
     if (Data.isNull(v)) {
       return null;
     }
@@ -274,11 +287,14 @@ public class BigqueryClient {
     return response;
   }
 
+  /** Performs a query without flattening results. */
   @Nonnull
-  public List<TableRow> queryUnflattened(String query, String projectId, boolean typed)
+  public List<TableRow> queryUnflattened(
+      String query, String projectId, boolean typed, boolean useStandardSql)
       throws IOException, InterruptedException {
     Random rnd = new Random(System.currentTimeMillis());
-    String temporaryDatasetId = "_dataflow_temporary_dataset_" + rnd.nextInt(1000000);
+    String temporaryDatasetId =
+        String.format("_dataflow_temporary_dataset_%s_%s", System.nanoTime(), rnd.nextInt(1000000));
     String temporaryTableId = "dataflow_temporary_table_" + rnd.nextInt(1000000);
     TableReference tempTableReference =
         new TableReference()
@@ -295,6 +311,7 @@ public class BigqueryClient {
             .setFlattenResults(false)
             .setAllowLargeResults(true)
             .setDestinationTable(tempTableReference)
+            .setUseLegacySql(!useStandardSql)
             .setQuery(query);
     JobConfiguration jc = new JobConfiguration().setQuery(jcQuery);
 
@@ -314,6 +331,9 @@ public class BigqueryClient {
 
     final TableSchema schema = qResponse.getSchema();
     final List<TableRow> rows = qResponse.getRows();
+    if (rows == null) {
+      return Collections.EMPTY_LIST;
+    }
     deleteDataset(projectId, temporaryDatasetId);
     return !typed
         ? rows
@@ -325,10 +345,21 @@ public class BigqueryClient {
   @Nonnull
   public QueryResponse queryWithRetries(String query, String projectId, boolean typed)
       throws IOException, InterruptedException {
+    return queryWithRetries(query, projectId, typed, false);
+  }
+
+  @Nonnull
+  private QueryResponse queryWithRetries(
+      String query, String projectId, boolean typed, boolean useStandardSql)
+      throws IOException, InterruptedException {
     Sleeper sleeper = Sleeper.DEFAULT;
     BackOff backoff = BackOffAdapter.toGcpBackOff(BACKOFF_FACTORY.backoff());
     IOException lastException = null;
-    QueryRequest bqQueryRequest = new QueryRequest().setQuery(query);
+    QueryRequest bqQueryRequest =
+        new QueryRequest()
+            .setQuery(query)
+            .setTimeoutMs(QUERY_TIMEOUT_MS)
+            .setUseLegacySql(!useStandardSql);
     do {
       if (lastException != null) {
         LOG.warn("Retrying query ({}) after exception", bqQueryRequest.getQuery(), lastException);
@@ -354,7 +385,15 @@ public class BigqueryClient {
         lastException);
   }
 
+  /** Creates a new dataset. */
   public void createNewDataset(String projectId, String datasetId)
+      throws IOException, InterruptedException {
+    createNewDataset(projectId, datasetId, null);
+  }
+
+  /** Creates a new dataset with defaultTableExpirationMs. */
+  public void createNewDataset(
+      String projectId, String datasetId, @Nullable Long defaultTableExpirationMs)
       throws IOException, InterruptedException {
     Sleeper sleeper = Sleeper.DEFAULT;
     BackOff backoff = BackOffAdapter.toGcpBackOff(BACKOFF_FACTORY.backoff());
@@ -370,7 +409,8 @@ public class BigqueryClient {
                 .insert(
                     projectId,
                     new Dataset()
-                        .setDatasetReference(new DatasetReference().setDatasetId(datasetId)))
+                        .setDatasetReference(new DatasetReference().setDatasetId(datasetId))
+                        .setDefaultTableExpirationMs(defaultTableExpirationMs))
                 .execute();
         if (response != null) {
           LOG.info("Successfully created new dataset : " + response.getId());
@@ -451,6 +491,7 @@ public class BigqueryClient {
         lastException);
   }
 
+  /** Inserts rows to a table using a BigQuery streaming write. */
   public void insertDataToTable(
       String projectId, String datasetId, String tableName, List<Map<String, Object>> rows)
       throws IOException, InterruptedException {
@@ -529,5 +570,20 @@ public class BigqueryClient {
             "Unable to get BigQuery response after retrying %d times for tables.get (%s)",
             MAX_QUERY_RETRIES, tableId),
         lastException);
+  }
+
+  public void updateTableSchema(
+      String projectId, String datasetId, String tableId, TableSchema newSchema)
+      throws IOException {
+    this.bqClient
+        .tables()
+        .patch(projectId, datasetId, tableId, new Table().setSchema(newSchema))
+        .execute();
+    LOG.info(
+        "Successfully updated the schema of table {}:{}.{}. New schema:\n{}",
+        projectId,
+        datasetId,
+        tableId,
+        newSchema.toPrettyString());
   }
 }

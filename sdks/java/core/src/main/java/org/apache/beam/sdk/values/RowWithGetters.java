@@ -17,19 +17,18 @@
  */
 package org.apache.beam.sdk.values;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
-import javax.annotation.Nullable;
+import java.util.TreeMap;
+import org.apache.beam.sdk.annotations.Internal;
 import org.apache.beam.sdk.schemas.Factory;
 import org.apache.beam.sdk.schemas.FieldValueGetter;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.Field;
-import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * A Concrete subclass of {@link Row} that delegates to a set of provided {@link FieldValueGetter}s.
@@ -38,73 +37,50 @@ import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
  * For example, the user's type may be a POJO, in which case the provided getters will simple read
  * the appropriate fields from the POJO.
  */
+@SuppressWarnings("rawtypes")
 public class RowWithGetters extends Row {
-  private final Factory<List<FieldValueGetter>> fieldValueGetterFactory;
   private final Object getterTarget;
   private final List<FieldValueGetter> getters;
-
-  private final Map<Integer, List> cachedLists = Maps.newHashMap();
-  private final Map<Integer, Map> cachedMaps = Maps.newHashMap();
+  private @Nullable Map<Integer, Object> cache = null;
 
   RowWithGetters(
       Schema schema, Factory<List<FieldValueGetter>> getterFactory, Object getterTarget) {
     super(schema);
-    this.fieldValueGetterFactory = getterFactory;
     this.getterTarget = getterTarget;
-    this.getters = fieldValueGetterFactory.create(getterTarget.getClass(), schema);
+    this.getters = getterFactory.create(getterTarget.getClass(), schema);
   }
 
-  @Nullable
   @Override
   @SuppressWarnings({"TypeParameterUnusedInFormals", "unchecked"})
-  public <T> T getValue(int fieldIdx) {
+  public <T> @Nullable T getValue(int fieldIdx) {
     Field field = getSchema().getField(fieldIdx);
-    FieldType type = field.getType();
-    Object fieldValue = getters.get(fieldIdx).get(getterTarget);
-    if (fieldValue == null && !field.getType().getNullable()) {
-      throw new RuntimeException("Null value set on non-nullable field" + field);
-    }
-    return fieldValue != null ? getValue(type, fieldValue, fieldIdx) : null;
-  }
+    boolean cacheField = cacheFieldType(field);
 
-  private List getListValue(FieldType elementType, Object fieldValue) {
-    Iterable iterable = (Iterable) fieldValue;
-    List<Object> list = Lists.newArrayList();
-    for (Object o : iterable) {
-      list.add(getValue(elementType, o, null));
+    if (cacheField && cache == null) {
+      cache = new TreeMap<>();
     }
-    return list;
-  }
 
-  private Map<?, ?> getMapValue(FieldType keyType, FieldType valueType, Map<?, ?> fieldValue) {
-    Map returnMap = Maps.newHashMap();
-    for (Map.Entry<?, ?> entry : fieldValue.entrySet()) {
-      returnMap.put(
-          getValue(keyType, entry.getKey(), null), getValue(valueType, entry.getValue(), null));
-    }
-    return returnMap;
-  }
-
-  @SuppressWarnings({"TypeParameterUnusedInFormals", "unchecked"})
-  private <T> T getValue(FieldType type, Object fieldValue, @Nullable Integer cacheKey) {
-    if (type.getTypeName().equals(TypeName.ROW)) {
-      return (T) new RowWithGetters(type.getRowSchema(), fieldValueGetterFactory, fieldValue);
-    } else if (type.getTypeName().equals(TypeName.ARRAY)) {
-      return cacheKey != null
-          ? (T)
-              cachedLists.computeIfAbsent(
-                  cacheKey, i -> getListValue(type.getCollectionElementType(), fieldValue))
-          : (T) getListValue(type.getCollectionElementType(), fieldValue);
-    } else if (type.getTypeName().equals(TypeName.MAP)) {
-      Map map = (Map) fieldValue;
-      return cacheKey != null
-          ? (T)
-              cachedMaps.computeIfAbsent(
-                  cacheKey, i -> getMapValue(type.getMapKeyType(), type.getMapValueType(), map))
-          : (T) getMapValue(type.getMapKeyType(), type.getMapValueType(), map);
+    Object fieldValue;
+    if (cacheField) {
+      if (cache == null) {
+        cache = new TreeMap<>();
+      }
+      fieldValue = cache.computeIfAbsent(fieldIdx, idx -> getters.get(idx).get(getterTarget));
     } else {
-      return (T) fieldValue;
+      fieldValue = getters.get(fieldIdx).get(getterTarget);
     }
+
+    if (fieldValue == null && !field.getType().getNullable()) {
+      throw new RuntimeException("Null value set on non-nullable field " + field);
+    }
+    return (T) fieldValue;
+  }
+
+  private boolean cacheFieldType(Field field) {
+    TypeName typeName = field.getType().getTypeName();
+    return typeName.equals(TypeName.MAP)
+        || typeName.equals(TypeName.ARRAY)
+        || typeName.equals(TypeName.ITERABLE);
   }
 
   @Override
@@ -112,9 +88,15 @@ public class RowWithGetters extends Row {
     return getters.size();
   }
 
+  /** Return the list of raw unmodified data values to enable 0-copy code. */
+  @Internal
   @Override
-  public List<Object> getValues() {
-    return getters.stream().map(g -> g.get(getterTarget)).collect(Collectors.toList());
+  public List<@Nullable Object> getValues() {
+    List<@Nullable Object> rawValues = new ArrayList<>(getters.size());
+    for (FieldValueGetter getter : getters) {
+      rawValues.add(getter.getRaw(getterTarget));
+    }
+    return rawValues;
   }
 
   public List<FieldValueGetter> getGetters() {
@@ -126,7 +108,7 @@ public class RowWithGetters extends Row {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }

@@ -20,6 +20,7 @@ package org.apache.beam.runners.dataflow.worker.windmill;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,17 +29,21 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.beam.runners.dataflow.worker.status.StatusDataProvider;
 import org.apache.beam.runners.dataflow.worker.windmill.Windmill.CommitStatus;
 import org.apache.beam.runners.dataflow.worker.windmill.Windmill.KeyedGetDataRequest;
 import org.apache.beam.runners.dataflow.worker.windmill.Windmill.KeyedGetDataResponse;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.net.HostAndPort;
+import org.apache.beam.runners.dataflow.worker.windmill.Windmill.LatencyAttribution;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.net.HostAndPort;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 
 /** Stub for communicating with a Windmill server. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public abstract class WindmillServerStub implements StatusDataProvider {
 
   /**
@@ -66,16 +71,6 @@ public abstract class WindmillServerStub implements StatusDataProvider {
   /** Report execution information to the server. */
   public abstract Windmill.ReportStatsResponse reportStats(Windmill.ReportStatsRequest request);
 
-  /** Functional interface for receiving WorkItems. */
-  @FunctionalInterface
-  public interface WorkItemReceiver {
-    void receiveWork(
-        String computation,
-        @Nullable Instant inputDataWatermark,
-        Instant synchronizedProcessingTime,
-        Windmill.WorkItem workItem);
-  }
-
   /**
    * Gets work to process, returned as a stream.
    *
@@ -97,27 +92,26 @@ public abstract class WindmillServerStub implements StatusDataProvider {
   @Override
   public void appendSummaryHtml(PrintWriter writer) {}
 
+  /** Functional interface for receiving WorkItems. */
+  @FunctionalInterface
+  public interface WorkItemReceiver {
+
+    void receiveWork(
+        String computation,
+        @Nullable Instant inputDataWatermark,
+        @Nullable Instant synchronizedProcessingTime,
+        Windmill.WorkItem workItem,
+        Collection<LatencyAttribution> getWorkStreamLatencies);
+  }
+
   /** Superclass for streams returned by streaming Windmill methods. */
   @ThreadSafe
   public interface WindmillStream {
     /** Indicates that no more requests will be sent. */
     void close();
 
-    /**
-     * Waits for the server to close its end of the connection.
-     *
-     * <p>Should only be called after calling close.
-     */
-    void awaitTermination() throws InterruptedException;
-
     /** Waits for the server to close its end of the connection, with timeout. */
     boolean awaitTermination(int time, TimeUnit unit) throws InterruptedException;
-
-    /**
-     * Cleanly closes the stream after implementation-speficied timeout, unless the stream is
-     * aborted before the timeout is reached.
-     */
-    void closeAfterDefaultTimeout() throws InterruptedException;
 
     /** Returns when the stream was opened. */
     Instant startTime();
@@ -143,6 +137,7 @@ public abstract class WindmillServerStub implements StatusDataProvider {
   /** Interface for streaming CommitWorkRequests to Windmill. */
   @ThreadSafe
   public interface CommitWorkStream extends WindmillStream {
+
     /**
      * Commits a work item and running onDone when the commit has been processed by the server.
      * Returns true if the request was accepted. If false is returned the stream should be flushed
@@ -167,13 +162,8 @@ public abstract class WindmillServerStub implements StatusDataProvider {
   public static class StreamPool<S extends WindmillStream> {
 
     private final Duration streamTimeout;
-
-    private final class StreamData {
-      final S stream = supplier.get();
-      int holds = 1;
-    };
-
     private final List<StreamData> streams;
+
     private final Supplier<S> supplier;
     private final HashMap<S, StreamData> holds;
 
@@ -226,6 +216,11 @@ public abstract class WindmillServerStub implements StatusDataProvider {
       if (closeStream) {
         stream.close();
       }
+    }
+
+    private final class StreamData {
+      final S stream = supplier.get();
+      int holds = 1;
     }
   }
 

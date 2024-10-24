@@ -17,15 +17,7 @@
  */
 
 plugins { id 'org.apache.beam.module' }
-applyJavaNature(
-  // Override the default shading configuration to exclude everything since
-  // AWS-KPL library has hard dependency on guava.
-  shadowClosure: {
-    dependencies {
-      exclude(dependency(".*:.*"))
-    }
-  }
-)
+applyJavaNature( automaticModuleName: 'org.apache.beam.sdk.io.kinesis')
 provideIntegrationTestingDependencies()
 enableJavaPerformanceTesting()
 
@@ -33,30 +25,33 @@ description = "Apache Beam :: SDKs :: Java :: IO :: Kinesis"
 ext.summary = "Library to read Kinesis streams."
 
 test {
-  // Forking every test resolves an issue where KinesisMockReadTest gets stuck forever.
-  forkEvery 1
+  maxParallelForks 4
 }
 
-def aws_version = "1.11.255"
-
 dependencies {
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow library.java.guava
-  shadow library.java.slf4j_api
-  shadow library.java.joda_time
-  shadow library.java.jackson_dataformat_cbor
-  shadow "com.amazonaws:aws-java-sdk-core:$aws_version"
-  shadow "com.amazonaws:aws-java-sdk-kinesis:$aws_version"
-  shadow "com.amazonaws:aws-java-sdk-cloudwatch:$aws_version"
-  shadow "com.amazonaws:amazon-kinesis-client:1.8.8"
-  shadow "com.amazonaws:amazon-kinesis-producer:0.12.8"
-  shadow "commons-lang:commons-lang:2.6"
-  testCompile project(path: ":beam-runners-direct-java", configuration: "shadow")
-  testCompile library.java.junit
-  testCompile library.java.mockito_core
-  testCompile library.java.guava_testlib
-  testCompile library.java.hamcrest_core
-  testCompile library.java.hamcrest_library
-  testCompile library.java.slf4j_jdk14
-  testCompile "org.assertj:assertj-core:3.11.1"
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation library.java.aws_java_sdk_cloudwatch
+  implementation library.java.aws_java_sdk_core
+  implementation library.java.aws_java_sdk_kinesis
+  implementation library.java.commons_lang3
+  implementation library.java.guava
+  implementation library.java.joda_time
+  implementation library.java.slf4j_api
+  implementation "com.amazonaws:amazon-kinesis-client:1.14.2"
+  implementation "com.amazonaws:amazon-kinesis-producer:0.14.1"
+  implementation "commons-lang:commons-lang:2.6"
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation library.java.jackson_core
+  implementation library.java.jackson_annotations
+  implementation library.java.jackson_databind
+  testImplementation project(path: ":sdks:java:io:common", configuration: "testRuntimeMigration")
+  testImplementation library.java.junit
+  testImplementation library.java.mockito_core
+  testImplementation library.java.guava_testlib
+  testImplementation library.java.powermock
+  testImplementation library.java.powermock_mockito
+  testImplementation library.java.testcontainers_localstack
+  testImplementation "org.assertj:assertj-core:3.11.1"
+  testRuntimeOnly library.java.slf4j_jdk14
+  testRuntimeOnly project(path: ":runners:direct-java", configuration: "shadow")
 }

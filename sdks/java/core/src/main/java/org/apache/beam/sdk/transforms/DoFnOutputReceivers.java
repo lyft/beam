@@ -17,20 +17,25 @@
  */
 package org.apache.beam.sdk.transforms;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkNotNull;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.apache.beam.sdk.annotations.Internal;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.transforms.DoFn.MultiOutputReceiver;
 import org.apache.beam.sdk.transforms.DoFn.OutputReceiver;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TupleTag;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Instant;
 
 /** Common {@link OutputReceiver} and {@link MultiOutputReceiver} classes. */
+@Internal
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class DoFnOutputReceivers {
   private static class RowOutputReceiver<T> implements OutputReceiver<Row> {
     WindowedContextOutputReceiver<T> outputReceiver;
@@ -110,7 +115,7 @@ public class DoFnOutputReceivers {
       checkState(outputCoder != null, "No output tag for " + tag);
       checkState(
           outputCoder instanceof SchemaCoder,
-          "Output with tag " + tag + " must have a schema in order to call " + " getRowReceiver");
+          "Output with tag " + tag + " must have a schema in order to call getRowReceiver");
       return DoFnOutputReceivers.rowReceiver(context, tag, (SchemaCoder<T>) outputCoder);
     }
   }
