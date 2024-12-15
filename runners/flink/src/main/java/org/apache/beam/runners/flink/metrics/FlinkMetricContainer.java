@@ -89,6 +89,7 @@ public class FlinkMetricContainer {
         runtimeContext.getAccumulator(ACCUMULATOR_NAME);
     if (metricsAccumulator == null) {
       metricsAccumulator = new MetricsAccumulator();
+      LOG.error("in registerMetricsForPipelineResult for accumulator: " + ACCUMULATOR_NAME);
       try {
         runtimeContext.addAccumulator(ACCUMULATOR_NAME, metricsAccumulator);
       } catch (UnsupportedOperationException e) {
@@ -120,6 +121,7 @@ public class FlinkMetricContainer {
     updateCounters(metricQueryResults.getCounters());
     updateDistributions(metricQueryResults.getDistributions());
     updateGauge(metricQueryResults.getGauges());
+    LOG.error("in updateMetrics for accumulator: " + ACCUMULATOR_NAME);
   }
 
   private void updateCounters(Iterable<MetricResult<Long>> counters) {
@@ -134,6 +136,7 @@ public class FlinkMetricContainer {
               flinkMetricName, n -> runtimeContext.getMetricGroup().counter(n));
       // Beam counters are already pre-aggregated, just update with the current value here
       counter.inc(update - counter.getCount());
+      LOG.error("in updateCounters for {} : ", flinkMetricName);
     }
   }
 
