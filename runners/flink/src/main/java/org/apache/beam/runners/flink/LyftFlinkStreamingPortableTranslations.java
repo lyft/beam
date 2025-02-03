@@ -196,19 +196,19 @@ public class LyftFlinkStreamingPortableTranslations {
 
     boolean useWatermarkAlignment = false;
     String watermarkAlignmentGroup = null;
-    long watermarkLookaheadMillis = 5_000;
-    long watermarkSyncIntervalMillis = 1_000;
-    if (params.hasNonNull("use_watermark_alignment")) {
-      useWatermarkAlignment = params.get("use_watermark_alignment").asBoolean();
+    Number watermarkLookaheadMillis = 5_000;
+    Number watermarkSyncIntervalMillis = 1_000;
+    if (params.getOrDefault("use_watermark_alignment", null) != null) {
+      useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
     }
-    if (params.hasNonNull("watermark_alignment_group")) {
-      watermarkAlignmentGroup = params.get("watermark_alignment_group").asText();
+    if (params.getOrDefault("watermark_alignment_group", null) != null) {
+      watermarkAlignmentGroup = (String) params.get("watermark_alignment_group");
     }
-    if (params.hasNonNull("watermark_lookahead_millis")) {
-      watermarkLookaheadMillis = params.get("watermark_lookahead_millis").numberValue().longValue();
+    if (params.getOrDefault("watermark_lookahead_millis", null) != null) {
+      watermarkLookaheadMillis = (Number) params.get("watermark_lookahead_millis");
     }
-    if (params.hasNonNull("watermark_sync_interval_millis")) {
-      watermarkSyncIntervalMillis = params.get("watermark_sync_interval_millis").numberValue().longValue();
+    if (params.getOrDefault("watermark_sync_interval_millis", null) != null) {
+      watermarkSyncIntervalMillis = (Number) params.get("watermark_sync_interval_millis");
     }
 
     if (idlenessTimeoutMillis != null) {
@@ -218,8 +218,8 @@ public class LyftFlinkStreamingPortableTranslations {
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
       if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
         watermarkStrategy.withWatermarkAlignment(
-            watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis),
-            Duration.ofMillis(watermarkSyncIntervalMillis));
+            watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis.longValue()),
+            Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
       }
       kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
     } else {
