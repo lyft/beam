@@ -20,6 +20,10 @@ class FlinkKafkaInput(PTransform):
     self.max_out_of_orderness_millis = None
     self.start_from_timestamp_millis = None
     self.idleness_timeout_millis = None
+    self.use_watermark_alignment = False
+    self.watermark_alignment_group = None
+    self.watermark_lookahead_millis = None
+    self.watermark_sync_interval_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -45,7 +49,11 @@ class FlinkKafkaInput(PTransform):
       'idleness_timeout_millis': self.idleness_timeout_millis,
       'properties': self.consumer_properties,
       'username': self.username,
-      'password': self.password}))
+      'password': self.password,
+      'use_watermark_alignment': self.use_watermark_alignment,
+      'watermark_alignment_group': self.watermark_alignment_group,
+      'watermark_lookahead_millis': self.watermark_lookahead_millis,
+      'watermark_sync_interval_millis': self.watermark_sync_interval_millis}))
 
   @staticmethod
   @PTransform.register_urn("lyft:flinkKafkaInput", None)
@@ -60,6 +68,10 @@ class FlinkKafkaInput(PTransform):
     instance.consumer_properties = payload['properties']
     instance.username = payload['username']
     instance.password = payload['password']
+    instance.use_watermark_alignment = payload['use_watermark_alignment']
+    instance.watermark_alignment_group = payload['watermark_alignment_group']
+    instance.watermark_lookahead_millis = payload['watermark_lookahead_millis']
+    instance.watermark_sync_interval_millis = payload['watermark_sync_interval_millis']
     return instance
 
   def with_topic(self, topic):
@@ -116,6 +128,29 @@ class FlinkKafkaInput(PTransform):
     The password/credential to consume data from Kafka.
     """
     self.password = password
+    return self
+
+  def with_watermark_alignment(self, watermark_alignment_group):
+    """
+    Enables watermark alignment for this source.
+    https://nightlies.apache.org/flink/flink-docs-master/docs/dev/datastream/event-time/generating_watermarks/#watermark-alignment
+    """
+    self.use_watermark_alignment = True
+    self.watermark_alignment_group = watermark_alignment_group
+    return self
+
+  def with_watermark_lookahead_millis(self, watermark_lookahead_millis):
+    """
+    Sets the watermark lookahead for this source.
+    """
+    self.watermark_lookahead_millis = watermark_lookahead_millis
+    return self
+
+  def with_watermark_sync_interval_millis(self, watermark_sync_interval_millis):
+    """
+    Sets the watermark sync interval for this source.
+    """
+    self.watermark_sync_interval_millis = watermark_sync_interval_millis
     return self
 
 @beam.typehints.with_input_types(bytes)

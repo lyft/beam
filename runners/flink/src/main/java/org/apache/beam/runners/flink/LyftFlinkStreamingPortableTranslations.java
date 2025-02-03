@@ -194,11 +194,33 @@ public class LyftFlinkStreamingPortableTranslations {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
+    boolean useWatermarkAlignment = false;
+    String watermarkAlignmentGroup = null;
+    long watermarkLookaheadMillis = 5_000;
+    long watermarkSyncIntervalMillis = 1_000;
+    if (params.containsKey("use_watermark_alignment")) {
+      useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
+    }
+    if (params.containsKey("watermark_alignment_group")) {
+      watermarkAlignmentGroup = (String) params.get("watermark_alignment_group");
+    }
+    if (params.containsKey("watermark_lookahead_millis")) {
+      watermarkLookaheadMillis = (long) params.get("watermark_lookahead_millis");
+    }
+    if (params.containsKey("watermark_sync_interval_millis")) {
+      watermarkSyncIntervalMillis = (long) params.get("watermark_sync_interval_millis");
+    }
+
     if (idlenessTimeoutMillis != null) {
       WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+      if (useWatermarkAlignment) {
+        watermarkStrategy.withWatermarkAlignment(
+            watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis),
+            Duration.ofMillis(watermarkSyncIntervalMillis));
+      }
       kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
     } else {
       kafkaSource.assignTimestampsAndWatermarks(
@@ -371,6 +393,11 @@ public class LyftFlinkStreamingPortableTranslations {
             params.get("max_out_of_orderness_millis").numberValue().longValue();
       }
 
+      boolean useGlobalWatermarkTracker = false;
+      if (params.hasNonNull("use_global_watermark_tracker")) {
+        useGlobalWatermarkTracker = params.get("use_global_watermark_tracker").asBoolean();
+      }
+
       switch (encoding) {
         case BYTES_ENCODING:
           source =
@@ -394,7 +421,7 @@ public class LyftFlinkStreamingPortableTranslations {
           stream,
           properties,
           encoding);
-      if (params.hasNonNull("use_global_watermark_tracker") && params.get("use_global_watermark_tracker").asBoolean()) {
+      if (useGlobalWatermarkTracker) {
         LOG.info("Using global watermark tracker on Kinesis consumer");
         source.setWatermarkTracker(GLOBAL_WATERMARK);
       }
