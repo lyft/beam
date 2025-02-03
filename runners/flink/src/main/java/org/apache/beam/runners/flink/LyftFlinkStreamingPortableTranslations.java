@@ -198,17 +198,17 @@ public class LyftFlinkStreamingPortableTranslations {
     String watermarkAlignmentGroup = null;
     long watermarkLookaheadMillis = 5_000;
     long watermarkSyncIntervalMillis = 1_000;
-    if (params.containsKey("use_watermark_alignment")) {
-      useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
+    if (params.hasNonNull("use_watermark_alignment")) {
+      useWatermarkAlignment = params.get("use_watermark_alignment").asBoolean();
     }
-    if (params.containsKey("watermark_alignment_group")) {
-      watermarkAlignmentGroup = (String) params.get("watermark_alignment_group");
+    if (params.hasNonNull("watermark_alignment_group")) {
+      watermarkAlignmentGroup = params.get("watermark_alignment_group").asText();
     }
-    if (params.containsKey("watermark_lookahead_millis")) {
-      watermarkLookaheadMillis = (long) params.get("watermark_lookahead_millis");
+    if (params.hasNonNull("watermark_lookahead_millis")) {
+      watermarkLookaheadMillis = params.get("watermark_lookahead_millis").numberValue().longValue();
     }
-    if (params.containsKey("watermark_sync_interval_millis")) {
-      watermarkSyncIntervalMillis = (long) params.get("watermark_sync_interval_millis");
+    if (params.hasNonNull("watermark_sync_interval_millis")) {
+      watermarkSyncIntervalMillis = params.get("watermark_sync_interval_millis").numberValue().longValue();
     }
 
     if (idlenessTimeoutMillis != null) {
@@ -216,7 +216,7 @@ public class LyftFlinkStreamingPortableTranslations {
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
-      if (useWatermarkAlignment) {
+      if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
         watermarkStrategy.withWatermarkAlignment(
             watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis),
             Duration.ofMillis(watermarkSyncIntervalMillis));
