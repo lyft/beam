@@ -211,16 +211,18 @@ public class LyftFlinkStreamingPortableTranslations {
       watermarkSyncIntervalMillis = (Number) params.get("watermark_sync_interval_millis");
     }
 
-    if (idlenessTimeoutMillis != null) {
+    if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
+      WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
+          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
+          .withWatermarkAlignment(watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis.longValue()),
+            Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
+      kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
+    } else if (idlenessTimeoutMillis != null) {
       WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
-      if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
-        watermarkStrategy.withWatermarkAlignment(
-            watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis.longValue()),
-            Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
-      }
       kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
     } else {
       kafkaSource.assignTimestampsAndWatermarks(
