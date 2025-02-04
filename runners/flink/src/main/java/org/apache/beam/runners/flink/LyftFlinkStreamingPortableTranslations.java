@@ -212,6 +212,7 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
+      LOG.info("Using watermark alignment on Kafka consumer");
       WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
