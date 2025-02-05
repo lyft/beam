@@ -21,8 +21,8 @@ class FlinkKafkaInput(PTransform):
     self.start_from_timestamp_millis = None
     self.idleness_timeout_millis = None
     self.use_watermark_alignment = False
-    self.watermark_alignment_group = None
-    self.watermark_lookahead_millis = None
+    self.watermark_group = None
+    self.max_allowed_watermark_drift = None
     self.watermark_sync_interval_millis = None
 
   def expand(self, pbegin):
@@ -51,8 +51,8 @@ class FlinkKafkaInput(PTransform):
       'username': self.username,
       'password': self.password,
       'use_watermark_alignment': self.use_watermark_alignment,
-      'watermark_alignment_group': self.watermark_alignment_group,
-      'watermark_lookahead_millis': self.watermark_lookahead_millis,
+      'watermark_group': self.watermark_group,
+      'max_allowed_watermark_drift': self.max_allowed_watermark_drift,
       'watermark_sync_interval_millis': self.watermark_sync_interval_millis}))
 
   @staticmethod
@@ -69,8 +69,8 @@ class FlinkKafkaInput(PTransform):
     instance.username = payload['username']
     instance.password = payload['password']
     instance.use_watermark_alignment = payload['use_watermark_alignment']
-    instance.watermark_alignment_group = payload['watermark_alignment_group']
-    instance.watermark_lookahead_millis = payload['watermark_lookahead_millis']
+    instance.watermark_group = payload['watermark_group']
+    instance.max_allowed_watermark_drift = payload['max_allowed_watermark_drift']
     instance.watermark_sync_interval_millis = payload['watermark_sync_interval_millis']
     return instance
 
@@ -130,25 +130,25 @@ class FlinkKafkaInput(PTransform):
     self.password = password
     return self
 
-  def with_watermark_alignment(self, watermark_alignment_group):
+  def with_watermark_alignment(self, watermark_group):
     """
-    Enables watermark alignment for this source.
+    Enables watermark alignment for this source by assigning it to a watermark group. For details see:
     https://nightlies.apache.org/flink/flink-docs-master/docs/dev/datastream/event-time/generating_watermarks/#watermark-alignment
     """
     self.use_watermark_alignment = True
-    self.watermark_alignment_group = watermark_alignment_group
+    self.watermark_group = watermark_group
     return self
 
-  def with_watermark_lookahead_millis(self, watermark_lookahead_millis):
+  def with_max_allowed_watermark_drift(self, max_allowed_watermark_drift):
     """
-    Sets the watermark lookahead for this source.
+    Sets the maximum allowed watermark drift between aligned sources in a watermark group.
     """
-    self.watermark_lookahead_millis = watermark_lookahead_millis
+    self.max_allowed_watermark_drift = max_allowed_watermark_drift
     return self
 
   def with_watermark_sync_interval_millis(self, watermark_sync_interval_millis):
     """
-    Sets the watermark sync interval for this source.
+    Sets the watermark sync interval for this source. This determines how frequent the watermark sync messages are sent.
     """
     self.watermark_sync_interval_millis = watermark_sync_interval_millis
     return self

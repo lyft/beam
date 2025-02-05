@@ -195,28 +195,28 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     boolean useWatermarkAlignment = false;
-    String watermarkAlignmentGroup = null;
-    Number watermarkLookaheadMillis = 5_000;
+    String watermarkGroup = null;
+    Number maxAllowedWatermarkDrift = 5_000;
     Number watermarkSyncIntervalMillis = 1_000;
     if (params.getOrDefault("use_watermark_alignment", null) != null) {
       useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
     }
-    if (params.getOrDefault("watermark_alignment_group", null) != null) {
-      watermarkAlignmentGroup = (String) params.get("watermark_alignment_group");
+    if (params.getOrDefault("watermark_group", null) != null) {
+      watermarkGroup = (String) params.get("watermark_group");
     }
-    if (params.getOrDefault("watermark_lookahead_millis", null) != null) {
-      watermarkLookaheadMillis = (Number) params.get("watermark_lookahead_millis");
+    if (params.getOrDefault("max_allowed_watermark_drift", null) != null) {
+      maxAllowedWatermarkDrift = (Number) params.get("max_allowed_watermark_drift");
     }
     if (params.getOrDefault("watermark_sync_interval_millis", null) != null) {
       watermarkSyncIntervalMillis = (Number) params.get("watermark_sync_interval_millis");
     }
 
-    if (useWatermarkAlignment && watermarkAlignmentGroup != null) {
+    if (useWatermarkAlignment && watermarkGroup != null) {
       LOG.info("Using watermark alignment on Kafka consumer");
       WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withWatermarkAlignment(watermarkAlignmentGroup, Duration.ofMillis(watermarkLookaheadMillis.longValue()),
+          .withWatermarkAlignment(watermarkGroup, Duration.ofMillis(maxAllowedWatermarkDrift.longValue()),
             Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
       kafkaSource.assignTimestampsAndWatermarks(watermarkStrategy);
     } else if (idlenessTimeoutMillis != null) {
