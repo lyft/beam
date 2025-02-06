@@ -204,7 +204,8 @@ public class LyftFlinkStreamingPortableTranslations {
           .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
     } else {
       watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
+          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
           .withTimestampAssigner((element, recordTimestamp) ->
               element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE);
     }
