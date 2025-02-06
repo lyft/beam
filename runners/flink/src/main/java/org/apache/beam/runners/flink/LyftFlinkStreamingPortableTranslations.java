@@ -239,7 +239,7 @@ public class LyftFlinkStreamingPortableTranslations {
 
     @Override
     public void deserialize(ConsumerRecord<byte[], byte[]> record, Collector<WindowedValue<byte[]>> collector) throws IOException {
-      collector.collect(WindowedValue.timestampedValueInGlobalWindow(record.value(), new Instant(record.timestamp()));
+      collector.collect(WindowedValue.timestampedValueInGlobalWindow(record.value(), new Instant(record.timestamp())));
     }
 
   }
