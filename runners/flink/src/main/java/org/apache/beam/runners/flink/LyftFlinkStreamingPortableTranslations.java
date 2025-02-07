@@ -195,7 +195,6 @@ public class LyftFlinkStreamingPortableTranslations {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
-<<<<<<< HEAD
     boolean useWatermarkAlignment = false;
     String watermarkGroup = null;
     Number maxAllowedWatermarkDrift = 5_000;
