@@ -196,18 +196,11 @@ public class LyftFlinkStreamingPortableTranslations {
     }
 
     // Define the watermark strategy
-    WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy;
+    WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
+        WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+            Duration.ofMillis(maxOutOfOrdernessMillis.longValue()));
     if (idlenessTimeoutMillis != null) {
-      watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
-    } else {
-      watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withTimestampAssigner((element, recordTimestamp) ->
-              element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE);
+      watermarkStrategy = watermarkStrategy.withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
     }
 
     context.addDataStream(
