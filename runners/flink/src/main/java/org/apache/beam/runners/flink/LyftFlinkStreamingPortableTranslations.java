@@ -201,6 +201,12 @@ public class LyftFlinkStreamingPortableTranslations {
             Duration.ofMillis(maxOutOfOrdernessMillis.longValue()));
     if (idlenessTimeoutMillis != null) {
       watermarkStrategy = watermarkStrategy.withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+    } else {
+      watermarkStrategy = watermarkStrategy.withTimestampAssigner((element, recordTimestamp) -> {
+        long timestamp = element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE);
+        LOG.info("Assigning timestamp: {}", timestamp);
+        return timestamp;
+      }
     }
 
     context.addDataStream(
