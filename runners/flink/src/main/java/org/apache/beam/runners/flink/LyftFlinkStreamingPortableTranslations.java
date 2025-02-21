@@ -184,31 +184,23 @@ public class LyftFlinkStreamingPortableTranslations {
             new ByteArrayWindowedValueSchema(context.getPipelineOptions()));
 
     Number maxOutOfOrdernessMillis = 1000;
-    Number idlenessTimeoutMillis = null;
+    Number idlenessTimeoutMillis = 30000;
 
     if (params.containsKey("max_out_of_orderness_millis")
         && params.get("max_out_of_orderness_millis") != null) {
       maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
     }
 
-    if (params.containsKey("idleness_timeout_millis")) {
+    if (params.containsKey("idleness_timeout_millis")
+        && params.get("idleness_timeout_millis") != null) {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
     // Define the watermark strategy
-    WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy;
-    if (idlenessTimeoutMillis != null) {
-      watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
-    } else {
-      watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withTimestampAssigner((element, recordTimestamp) ->
-              element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE);
-    }
+    WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
+        WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+            Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
+        .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
 
     context.addDataStream(
         Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
