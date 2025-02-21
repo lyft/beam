@@ -191,7 +191,8 @@ public class LyftFlinkStreamingPortableTranslations {
       maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
     }
 
-    if (params.containsKey("idleness_timeout_millis")) {
+    if (params.containsKey("idleness_timeout_millis")
+        && params.get("idleness_timeout_millis") != null) {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
