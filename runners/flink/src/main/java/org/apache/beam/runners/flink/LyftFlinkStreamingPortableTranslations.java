@@ -107,7 +107,7 @@ public class LyftFlinkStreamingPortableTranslations {
       LoggerFactory.getLogger(LyftFlinkStreamingPortableTranslations.class.getName());
 
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
-  private static final String FLINK_KAFKA_V2_URN = "lyft:flinkKafkaInputV2";
+  private static final String FLINK_KAFKA_INPUT_V2_URN = "lyft:flinkKafkaInputV2";
   private static final String FLINK_KAFKA_SINK_URN = "lyft:flinkKafkaSink";
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String FLINK_S3_AND_KINESIS_URN = "lyft:flinkS3AndKinesisInput";
@@ -122,7 +122,7 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public boolean test(RunnerApi.PTransform pTransform) {
       return FLINK_KAFKA_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
-          || FLINK_KAFKA_V2_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_KAFKA_INPUT_V2_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_KAFKA_SINK_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_AND_KINESIS_URN.equals(
@@ -135,7 +135,7 @@ public class LyftFlinkStreamingPortableTranslations {
       ImmutableMap.Builder<String, PTransformTranslator<StreamingTranslationContext>>
           translatorMap) {
     translatorMap.put(FLINK_KAFKA_URN, this::translateKafkaInput);
-    translatorMap.put(FLINK_KAFKA_V2_URN, this::translateKafkaV2Input);
+    translatorMap.put(FLINK_KAFKA_INPUT_V2_URN, this::translateKafkaInputV2);
     translatorMap.put(FLINK_KAFKA_SINK_URN, this::translateKafkaSink);
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
     translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
@@ -223,7 +223,7 @@ public class LyftFlinkStreamingPortableTranslations {
   }
 
   @VisibleForTesting
-  void translateKafkaV2Input(
+  void translateKafkaInputV2(
       String id,
       RunnerApi.Pipeline pipeline,
       FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {

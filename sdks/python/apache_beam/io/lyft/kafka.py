@@ -137,7 +137,7 @@ class FlinkKafkaInputV2(FlinkKafkaInputBase):
 
   def to_runner_api_parameter(self, _unused_context):
     assert isinstance(self, FlinkKafkaInputV2), \
-      "expected instance of FlinkKafkaInput, but got %s" % self.__class__
+      "expected instance of FlinkKafkaInputV2, but got %s" % self.__class__
     assert len(self.topics) > 0, "topics not set"
     assert len(self.consumer_properties) > 0, "consumer properties not set"
     return self._get_runner_parameters()
