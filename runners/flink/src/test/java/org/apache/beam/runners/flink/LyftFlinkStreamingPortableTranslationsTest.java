@@ -62,6 +62,7 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
 import org.junit.Assert;
 import org.junit.Before;
@@ -215,12 +216,11 @@ public class LyftFlinkStreamingPortableTranslationsTest {
         .translateKafkaInput(id, pipeline, streamingContext);
 
     // assert
-    ArgumentCaptor<KafkaSource> kafkaSourceCaptor =
-        ArgumentCaptor.forClass(KafkaSource.class);
-    ArgumentCaptor<WatermarkStrategy> kafkaWatermarkStrategyCaptor = ArgumentCaptor.forClass(WatermarkStrategy.class);
+    ArgumentCaptor<FlinkKafkaConsumer> kafkaSourceCaptor =
+        ArgumentCaptor.forClass(FlinkKafkaConsumer.class);
     ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
     verify(streamingEnvironment)
-        .fromSource(kafkaSourceCaptor.capture(), kafkaWatermarkStrategyCaptor.capture(), kafkaSourceNameCaptor.capture());
+        .addSource(kafkaSourceCaptor.capture(), kafkaSourceNameCaptor.capture());
     Assert.assertEquals(
         WindowedValue.class, kafkaSourceCaptor.getValue().getProducedType().getTypeClass());
     Assert.assertTrue(kafkaSourceNameCaptor.getValue().contains(topicName));
