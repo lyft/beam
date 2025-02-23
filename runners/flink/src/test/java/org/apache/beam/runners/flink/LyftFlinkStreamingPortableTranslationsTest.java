@@ -226,6 +226,26 @@ public class LyftFlinkStreamingPortableTranslationsTest {
     Assert.assertTrue(kafkaSourceNameCaptor.getValue().contains(topicName));
   }
 
+  private void runAndAssertKafkaInputV2(String id, String topicName, byte[] payload) {
+
+    RunnerApi.Pipeline pipeline = createPipeline(id, payload);
+
+    // run
+    new LyftFlinkStreamingPortableTranslations()
+        .translateKafkaInputV2(id, pipeline, streamingContext);
+
+    // assert
+    ArgumentCaptor<KafkaSource> kafkaSourceCaptor =
+        ArgumentCaptor.forClass(KafkaSource.class);
+    ArgumentCaptor<WatermarkStrategy> kafkaWatermarkStrategyCaptor = ArgumentCaptor.forClass(WatermarkStrategy.class);
+    ArgumentCaptor<String> kafkaSourceNameCaptor = ArgumentCaptor.forClass(String.class);
+    verify(streamingEnvironment)
+        .fromSource(kafkaSourceCaptor.capture(), kafkaWatermarkStrategyCaptor.capture(), kafkaSourceNameCaptor.capture());
+    Assert.assertEquals(
+        WindowedValue.class, kafkaSourceCaptor.getValue().getProducedType().getTypeClass());
+    Assert.assertTrue(kafkaSourceNameCaptor.getValue().contains(topicName));
+  }
+
   @Test
   public void shouldFailForMissingGroupIdToKafkaInput() throws JsonProcessingException {
 

@@ -91,6 +91,7 @@ import org.apache.flink.streaming.connectors.kinesis.util.JobManagerWatermarkTra
 import org.apache.flink.streaming.connectors.kinesis.util.WatermarkTracker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
+import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.joda.time.Instant;
@@ -103,6 +104,7 @@ public class LyftFlinkStreamingPortableTranslations {
       LoggerFactory.getLogger(LyftFlinkStreamingPortableTranslations.class.getName());
 
   private static final String FLINK_KAFKA_URN = "lyft:flinkKafkaInput";
+  private static final String FLINK_KAFKA_INPUT_V2_URN = "lyft:flinkKafkaInputV2";
   private static final String FLINK_KAFKA_SINK_URN = "lyft:flinkKafkaSink";
   private static final String FLINK_KINESIS_URN = "lyft:flinkKinesisInput";
   private static final String FLINK_S3_AND_KINESIS_URN = "lyft:flinkS3AndKinesisInput";
@@ -117,6 +119,7 @@ public class LyftFlinkStreamingPortableTranslations {
     @Override
     public boolean test(RunnerApi.PTransform pTransform) {
       return FLINK_KAFKA_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
+          || FLINK_KAFKA_INPUT_V2_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_KAFKA_SINK_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_KINESIS_URN.equals(PTransformTranslation.urnForTransformOrNull(pTransform))
           || FLINK_S3_AND_KINESIS_URN.equals(
@@ -129,6 +132,7 @@ public class LyftFlinkStreamingPortableTranslations {
       ImmutableMap.Builder<String, PTransformTranslator<StreamingTranslationContext>>
           translatorMap) {
     translatorMap.put(FLINK_KAFKA_URN, this::translateKafkaInput);
+    translatorMap.put(FLINK_KAFKA_INPUT_V2_URN, this::translateKafkaInputV2);
     translatorMap.put(FLINK_KAFKA_SINK_URN, this::translateKafkaSink);
     translatorMap.put(FLINK_KINESIS_URN, this::translateKinesisInput);
     translatorMap.put(FLINK_S3_AND_KINESIS_URN, this::translateS3AndKinesisInputs);
@@ -242,15 +246,115 @@ public class LyftFlinkStreamingPortableTranslations {
                 String.join(",", topics)));
   }
 
+  @VisibleForTesting
+  void translateKafkaInputV2(
+      String id,
+      RunnerApi.Pipeline pipeline,
+      FlinkStreamingPortablePipelineTranslator.StreamingTranslationContext context) {
+    RunnerApi.PTransform pTransform = pipeline.getComponents().getTransformsOrThrow(id);
+
+    final Map<String, Object> params;
+    try {
+      ObjectMapper mapper = new ObjectMapper();
+      params = mapper.readValue(pTransform.getSpec().getPayload().toByteArray(), Map.class);
+    } catch (IOException e) {
+      throw new RuntimeException("Could not parse KafkaConsumer properties.", e);
+    }
+
+    LOG.info("Parsed KafkaInput params: {}", params);
+
+    List<String> topics = (List) params.get("topics");
+    Preconditions.checkNotNull(topics);
+    Preconditions.checkArgument(topics.size() > 0, "'topics' need to be set");
+    Map<String, String> consumerProps = (Map) params.get("properties");
+    Preconditions.checkNotNull(consumerProps, "'properties' need to be set");
+    LOG.info("Configuring kafka consumer for topics {} with properties {}", topics, consumerProps);
+
+    final String userName = (String) params.get("username");
+    final String password = (String) params.get("password");
+
+    LyftKafkaSourceBuilder<WindowedValue<byte[]>> consumerBuilder =
+        new LyftKafkaSourceBuilder<>();
+
+    consumerBuilder.withUsername(userName);
+    consumerBuilder.withPassword(password);
+
+    Properties properties = new Properties();
+    properties.putAll(consumerProps);
+    consumerBuilder.withKafkaProperties(properties);
+
+    if (params.getOrDefault("start_from_timestamp_millis", null) != null) {
+      consumerBuilder.withStartingOffsets(
+          Long.parseLong(params.get("start_from_timestamp_millis").toString()));
+    } else {
+      consumerBuilder.withStartingOffsets(StartingOffsetStrategy.LATEST);
+    }
+
+    KafkaSource<WindowedValue<byte[]>> kafkaSource =
+        consumerBuilder.build(topics,
+            new ByteArrayWindowedValueSchemaV2(context.getPipelineOptions()));
+
+    Number maxOutOfOrdernessMillis = 1000;
+    Number idlenessTimeoutMillis = 30000;
+
+    if (params.containsKey("max_out_of_orderness_millis")
+        && params.get("max_out_of_orderness_millis") != null) {
+      maxOutOfOrdernessMillis = (Number) params.get("max_out_of_orderness_millis");
+    }
+
+    if (params.containsKey("idleness_timeout_millis")
+        && params.get("idleness_timeout_millis") != null) {
+      idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
+    }
+
+    // Define the watermark strategy
+    WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
+        WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
+            Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
+        .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+
+    context.addDataStream(
+        Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
+        context
+            .getExecutionEnvironment()
+            .fromSource(kafkaSource, watermarkStrategy, KafkaSource.class.getSimpleName() + "-" +
+                String.join(",", topics)));
+  }
+
   /**
    * Deserializer for native Flink Kafka source that produces {@link WindowedValue} expected by Beam
    * operators.
    */
   private static class ByteArrayWindowedValueSchema
-      implements KafkaRecordDeserializationSchema<WindowedValue<byte[]>> {
+      implements KeyedDeserializationSchema<WindowedValue<byte[]>> {
+    private static final long serialVersionUID = -1L;
+
     private final TypeInformation<WindowedValue<byte[]>> ti;
 
     public ByteArrayWindowedValueSchema(FlinkPipelineOptions pipelineOptions) {
+      this.ti =
+          new CoderTypeInformation<>(
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
+              pipelineOptions);
+    }
+
+    @Override
+    public TypeInformation<WindowedValue<byte[]>> getProducedType() {
+      return ti;
+    }
+
+    @Override
+    public void deserialize(ConsumerRecord<byte[], byte[]> record, Collector<WindowedValue<byte[]>> collector) throws IOException {
+      collector.collect(WindowedValue.timestampedValueInGlobalWindow(record.value(), new Instant(record.timestamp())));
+    }
+
+  }
+
+  private static class ByteArrayWindowedValueSchemaV2
+      implements KafkaRecordDeserializationSchema<WindowedValue<byte[]>> {
+    private final TypeInformation<WindowedValue<byte[]>> ti;
+
+    public ByteArrayWindowedValueSchemaV2(FlinkPipelineOptions pipelineOptions) {
       this.ti =
           new CoderTypeInformation<>(
               WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
