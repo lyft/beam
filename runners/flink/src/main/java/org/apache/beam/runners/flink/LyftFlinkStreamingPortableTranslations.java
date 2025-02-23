@@ -199,33 +199,9 @@ public class LyftFlinkStreamingPortableTranslations {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
-    boolean useWatermarkAlignment = false;
-    String watermarkGroup = null;
-    Number maxAllowedWatermarkDrift = 5_000;
-    Number watermarkSyncIntervalMillis = 1_000;
-    if (params.getOrDefault("use_watermark_alignment", null) != null) {
-      useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
-    }
-    if (params.getOrDefault("watermark_group", null) != null) {
-      watermarkGroup = (String) params.get("watermark_group");
-    }
-    if (params.getOrDefault("max_allowed_watermark_drift", null) != null) {
-      maxAllowedWatermarkDrift = (Number) params.get("max_allowed_watermark_drift");
-    }
-    if (params.getOrDefault("watermark_sync_interval_millis", null) != null) {
-      watermarkSyncIntervalMillis = (Number) params.get("watermark_sync_interval_millis");
-    }
-
     // Define the watermark strategy
     WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy;
-    if (useWatermarkAlignment && watermarkGroup != null) {
-      LOG.info("Using watermark alignment on Kafka consumer");
-      watermarkStrategy =
-          WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-              Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-          .withWatermarkAlignment(watermarkGroup, Duration.ofMillis(maxAllowedWatermarkDrift.longValue()),
-              Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
-    } else if (idlenessTimeoutMillis != null) {
+    if (idlenessTimeoutMillis != null) {
       watermarkStrategy =
           WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
               Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
@@ -307,11 +283,35 @@ public class LyftFlinkStreamingPortableTranslations {
       idlenessTimeoutMillis = (Number) params.get("idleness_timeout_millis");
     }
 
+    boolean useWatermarkAlignment = false;
+    String watermarkGroup = null;
+    Number maxAllowedWatermarkDrift = 5_000;
+    Number watermarkSyncIntervalMillis = 1_000;
+    if (params.getOrDefault("use_watermark_alignment", null) != null) {
+      useWatermarkAlignment = (boolean) params.get("use_watermark_alignment");
+    }
+    if (params.getOrDefault("watermark_group", null) != null) {
+      watermarkGroup = (String) params.get("watermark_group");
+    }
+    if (params.getOrDefault("max_allowed_watermark_drift", null) != null) {
+      maxAllowedWatermarkDrift = (Number) params.get("max_allowed_watermark_drift");
+    }
+    if (params.getOrDefault("watermark_sync_interval_millis", null) != null) {
+      watermarkSyncIntervalMillis = (Number) params.get("watermark_sync_interval_millis");
+    }
+
     // Define the watermark strategy
     WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
         WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
             Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
         .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+
+    if (useWatermarkAlignment && watermarkGroup != null) {
+      LOG.info("Using watermark alignment on Kafka consumer");
+      watermarkStrategy = watermarkStrategy.withWatermarkAlignment(
+        watermarkGroup, Duration.ofMillis(maxAllowedWatermarkDrift.longValue()),
+        Duration.ofMillis(watermarkSyncIntervalMillis.longValue()));
+    }
 
     context.addDataStream(
         Iterables.getOnlyElement(pTransform.getOutputsMap().values()),
