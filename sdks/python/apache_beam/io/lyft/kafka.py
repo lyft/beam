@@ -20,10 +20,6 @@ class FlinkKafkaInputBase(PTransform):
     self.max_out_of_orderness_millis = None
     self.start_from_timestamp_millis = None
     self.idleness_timeout_millis = None
-    self.use_watermark_alignment = False
-    self.watermark_group = None
-    self.max_allowed_watermark_drift = None
-    self.watermark_sync_interval_millis = None
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin), (
@@ -138,6 +134,10 @@ class FlinkKafkaInput(FlinkKafkaInputBase):
 class FlinkKafkaInputV2(FlinkKafkaInputBase):
   def __init__(self):
     self.urn = "lyft:flinkKafkaInputV2"
+    self.use_watermark_alignment = False
+    self.watermark_group = None
+    self.max_allowed_watermark_drift = None
+    self.watermark_sync_interval_millis = None
     super().__init__()
 
   def to_runner_api_parameter(self, _unused_context):
