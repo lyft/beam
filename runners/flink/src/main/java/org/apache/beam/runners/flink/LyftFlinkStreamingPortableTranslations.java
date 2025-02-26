@@ -271,7 +271,7 @@ public class LyftFlinkStreamingPortableTranslations {
             new ByteArrayWindowedValueSchemaV2(context.getPipelineOptions()));
 
     Number maxOutOfOrdernessMillis = 1000;
-    Number idlenessTimeoutMillis = 30000;
+    Number idlenessTimeoutMillis = null;
 
     if (params.containsKey("max_out_of_orderness_millis")
         && params.get("max_out_of_orderness_millis") != null) {
@@ -303,8 +303,13 @@ public class LyftFlinkStreamingPortableTranslations {
     // Define the watermark strategy
     WatermarkStrategy<WindowedValue<byte[]>> watermarkStrategy =
         WatermarkStrategy.<WindowedValue<byte[]>>forBoundedOutOfOrderness(
-            Duration.ofMillis(maxOutOfOrdernessMillis.longValue()))
-        .withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+            Duration.ofMillis(maxOutOfOrdernessMillis.longValue()));
+    if (idlenessTimeoutMillis != null) {
+        watermarkStrategy = watermarkStrategy.withIdleness(Duration.ofMillis(idlenessTimeoutMillis.longValue()));
+    } else {
+        watermarkStrategy = watermarkStrategy.withTimestampAssigner((element, recordTimestamp) ->
+              element.getTimestamp() != null ? element.getTimestamp().getMillis() : Long.MIN_VALUE);
+    }
 
     if (useWatermarkAlignment && watermarkGroup != null) {
       LOG.info("Using watermark alignment on Kafka consumer");
