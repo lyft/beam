@@ -140,6 +140,34 @@ class FlinkKafkaInputV2(FlinkKafkaInputBase):
     self.watermark_sync_interval_millis = None
     super().__init__()
 
+  def _get_runner_parameters(self):
+    return (self.urn, json.dumps({
+      'topics': self.topics,
+      'max_out_of_orderness_millis': self.max_out_of_orderness_millis,
+      'start_from_timestamp_millis': self.start_from_timestamp_millis,
+      'idleness_timeout_millis': self.idleness_timeout_millis,
+      'properties': self.consumer_properties,
+      'username': self.username,
+      'password': self.password,
+      'use_watermark_alignment': self.use_watermark_alignment,
+      'watermark_group': self.watermark_group,
+      'max_allowed_watermark_drift': self.max_allowed_watermark_drift,
+      'watermark_sync_interval_millis': self.watermark_sync_interval_millis})
+    )
+
+  def _populate_from_payload(self, payload):
+    self.topics = payload['topics']
+    self.max_out_of_orderness_millis = payload['max_out_of_orderness_millis']
+    self.start_from_timestamp_millis = payload['start_from_timestamp_millis']
+    self.idleness_timeout_millis = payload['idleness_timeout_millis']
+    self.consumer_properties = payload['properties']
+    self.username = payload['username']
+    self.password = payload['password']
+    self.use_watermark_alignment = payload['use_watermark_alignment']
+    self.watermark_group = payload['watermark_group']
+    self.max_allowed_watermark_drift = payload['max_allowed_watermark_drift']
+    self.watermark_sync_interval_millis = payload['watermark_sync_interval_millis']
+
   def to_runner_api_parameter(self, _unused_context):
     assert isinstance(self, FlinkKafkaInputV2), \
       "expected instance of FlinkKafkaInputV2, but got %s" % self.__class__
