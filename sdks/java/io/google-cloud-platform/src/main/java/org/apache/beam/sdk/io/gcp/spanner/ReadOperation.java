@@ -24,10 +24,13 @@ import com.google.cloud.spanner.Statement;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Encapsulates a spanner read operation. */
 @AutoValue
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public abstract class ReadOperation implements Serializable {
 
   public static ReadOperation create() {
@@ -37,28 +40,26 @@ public abstract class ReadOperation implements Serializable {
         .build();
   }
 
-  @Nullable
-  public abstract Statement getQuery();
+  public abstract @Nullable Statement getQuery();
 
-  @Nullable
-  public abstract String getTable();
+  public abstract @Nullable String getQueryName();
 
-  @Nullable
-  public abstract String getIndex();
+  public abstract @Nullable String getTable();
 
-  @Nullable
-  public abstract List<String> getColumns();
+  public abstract @Nullable String getIndex();
 
-  @Nullable
-  public abstract KeySet getKeySet();
+  public abstract @Nullable List<String> getColumns();
 
-  @Nullable
-  abstract PartitionOptions getPartitionOptions();
+  public abstract @Nullable KeySet getKeySet();
+
+  abstract @Nullable PartitionOptions getPartitionOptions();
 
   @AutoValue.Builder
   abstract static class Builder {
 
     abstract Builder setQuery(Statement statement);
+
+    abstract Builder setQueryName(String queryName);
 
     abstract Builder setTable(String table);
 
@@ -93,6 +94,10 @@ public abstract class ReadOperation implements Serializable {
 
   public ReadOperation withQuery(String sql) {
     return withQuery(Statement.of(sql));
+  }
+
+  public ReadOperation withQueryName(String queryName) {
+    return toBuilder().setQueryName(queryName).build();
   }
 
   public ReadOperation withKeySet(KeySet keySet) {

@@ -22,17 +22,20 @@ PrecommitJobBuilder builder = new PrecommitJobBuilder(
     scope: this,
     nameBase: 'Python',
     gradleTask: ':pythonPreCommit',
+    timeoutMins: 180,
     triggerPathPatterns: [
       '^model/.*$',
-      '^runners/.*$',
       '^sdks/python/.*$',
       '^release/.*$',
-    ]
-)
+    ],
+    gradleSwitches: [
+      '-Pposargs=\"--ignore=apache_beam/dataframe/ --ignore=apache_beam/examples/ --ignore=apache_beam/runners/ --ignore=apache_beam/transforms/\"' // All these tests are covered by different jobs.
+    ],
+    numBuildsToRetain: 40
+    )
 builder.build {
-  // Publish all test results to Jenkins. Note that Nose documentation
-  // specifically mentions that it produces JUnit compatible test results.
+  // Publish all test results to Jenkins.
   publishers {
-    archiveJunit('**/nosetests.xml')
+    archiveJunit('**/pytest*.xml')
   }
 }

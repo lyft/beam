@@ -21,10 +21,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/apache/beam/sdks/go/pkg/beam"
-	"github.com/apache/beam/sdks/go/pkg/beam/log"
 	"reflect"
 	"strings"
+
+	"github.com/apache/beam/sdks/v2/go/pkg/beam"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/log"
 )
 
 func init() {
@@ -70,17 +72,17 @@ func (f *queryFn) ProcessElement(ctx context.Context, _ []byte, emit func(beam.X
 	//TODO move DB Open and Close to Setup and Teardown methods or StartBundle and FinishBundle
 	db, err := sql.Open(f.Driver, f.Dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %v, %v", f.Driver, err)
+		return errors.Wrapf(err, "failed to open database: %v", f.Driver)
 	}
 	defer db.Close()
 	statement, err := db.PrepareContext(ctx, f.Query)
 	if err != nil {
-		return fmt.Errorf("failed to prepare query: %v, %v", f.Query, err)
+		return errors.Wrapf(err, "failed to prepare query: %v", f.Query)
 	}
 	defer statement.Close()
 	rows, err := statement.QueryContext(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to run query: %v, %v", f.Query, err)
+		return errors.Wrapf(err, "failed to run query: %v", f.Query)
 	}
 	defer rows.Close()
 	var mapper rowMapper
@@ -95,7 +97,7 @@ func (f *queryFn) ProcessElement(ctx context.Context, _ []byte, emit func(beam.X
 			}
 			columnsTypes, _ := rows.ColumnTypes()
 			if mapper, err = newQueryMapper(columns, columnsTypes, f.Type.T); err != nil {
-				return fmt.Errorf("failed to create rowValues mapper: %v", err)
+				return errors.WithContext(err, "creating rowValues mapper")
 			}
 		}
 		rowValues, err := mapper(reflectRow)
@@ -104,7 +106,7 @@ func (f *queryFn) ProcessElement(ctx context.Context, _ []byte, emit func(beam.X
 		}
 		err = rows.Scan(rowValues...)
 		if err != nil {
-			return fmt.Errorf("failed to scan %v, %v", f.Query, err)
+			return errors.Wrapf(err, "failed to scan %v", f.Query)
 		}
 		if loader, ok := row.(MapLoader); ok {
 			asDereferenceSlice(rowValues)
@@ -155,7 +157,7 @@ func (f *writeFn) ProcessElement(ctx context.Context, _ int, iter func(*beam.X) 
 	//TODO move DB Open and Close to Setup and Teardown methods or StartBundle and FinishBundle
 	db, err := sql.Open(f.Driver, f.Dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %v, %v", f.Driver, err)
+		return errors.Wrapf(err, "failed to open database: %v", f.Driver)
 	}
 	defer db.Close()
 	projection := "*"
@@ -165,33 +167,33 @@ func (f *writeFn) ProcessElement(ctx context.Context, _ int, iter func(*beam.X) 
 	dql := fmt.Sprintf("SELECT %v FROM  %v WHERE 1 = 0", projection, f.Table)
 	query, err := db.Prepare(dql)
 	if err != nil {
-		return fmt.Errorf("failed to prepare query: %v, %v", f.Table, err)
+		return errors.Wrapf(err, "failed to prepare query: %v", f.Table)
 	}
 	defer query.Close()
 	rows, err := query.Query()
 	if err != nil {
-		return fmt.Errorf("failed to query: %v, %v", f.Table, err)
+		return errors.Wrapf(err, "failed to query: %v", f.Table)
 	}
 	columns, err := rows.Columns()
 	if err != nil {
-		return fmt.Errorf("failed to discover column: %v, %v", f.Table, err)
+		return errors.Wrapf(err, "failed to discover column: %v", f.Table)
 	}
 	//TODO move to Setup methods
 	mapper, err := newWriterRowMapper(columns, f.Type.T)
 	if err != nil {
-		return fmt.Errorf("failed to create row mapper: %v", err)
+		return errors.WithContext(err, "creating row mapper")
 	}
-	writer, err := newWriter(f.BatchSize, f.Table, columns)
+	writer, err := newWriter(f.Driver, f.BatchSize, f.Table, columns)
 	if err != nil {
 		return err
 	}
 	var val beam.X
 	for iter(&val) {
-		var row []interface{}
-		var data map[string]interface{}
+		var row []any
+		var data map[string]any
 		if writer, ok := val.(Writer); ok {
 			if data, err = writer.SaveData(); err == nil {
-				row = make([]interface{}, len(columns))
+				row = make([]any, len(columns))
 				for i, column := range columns {
 					row[i] = data[column]
 				}
@@ -200,7 +202,7 @@ func (f *writeFn) ProcessElement(ctx context.Context, _ int, iter func(*beam.X) 
 			row, err = mapper(reflect.ValueOf(val))
 		}
 		if err != nil {
-			return fmt.Errorf("failed to map row %T: %v", val, err)
+			return errors.Wrapf(err, "failed to map row %T", val)
 		}
 		if err = writer.add(row); err != nil {
 			return err

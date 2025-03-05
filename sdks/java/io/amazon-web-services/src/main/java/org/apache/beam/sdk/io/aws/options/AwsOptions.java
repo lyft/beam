@@ -18,13 +18,15 @@
 package org.apache.beam.sdk.io.aws.options;
 
 import com.amazonaws.ClientConfiguration;
+import com.amazonaws.SdkClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.regions.DefaultAwsRegionProviderChain;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.DefaultValueFactory;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.sdk.options.Validation;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Options used to configure Amazon Web Services specific options such as credentials and region.
@@ -33,10 +35,23 @@ public interface AwsOptions extends PipelineOptions {
 
   /** AWS region used by the AWS client. */
   @Description("AWS region used by the AWS client")
-  @Validation.Required
+  @Default.InstanceFactory(AwsRegionFactory.class)
   String getAwsRegion();
 
   void setAwsRegion(String value);
+
+  /** Attempt to load default region. */
+  class AwsRegionFactory implements DefaultValueFactory<@Nullable String> {
+    @Override
+    @Nullable
+    public String create(PipelineOptions options) {
+      try {
+        return new DefaultAwsRegionProviderChain().getRegion();
+      } catch (SdkClientException e) {
+        return null;
+      }
+    }
+  }
 
   /** The AWS service endpoint used by the AWS client. */
   @Description("AWS service endpoint used by the AWS client")
@@ -78,7 +93,8 @@ public interface AwsOptions extends PipelineOptions {
 
   /**
    * The client configuration instance that should be used to configure AWS service clients. Please
-   * note that the configuration deserialization only allows one to specify proxy settings.
+   * note that the configuration deserialization only allows one to specify proxy settings. Please
+   * use AwsHttpClientConfiguration's client configuration to set a wider range of options.
    *
    * <p>For example, to specify the proxy host, port, username and password, specify the following:
    * <code>

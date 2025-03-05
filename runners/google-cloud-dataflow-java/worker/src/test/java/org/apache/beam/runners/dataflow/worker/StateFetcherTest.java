@@ -17,9 +17,9 @@
  */
 package org.apache.beam.runners.dataflow.worker;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -42,11 +42,12 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.Sum;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
+import org.apache.beam.sdk.util.ByteStringOutputStream;
 import org.apache.beam.sdk.values.PCollectionView;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.ByteString;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Supplier;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.Cache;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.CacheBuilder;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.ByteString;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Supplier;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.Cache;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.CacheBuilder;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -73,14 +74,12 @@ public class StateFetcherTest {
   public void testFetchGlobalDataBasic() throws Exception {
     StateFetcher fetcher = new StateFetcher(server);
 
-    ByteString.Output stream = ByteString.newOutput();
+    ByteStringOutputStream stream = new ByteStringOutputStream();
     ListCoder.of(StringUtf8Coder.of()).encode(Arrays.asList("data"), stream, Coder.Context.OUTER);
     ByteString encodedIterable = stream.toByteString();
 
     PCollectionView<String> view =
-        TestPipeline.create()
-            .apply(Create.empty(StringUtf8Coder.of()))
-            .apply(View.<String>asSingleton());
+        TestPipeline.create().apply(Create.empty(StringUtf8Coder.of())).apply(View.asSingleton());
 
     String tag = view.getTagInternal().getId();
 
@@ -128,12 +127,12 @@ public class StateFetcherTest {
   public void testFetchGlobalDataNull() throws Exception {
     StateFetcher fetcher = new StateFetcher(server);
 
-    ByteString.Output stream = ByteString.newOutput();
+    ByteStringOutputStream stream = new ByteStringOutputStream();
     ListCoder.of(VoidCoder.of()).encode(Arrays.asList((Void) null), stream, Coder.Context.OUTER);
     ByteString encodedIterable = stream.toByteString();
 
     PCollectionView<Void> view =
-        TestPipeline.create().apply(Create.empty(VoidCoder.of())).apply(View.<Void>asSingleton());
+        TestPipeline.create().apply(Create.empty(VoidCoder.of())).apply(View.asSingleton());
 
     String tag = view.getTagInternal().getId();
 
@@ -181,10 +180,9 @@ public class StateFetcherTest {
   public void testFetchGlobalDataCacheOverflow() throws Exception {
     Coder<List<String>> coder = ListCoder.of(StringUtf8Coder.of());
 
-    ByteString.Output stream = ByteString.newOutput();
+    ByteStringOutputStream stream = new ByteStringOutputStream();
     coder.encode(Arrays.asList("data1"), stream, Coder.Context.OUTER);
-    ByteString encodedIterable1 = stream.toByteString();
-    stream = ByteString.newOutput();
+    ByteString encodedIterable1 = stream.toByteStringAndReset();
     coder.encode(Arrays.asList("data2"), stream, Coder.Context.OUTER);
     ByteString encodedIterable2 = stream.toByteString();
 
@@ -194,14 +192,10 @@ public class StateFetcherTest {
     StateFetcher fetcher = new StateFetcher(server, cache);
 
     PCollectionView<String> view1 =
-        TestPipeline.create()
-            .apply(Create.empty(StringUtf8Coder.of()))
-            .apply(View.<String>asSingleton());
+        TestPipeline.create().apply(Create.empty(StringUtf8Coder.of())).apply(View.asSingleton());
 
     PCollectionView<String> view2 =
-        TestPipeline.create()
-            .apply(Create.empty(StringUtf8Coder.of()))
-            .apply(View.<String>asSingleton());
+        TestPipeline.create().apply(Create.empty(StringUtf8Coder.of())).apply(View.asSingleton());
 
     String tag1 = view1.getTagInternal().getId();
     String tag2 = view2.getTagInternal().getId();

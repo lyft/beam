@@ -19,26 +19,25 @@ package org.apache.beam.sdk.io.kinesis;
 
 import static java.util.Arrays.asList;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.NoSuchElementException;
+import org.apache.beam.sdk.io.UnboundedSource;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Spy;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
 
 /** Tests {@link KinesisReader}. */
-@RunWith(MockitoJUnitRunner.class)
+@RunWith(MockitoJUnitRunner.Silent.class)
 public class KinesisReaderTest {
 
   @Mock private SimplifiedKinesisClient kinesis;
@@ -47,7 +46,6 @@ public class KinesisReaderTest {
   @Mock private KinesisRecord a, b, c, d;
   @Mock private KinesisSource kinesisSource;
   @Mock private ShardReadersPool shardReadersPool;
-  @Spy private KinesisWatermark watermark = new KinesisWatermark();
 
   private KinesisReader reader;
 
@@ -61,12 +59,19 @@ public class KinesisReaderTest {
     when(c.getApproximateArrivalTimestamp()).thenReturn(Instant.now());
     when(d.getApproximateArrivalTimestamp()).thenReturn(Instant.now());
 
-    reader = createReader(Duration.ZERO);
+    reader = spy(createReader(Duration.ZERO));
   }
 
   private KinesisReader createReader(Duration backlogBytesCheckThreshold) {
     return new KinesisReader(
-        kinesis, generator, kinesisSource, watermark, Duration.ZERO, backlogBytesCheckThreshold) {
+        kinesis,
+        generator,
+        kinesisSource,
+        WatermarkPolicyFactory.withArrivalTimePolicy(),
+        RateLimitPolicyFactory.withoutLimiter(),
+        Duration.ZERO,
+        backlogBytesCheckThreshold,
+        ShardReadersPool.DEFAULT_CAPACITY_PER_SHARD) {
       @Override
       ShardReadersPool createShardReadersPool() {
         return shardReadersPool;
@@ -119,28 +124,9 @@ public class KinesisReaderTest {
   }
 
   @Test
-  public void doesNotUpdateWatermarkWhenRecordsNotAvailable() throws IOException {
-    boolean advanced = reader.start();
-
-    assertThat(advanced).isFalse();
-    verify(watermark, never()).update(any());
-  }
-
-  @Test
-  public void updatesWatermarkWhenRecordsAvailable() throws IOException {
-    when(shardReadersPool.nextRecord())
-        .thenReturn(CustomOptional.of(c))
-        .thenReturn(CustomOptional.absent());
-    boolean advanced = reader.start();
-
-    assertThat(advanced).isTrue();
-    verify(watermark).update(c.getApproximateArrivalTimestamp());
-  }
-
-  @Test
   public void returnsCurrentWatermark() throws IOException {
     Instant expectedWatermark = new Instant(123456L);
-    doReturn(expectedWatermark).when(watermark).getCurrent(any());
+    when(shardReadersPool.getWatermark()).thenReturn(expectedWatermark);
 
     reader.start();
     Instant currentWatermark = reader.getWatermark();
@@ -149,31 +135,50 @@ public class KinesisReaderTest {
   }
 
   @Test
-  public void getTotalBacklogBytesShouldReturnLastSeenValueWhenKinesisExceptionsOccur()
+  public void getSplitBacklogBytesShouldReturnLastSeenValueWhenKinesisExceptionsOccur()
       throws TransientKinesisException, IOException {
     reader.start();
     when(kinesisSource.getStreamName()).thenReturn("stream1");
+    when(shardReadersPool.getLatestRecordTimestamp())
+        .thenReturn(Instant.now().minus(Duration.standardMinutes(1)));
     when(kinesis.getBacklogBytes(eq("stream1"), any(Instant.class)))
         .thenReturn(10L)
         .thenThrow(TransientKinesisException.class)
         .thenReturn(20L);
 
-    assertThat(reader.getTotalBacklogBytes()).isEqualTo(10);
-    assertThat(reader.getTotalBacklogBytes()).isEqualTo(10);
-    assertThat(reader.getTotalBacklogBytes()).isEqualTo(20);
+    assertThat(reader.getSplitBacklogBytes()).isEqualTo(10);
+    assertThat(reader.getSplitBacklogBytes()).isEqualTo(10);
+    assertThat(reader.getSplitBacklogBytes()).isEqualTo(20);
   }
 
   @Test
-  public void getTotalBacklogBytesShouldReturnLastSeenValueWhenCalledFrequently()
+  public void getSplitBacklogBytesShouldReturnLastSeenValueWhenCalledFrequently()
       throws TransientKinesisException, IOException {
-    KinesisReader backlogCachingReader = createReader(Duration.standardSeconds(30));
+    KinesisReader backlogCachingReader = spy(createReader(Duration.standardSeconds(30)));
     backlogCachingReader.start();
+    when(shardReadersPool.getLatestRecordTimestamp())
+        .thenReturn(Instant.now().minus(Duration.standardMinutes(1)));
     when(kinesisSource.getStreamName()).thenReturn("stream1");
     when(kinesis.getBacklogBytes(eq("stream1"), any(Instant.class)))
         .thenReturn(10L)
         .thenReturn(20L);
 
-    assertThat(backlogCachingReader.getTotalBacklogBytes()).isEqualTo(10);
-    assertThat(backlogCachingReader.getTotalBacklogBytes()).isEqualTo(10);
+    assertThat(backlogCachingReader.getSplitBacklogBytes()).isEqualTo(10);
+    assertThat(backlogCachingReader.getSplitBacklogBytes()).isEqualTo(10);
+  }
+
+  @Test
+  public void getSplitBacklogBytesShouldReturnBacklogUnknown()
+      throws IOException, TransientKinesisException {
+    reader.start();
+    when(kinesisSource.getStreamName()).thenReturn("stream1");
+    when(shardReadersPool.getLatestRecordTimestamp())
+        .thenReturn(BoundedWindow.TIMESTAMP_MIN_VALUE)
+        .thenReturn(Instant.now().minus(Duration.standardMinutes(1)));
+    when(kinesis.getBacklogBytes(eq("stream1"), any(Instant.class))).thenReturn(10L);
+
+    assertThat(reader.getSplitBacklogBytes())
+        .isEqualTo(UnboundedSource.UnboundedReader.BACKLOG_UNKNOWN);
+    assertThat(reader.getSplitBacklogBytes()).isEqualTo(10);
   }
 }

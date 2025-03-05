@@ -28,12 +28,12 @@ job('beam_Release_NightlySnapshot') {
   concurrentBuild()
 
   // Set common parameters. Timeout is longer, to avoid [BEAM-5774].
-  commonJobProperties.setTopLevelMainJobProperties(delegate, 'master', 140)
+  commonJobProperties.setTopLevelMainJobProperties(delegate, 'master', 200, true, 'ubuntu')
 
   // This is a post-commit job that runs once per day, not for every push.
   commonJobProperties.setAutoJob(
       delegate,
-      '0 7 * * *',
+      '@daily',
       'builds@beam.apache.org')
 
 
@@ -48,19 +48,26 @@ job('beam_Release_NightlySnapshot') {
       rootBuildScriptDir(commonJobProperties.checkoutDir)
       tasks('clean')
     }
-    gradle {
-      rootBuildScriptDir(commonJobProperties.checkoutDir)
-      tasks('build')
-      commonJobProperties.setGradleSwitches(delegate)
-      switches('--no-parallel')
-      switches('--continue')
-    }
+    /*
+     * Skipping verification on 'ubuntu' labelled nodes since they don't have access to the
+     * some required GCP resources.
+     * TODO: Uncomment this after we publishing snapshots on 'beam' nodes.
+     gradle {
+     rootBuildScriptDir(commonJobProperties.checkoutDir)
+     tasks('build')
+     commonJobProperties.setGradleSwitches(delegate)
+     switches('--no-parallel')
+     switches('--continue')
+     }
+     */
     gradle {
       rootBuildScriptDir(commonJobProperties.checkoutDir)
       tasks('publish')
       commonJobProperties.setGradleSwitches(delegate)
       // Publish a snapshot build.
       switches("-Ppublishing")
+      // No need to run checker framework for snapshot publishing
+      switches("-PskipCheckerFramework")
       // Don't run tasks in parallel, currently the maven-publish/signing plugins
       // cause build failures when run in parallel with messages like 'error snapshotting'
       switches('--no-parallel')

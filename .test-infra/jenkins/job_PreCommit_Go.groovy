@@ -24,9 +24,8 @@ PrecommitJobBuilder builder = new PrecommitJobBuilder(
     gradleTask: ':goPreCommit',
     triggerPathPatterns: [
       '^model/.*$',
-      '^sdks/go/.*$',
-      '^runners/.*$',
+      '^sdks/go.*$',
       '^release/.*$',
     ]
-)
+    )
 builder.build()

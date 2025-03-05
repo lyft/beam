@@ -22,6 +22,7 @@ import static org.apache.beam.runners.dataflow.util.CloudObjects.coderFromCloudO
 import static org.apache.beam.runners.dataflow.util.Structs.getBytes;
 import static org.apache.beam.runners.dataflow.util.Structs.getObject;
 import static org.apache.beam.sdk.util.SerializableUtils.deserializeFromByteArray;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.util.Collection;
 import java.util.List;
@@ -46,7 +47,7 @@ import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.StreamingOptions;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
+import org.apache.beam.sdk.transforms.DoFnSchemaInformation;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.util.DoFnInfo;
@@ -62,6 +63,9 @@ import org.joda.time.Instant;
  * A {@link ParDoFnFactory} to create instances of user {@link ProcessFn} according to
  * specifications from the Dataflow service.
  */
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
 class SplittableProcessFnFactory {
   static final ParDoFnFactory createDefault() {
     return new UserParDoFnFactory(new ProcessFnExtractor(), new SplittableDoFnRunnerFactory());
@@ -74,16 +78,24 @@ class SplittableProcessFnFactory {
           (DoFnInfo<?, ?>)
               deserializeFromByteArray(
                   getBytes(cloudUserFn, PropertyNames.SERIALIZED_FN), "Serialized DoFnInfo");
-      Coder restrictionCoder =
+      Coder restrictionAndStateCoder =
           coderFromCloudObject(
               fromSpec(getObject(cloudUserFn, WorkerPropertyNames.RESTRICTION_CODER)));
+      checkState(
+          restrictionAndStateCoder instanceof KvCoder,
+          "Expected pair coder with restriction as key coder and watermark estimator state as value coder, but received %s.",
+          restrictionAndStateCoder);
+      Coder restrictionCoder = ((KvCoder) restrictionAndStateCoder).getKeyCoder();
+      Coder watermarkEstimatorStateCoder = ((KvCoder) restrictionAndStateCoder).getValueCoder();
 
       ProcessFn processFn =
           new ProcessFn(
               doFnInfo.getDoFn(),
               doFnInfo.getInputCoder(),
               restrictionCoder,
-              doFnInfo.getWindowingStrategy());
+              watermarkEstimatorStateCoder,
+              doFnInfo.getWindowingStrategy(),
+              doFnInfo.getSideInputMapping());
 
       return DoFnInfo.forFn(
           processFn,
@@ -94,16 +106,14 @@ class SplittableProcessFnFactory {
               KvCoder.of(doFnInfo.getInputCoder(), restrictionCoder),
               doFnInfo.getWindowingStrategy().getWindowFn().windowCoder()),
           doFnInfo.getOutputCoders(),
-          doFnInfo.getMainOutput());
+          doFnInfo.getMainOutput(),
+          doFnInfo.getDoFnSchemaInformation(),
+          doFnInfo.getSideInputMapping());
     }
   }
 
   private static class SplittableDoFnRunnerFactory<
-          InputT,
-          OutputT,
-          RestrictionT,
-          PositionT,
-          TrackerT extends RestrictionTracker<RestrictionT, PositionT>>
+          InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT>
       implements DoFnRunnerFactory<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> {
     @Override
     public DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> createRunner(
@@ -118,11 +128,14 @@ class SplittableProcessFnFactory {
         WindowingStrategy<?, ?> windowingStrategy,
         DataflowExecutionContext.DataflowStepContext stepContext,
         DataflowExecutionContext.DataflowStepContext userStepContext,
-        OutputManager outputManager) {
-      ProcessFn<InputT, OutputT, RestrictionT, TrackerT> processFn =
-          (ProcessFn<InputT, OutputT, RestrictionT, TrackerT>) fn;
+        OutputManager outputManager,
+        DoFnSchemaInformation doFnSchemaInformation,
+        Map<String, PCollectionView<?>> sideInputMapping) {
+      ProcessFn<InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT> processFn =
+          (ProcessFn<InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT>) fn;
       processFn.setStateInternalsFactory(key -> (StateInternals) stepContext.stateInternals());
       processFn.setTimerInternalsFactory(key -> stepContext.timerInternals());
+      processFn.setSideInputReader(sideInputReader);
       processFn.setProcessElementInvoker(
           new OutputAndTimeBoundedSplittableProcessElementInvoker<>(
               processFn.getFn(),
@@ -154,7 +167,11 @@ class SplittableProcessFnFactory {
               // advancing smoothly, and ensures that not too much work will have to be reprocessed
               // in the event of a crash.
               10000,
-              Duration.standardSeconds(10)));
+              Duration.standardSeconds(10),
+              () -> {
+                throw new UnsupportedOperationException(
+                    "BundleFinalizer unsupported by non-portable Dataflow.");
+              }));
       DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> simpleRunner =
           new SimpleDoFnRunner<>(
               options,
@@ -166,7 +183,9 @@ class SplittableProcessFnFactory {
               userStepContext,
               inputCoder,
               outputCoders,
-              processFn.getInputWindowingStrategy());
+              processFn.getInputWindowingStrategy(),
+              doFnSchemaInformation,
+              sideInputMapping);
       DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> fnRunner =
           new DataflowProcessFnRunner<>(simpleRunner);
       boolean hasStreamingSideInput =

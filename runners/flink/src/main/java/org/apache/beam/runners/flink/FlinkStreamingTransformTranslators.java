@@ -29,47 +29,59 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.core.KeyedWorkItem;
 import org.apache.beam.runners.core.SplittableParDoViaKeyedWorkItems;
 import org.apache.beam.runners.core.SystemReduceFn;
 import org.apache.beam.runners.core.construction.PTransformTranslation;
 import org.apache.beam.runners.core.construction.ParDoTranslation;
 import org.apache.beam.runners.core.construction.ReadTranslation;
+import org.apache.beam.runners.core.construction.SerializablePipelineOptions;
 import org.apache.beam.runners.core.construction.SplittableParDo;
 import org.apache.beam.runners.core.construction.TransformPayloadTranslatorRegistrar;
 import org.apache.beam.runners.core.construction.UnboundedReadFromBoundedSource.BoundedToUnboundedSourceAdapter;
 import org.apache.beam.runners.flink.translation.functions.FlinkAssignWindows;
+import org.apache.beam.runners.flink.translation.functions.ImpulseSourceFunction;
 import org.apache.beam.runners.flink.translation.types.CoderTypeInformation;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.DoFnOperator;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.KvToByteBufferKeySelector;
+import org.apache.beam.runners.flink.translation.wrappers.streaming.ProcessingTimeCallbackCompat;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.SingletonKeyedWorkItem;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.SingletonKeyedWorkItemCoder;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.SplittableDoFnOperator;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.WindowDoFnOperator;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.WorkItemKeySelector;
+import org.apache.beam.runners.flink.translation.wrappers.streaming.io.BeamStoppableFunction;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.io.DedupingOperator;
+import org.apache.beam.runners.flink.translation.wrappers.streaming.io.TestStreamSource;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.io.UnboundedSourceWrapper;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.coders.CoderException;
+import org.apache.beam.sdk.coders.IterableCoder;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.io.BoundedSource;
+import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.UnboundedSource;
+import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.runners.AppliedPTransform;
+import org.apache.beam.sdk.testing.TestStream;
 import org.apache.beam.sdk.transforms.Combine;
 import org.apache.beam.sdk.transforms.CombineFnBase.GlobalCombineFn;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.DoFnSchemaInformation;
+import org.apache.beam.sdk.transforms.Impulse;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.join.RawUnionValue;
 import org.apache.beam.sdk.transforms.join.UnionCoder;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
-import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.util.AppliedCombineFn;
+import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PBegin;
@@ -81,13 +93,12 @@ import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
 import org.apache.beam.sdk.values.ValueWithRecordId;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
-import org.apache.flink.api.common.functions.StoppableFunction;
+import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -100,22 +111,25 @@ import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 import org.apache.flink.streaming.api.transformations.TwoInputTransformation;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.runtime.tasks.ProcessingTimeCallback;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * This class contains all the mappings between Beam and Flink <b>streaming</b> transformations. The
  * {@link FlinkStreamingPipelineTranslator} traverses the Beam job and comes here to translate the
  * encountered Beam transformations into Flink one, based on the mapping available in this class.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class FlinkStreamingTransformTranslators {
 
   // --------------------------------------------------------------------------------------------
@@ -129,6 +143,7 @@ class FlinkStreamingTransformTranslators {
 
   // here you can find all the available translators.
   static {
+    TRANSLATORS.put(PTransformTranslation.IMPULSE_TRANSFORM_URN, new ImpulseTranslator());
     TRANSLATORS.put(PTransformTranslation.READ_TRANSFORM_URN, new ReadSourceTranslator());
 
     TRANSLATORS.put(PTransformTranslation.PAR_DO_TRANSFORM_URN, new ParDoStreamingTranslator());
@@ -147,6 +162,8 @@ class FlinkStreamingTransformTranslators {
     TRANSLATORS.put(PTransformTranslation.GROUP_BY_KEY_TRANSFORM_URN, new GroupByKeyTranslator());
     TRANSLATORS.put(
         PTransformTranslation.COMBINE_PER_KEY_TRANSFORM_URN, new CombinePerKeyTranslator());
+
+    TRANSLATORS.put(PTransformTranslation.TEST_STREAM_TRANSFORM_URN, new TestStreamTranslator());
   }
 
   public static FlinkStreamingPipelineTranslator.StreamTransformTranslator<?> getTranslator(
@@ -184,7 +201,8 @@ class FlinkStreamingTransformTranslators {
           new CoderTypeInformation<>(
               WindowedValue.getFullCoder(
                   ValueWithRecordId.ValueWithRecordIdCoder.of(coder),
-                  output.getWindowingStrategy().getWindowFn().windowCoder()));
+                  output.getWindowingStrategy().getWindowFn().windowCoder()),
+              context.getPipelineOptions());
 
       UnboundedSource<T, ?> rawSource;
       try {
@@ -217,10 +235,16 @@ class FlinkStreamingTransformTranslators {
           source =
               nonDedupSource
                   .keyBy(new ValueWithRecordIdKeySelector<>())
-                  .transform("deduping", outputTypeInfo, new DedupingOperator<>())
+                  .transform(
+                      "deduping",
+                      outputTypeInfo,
+                      new DedupingOperator<>(context.getPipelineOptions()))
                   .uid(format("%s/__deduplicated__", fullName));
         } else {
-          source = nonDedupSource.flatMap(new StripIdsMap<>()).returns(outputTypeInfo);
+          source =
+              nonDedupSource
+                  .flatMap(new StripIdsMap<>(context.getPipelineOptions()))
+                  .returns(outputTypeInfo);
         }
       } catch (Exception e) {
         throw new RuntimeException("Error while translating UnboundedSource: " + rawSource, e);
@@ -230,7 +254,7 @@ class FlinkStreamingTransformTranslators {
     }
   }
 
-  private static class ValueWithRecordIdKeySelector<T>
+  static class ValueWithRecordIdKeySelector<T>
       implements KeySelector<WindowedValue<ValueWithRecordId<T>>, ByteBuffer>,
           ResultTypeQueryable<ByteBuffer> {
 
@@ -246,13 +270,51 @@ class FlinkStreamingTransformTranslators {
   }
 
   public static class StripIdsMap<T>
-      implements FlatMapFunction<WindowedValue<ValueWithRecordId<T>>, WindowedValue<T>> {
+      extends RichFlatMapFunction<WindowedValue<ValueWithRecordId<T>>, WindowedValue<T>> {
+
+    private final SerializablePipelineOptions options;
+
+    StripIdsMap(PipelineOptions options) {
+      this.options = new SerializablePipelineOptions(options);
+    }
+
+    @Override
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
+    }
 
     @Override
     public void flatMap(
         WindowedValue<ValueWithRecordId<T>> value, Collector<WindowedValue<T>> collector)
         throws Exception {
       collector.collect(value.withValue(value.getValue().getValue()));
+    }
+  }
+
+  private static class ImpulseTranslator<T>
+      extends FlinkStreamingPipelineTranslator.StreamTransformTranslator<Impulse> {
+    @Override
+    void translateNode(Impulse transform, FlinkStreamingTranslationContext context) {
+
+      TypeInformation<WindowedValue<byte[]>> typeInfo =
+          new CoderTypeInformation<>(
+              WindowedValue.getFullCoder(ByteArrayCoder.of(), GlobalWindow.Coder.INSTANCE),
+              context.getPipelineOptions());
+
+      long shutdownAfterIdleSourcesMs =
+          context
+              .getPipelineOptions()
+              .as(FlinkPipelineOptions.class)
+              .getShutdownSourcesAfterIdleMs();
+      SingleOutputStreamOperator<WindowedValue<byte[]>> source =
+          context
+              .getExecutionEnvironment()
+              .addSource(new ImpulseSourceFunction(shutdownAfterIdleSourcesMs), "Impulse")
+              .returns(typeInfo);
+
+      context.setOutputDataStream(context.getOutput(transform), source);
     }
   }
 
@@ -325,11 +387,20 @@ class FlinkStreamingTransformTranslators {
   }
 
   /** Wraps each element in a {@link RawUnionValue} with the given tag id. */
-  public static class ToRawUnion<T> implements MapFunction<T, RawUnionValue> {
+  public static class ToRawUnion<T> extends RichMapFunction<T, RawUnionValue> {
     private final int intTag;
+    private final SerializablePipelineOptions options;
 
-    public ToRawUnion(int intTag) {
+    ToRawUnion(int intTag, PipelineOptions pipelineOptions) {
       this.intTag = intTag;
+      this.options = new SerializablePipelineOptions(pipelineOptions);
+    }
+
+    @Override
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
     }
 
     @Override
@@ -368,7 +439,7 @@ class FlinkStreamingTransformTranslators {
     UnionCoder unionCoder = UnionCoder.of(inputCoders);
 
     CoderTypeInformation<RawUnionValue> unionTypeInformation =
-        new CoderTypeInformation<>(unionCoder);
+        new CoderTypeInformation<>(unionCoder, context.getPipelineOptions());
 
     // transform each side input to RawUnionValue and union them
     DataStream<RawUnionValue> sideInputUnion = null;
@@ -378,7 +449,9 @@ class FlinkStreamingTransformTranslators {
       final int intTag = tagToIntMapping.get(tag);
       DataStream<Object> sideInputStream = context.getInputDataStream(sideInput);
       DataStream<RawUnionValue> unionValueStream =
-          sideInputStream.map(new ToRawUnion<>(intTag)).returns(unionTypeInformation);
+          sideInputStream
+              .map(new ToRawUnion<>(intTag, context.getPipelineOptions()))
+              .returns(unionTypeInformation);
 
       if (sideInputUnion == null) {
         sideInputUnion = unionValueStream;
@@ -413,11 +486,12 @@ class FlinkStreamingTransformTranslators {
           Map<TupleTag<?>, Coder<WindowedValue<?>>> tagsToCoders,
           Map<TupleTag<?>, Integer> tagsToIds,
           Coder<WindowedValue<InputT>> windowedInputCoder,
-          Coder<InputT> inputCoder,
           Map<TupleTag<?>, Coder<?>> outputCoders,
           Coder keyCoder,
           KeySelector<WindowedValue<InputT>, ?> keySelector,
-          Map<Integer, PCollectionView<?>> transformedSideInputs);
+          Map<Integer, PCollectionView<?>> transformedSideInputs,
+          DoFnSchemaInformation doFnSchemaInformation,
+          Map<String, PCollectionView<?>> sideInputMapping);
     }
 
     static <InputT, OutputT> void translateParDo(
@@ -425,9 +499,11 @@ class FlinkStreamingTransformTranslators {
         DoFn<InputT, OutputT> doFn,
         PCollection<InputT> input,
         List<PCollectionView<?>> sideInputs,
-        Map<TupleTag<?>, PValue> outputs,
+        Map<TupleTag<?>, PCollection<?>> outputs,
         TupleTag<OutputT> mainOutputTag,
         List<TupleTag<?>> additionalOutputTags,
+        DoFnSchemaInformation doFnSchemaInformation,
+        Map<String, PCollectionView<?>> sideInputMapping,
         FlinkStreamingTranslationContext context,
         DoFnOperatorFactory<InputT, OutputT> doFnOperatorFactory) {
 
@@ -444,7 +520,7 @@ class FlinkStreamingTransformTranslators {
       Map<TupleTag<?>, Integer> tagsToIds = Maps.newHashMap();
       int idCount = 0;
       tagsToIds.put(mainOutputTag, idCount++);
-      for (Map.Entry<TupleTag<?>, PValue> entry : outputs.entrySet()) {
+      for (Map.Entry<TupleTag<?>, PCollection<?>> entry : outputs.entrySet()) {
         if (!tagsToOutputTags.containsKey(entry.getKey())) {
           tagsToOutputTags.put(
               entry.getKey(),
@@ -461,7 +537,6 @@ class FlinkStreamingTransformTranslators {
       SingleOutputStreamOperator<WindowedValue<OutputT>> outputStream;
 
       Coder<WindowedValue<InputT>> windowedInputCoder = context.getWindowedInputCoder(input);
-      Coder<InputT> inputCoder = context.getInputCoder(input);
       Map<TupleTag<?>, Coder<?>> outputCoders = context.getOutputCoders();
 
       DataStream<WindowedValue<InputT>> inputDataStream = context.getInputDataStream(input);
@@ -474,18 +549,35 @@ class FlinkStreamingTransformTranslators {
         // Based on the fact that the signature is stateful, DoFnSignatures ensures
         // that it is also keyed
         keyCoder = ((KvCoder) input.getCoder()).getKeyCoder();
-        keySelector = new KvToByteBufferKeySelector(keyCoder);
-        inputDataStream = inputDataStream.keyBy(keySelector);
+        keySelector =
+            new KvToByteBufferKeySelector(
+                keyCoder, new SerializablePipelineOptions(context.getPipelineOptions()));
+        final PTransform<?, PCollection<InputT>> producer = context.getProducer(input);
+        final String previousUrn =
+            producer != null
+                ? PTransformTranslation.urnForTransformOrNull(context.getProducer(input))
+                : null;
+        // We can skip reshuffle in case previous transform was CPK or GBK
+        if (PTransformTranslation.COMBINE_PER_KEY_TRANSFORM_URN.equals(previousUrn)
+            || PTransformTranslation.GROUP_BY_KEY_TRANSFORM_URN.equals(previousUrn)) {
+          inputDataStream = DataStreamUtils.reinterpretAsKeyedStream(inputDataStream, keySelector);
+        } else {
+          inputDataStream = inputDataStream.keyBy(keySelector);
+        }
         stateful = true;
       } else if (doFn instanceof SplittableParDoViaKeyedWorkItems.ProcessFn) {
         // we know that it is keyed on byte[]
         keyCoder = ByteArrayCoder.of();
+        keySelector =
+            new WorkItemKeySelector<>(
+                keyCoder, new SerializablePipelineOptions(context.getPipelineOptions()));
         stateful = true;
       }
 
       CoderTypeInformation<WindowedValue<OutputT>> outputTypeInformation =
           new CoderTypeInformation<>(
-              context.getWindowedInputCoder((PCollection<OutputT>) outputs.get(mainOutputTag)));
+              context.getWindowedInputCoder((PCollection<OutputT>) outputs.get(mainOutputTag)),
+              context.getPipelineOptions());
 
       if (sideInputs.isEmpty()) {
         DoFnOperator<InputT, OutputT> doFnOperator =
@@ -501,11 +593,12 @@ class FlinkStreamingTransformTranslators {
                 tagsToCoders,
                 tagsToIds,
                 windowedInputCoder,
-                inputCoder,
                 outputCoders,
                 keyCoder,
                 keySelector,
-                new HashMap<>() /* side-input mapping */);
+                new HashMap<>() /* side-input mapping */,
+                doFnSchemaInformation,
+                sideInputMapping);
 
         outputStream =
             inputDataStream.transform(transformName, outputTypeInformation, doFnOperator);
@@ -527,11 +620,12 @@ class FlinkStreamingTransformTranslators {
                 tagsToCoders,
                 tagsToIds,
                 windowedInputCoder,
-                inputCoder,
                 outputCoders,
                 keyCoder,
                 keySelector,
-                transformedSideInputs.f0);
+                transformedSideInputs.f0,
+                doFnSchemaInformation,
+                sideInputMapping);
 
         if (stateful) {
           // we have to manually construct the two-input transform because we're not
@@ -569,7 +663,7 @@ class FlinkStreamingTransformTranslators {
       outputStream.uid(transformName);
       context.setOutputDataStream(outputs.get(mainOutputTag), outputStream);
 
-      for (Map.Entry<TupleTag<?>, PValue> entry : outputs.entrySet()) {
+      for (Map.Entry<TupleTag<?>, PCollection<?>> entry : outputs.entrySet()) {
         if (!entry.getKey().equals(mainOutputTag)) {
           context.setOutputDataStream(
               entry.getValue(), outputStream.getSideOutput(tagsToOutputTags.get(entry.getKey())));
@@ -609,6 +703,9 @@ class FlinkStreamingTransformTranslators {
         throw new RuntimeException(e);
       }
 
+      Map<String, PCollectionView<?>> sideInputMapping =
+          ParDoTranslation.getSideInputMapping(context.getCurrentTransform());
+
       TupleTagList additionalOutputTags;
       try {
         additionalOutputTags =
@@ -616,6 +713,9 @@ class FlinkStreamingTransformTranslators {
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
+
+      DoFnSchemaInformation doFnSchemaInformation;
+      doFnSchemaInformation = ParDoTranslation.getSchemaInformation(context.getCurrentTransform());
 
       ParDoTranslationHelper.translateParDo(
           getCurrentTransformName(context),
@@ -625,6 +725,8 @@ class FlinkStreamingTransformTranslators {
           context.getOutputs(transform),
           mainOutputTag,
           additionalOutputTags.getAll(),
+          doFnSchemaInformation,
+          sideInputMapping,
           context,
           (doFn1,
               stepName,
@@ -637,39 +739,46 @@ class FlinkStreamingTransformTranslators {
               tagsToCoders,
               tagsToIds,
               windowedInputCoder,
-              inputCoder,
               outputCoders1,
               keyCoder,
               keySelector,
-              transformedSideInputs) ->
+              transformedSideInputs,
+              doFnSchemaInformation1,
+              sideInputMapping1) ->
               new DoFnOperator<>(
                   doFn1,
                   stepName,
                   windowedInputCoder,
-                  inputCoder,
                   outputCoders1,
                   mainOutputTag1,
                   additionalOutputTags1,
                   new DoFnOperator.MultiOutputOutputManagerFactory<>(
-                      mainOutputTag1, tagsToOutputTags, tagsToCoders, tagsToIds),
+                      mainOutputTag1,
+                      tagsToOutputTags,
+                      tagsToCoders,
+                      tagsToIds,
+                      new SerializablePipelineOptions(context.getPipelineOptions())),
                   windowingStrategy,
                   transformedSideInputs,
                   sideInputs1,
                   context1.getPipelineOptions(),
                   keyCoder,
-                  keySelector));
+                  keySelector,
+                  doFnSchemaInformation1,
+                  sideInputMapping1));
     }
   }
 
   private static class SplittableProcessElementsStreamingTranslator<
-          InputT, OutputT, RestrictionT, TrackerT extends RestrictionTracker<RestrictionT, ?>>
+          InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT>
       extends FlinkStreamingPipelineTranslator.StreamTransformTranslator<
           SplittableParDoViaKeyedWorkItems.ProcessElements<
-              InputT, OutputT, RestrictionT, TrackerT>> {
+              InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT>> {
 
     @Override
     public void translateNode(
-        SplittableParDoViaKeyedWorkItems.ProcessElements<InputT, OutputT, RestrictionT, TrackerT>
+        SplittableParDoViaKeyedWorkItems.ProcessElements<
+                InputT, OutputT, RestrictionT, PositionT, WatermarkEstimatorStateT>
             transform,
         FlinkStreamingTranslationContext context) {
 
@@ -681,6 +790,8 @@ class FlinkStreamingTransformTranslators {
           context.getOutputs(transform),
           transform.getMainOutputTag(),
           transform.getAdditionalOutputTags().getAll(),
+          DoFnSchemaInformation.create(),
+          Collections.emptyMap(),
           context,
           (doFn,
               stepName,
@@ -693,21 +804,25 @@ class FlinkStreamingTransformTranslators {
               tagsToCoders,
               tagsToIds,
               windowedInputCoder,
-              inputCoder,
               outputCoders1,
               keyCoder,
               keySelector,
-              transformedSideInputs) ->
+              transformedSideInputs,
+              doFnSchemaInformation,
+              sideInputMapping) ->
               new SplittableDoFnOperator<>(
                   doFn,
                   stepName,
                   windowedInputCoder,
-                  inputCoder,
                   outputCoders1,
                   mainOutputTag,
                   additionalOutputTags,
                   new DoFnOperator.MultiOutputOutputManagerFactory<>(
-                      mainOutputTag, tagsToOutputTags, tagsToCoders, tagsToIds),
+                      mainOutputTag,
+                      tagsToOutputTags,
+                      tagsToCoders,
+                      tagsToIds,
+                      new SerializablePipelineOptions(context.getPipelineOptions())),
                   windowingStrategy,
                   transformedSideInputs,
                   sideInputs,
@@ -804,53 +919,62 @@ class FlinkStreamingTransformTranslators {
 
       KvCoder<K, InputT> inputKvCoder = (KvCoder<K, InputT>) input.getCoder();
 
-      SingletonKeyedWorkItemCoder<K, InputT> workItemCoder =
+      SingletonKeyedWorkItemCoder<K, byte[]> workItemCoder =
           SingletonKeyedWorkItemCoder.of(
               inputKvCoder.getKeyCoder(),
-              inputKvCoder.getValueCoder(),
+              ByteArrayCoder.of(),
               input.getWindowingStrategy().getWindowFn().windowCoder());
 
       DataStream<WindowedValue<KV<K, InputT>>> inputDataStream = context.getInputDataStream(input);
 
-      WindowedValue.FullWindowedValueCoder<SingletonKeyedWorkItem<K, InputT>>
-          windowedWorkItemCoder =
-              WindowedValue.getFullCoder(
-                  workItemCoder, input.getWindowingStrategy().getWindowFn().windowCoder());
+      WindowedValue.FullWindowedValueCoder<KeyedWorkItem<K, byte[]>> windowedWorkItemCoder =
+          WindowedValue.getFullCoder(
+              workItemCoder, input.getWindowingStrategy().getWindowFn().windowCoder());
 
-      CoderTypeInformation<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemTypeInfo =
-          new CoderTypeInformation<>(windowedWorkItemCoder);
+      CoderTypeInformation<WindowedValue<KeyedWorkItem<K, byte[]>>> workItemTypeInfo =
+          new CoderTypeInformation<>(windowedWorkItemCoder, context.getPipelineOptions());
 
-      DataStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemStream =
+      DataStream<WindowedValue<KeyedWorkItem<K, byte[]>>> workItemStream =
           inputDataStream
-              .flatMap(new ToKeyedWorkItem<>())
+              .flatMap(
+                  new ToBinaryKeyedWorkItem<>(
+                      context.getPipelineOptions(), inputKvCoder.getValueCoder()))
               .returns(workItemTypeInfo)
-              .name("ToKeyedWorkItem");
+              .name("ToBinaryKeyedWorkItem");
 
-      WorkItemKeySelector keySelector = new WorkItemKeySelector<>(inputKvCoder.getKeyCoder());
+      WorkItemKeySelector<K, byte[]> keySelector =
+          new WorkItemKeySelector<>(
+              inputKvCoder.getKeyCoder(),
+              new SerializablePipelineOptions(context.getPipelineOptions()));
 
-      KeyedStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>, ByteBuffer>
-          keyedWorkItemStream =
-              workItemStream.keyBy(new WorkItemKeySelector<>(inputKvCoder.getKeyCoder()));
+      KeyedStream<WindowedValue<KeyedWorkItem<K, byte[]>>, ByteBuffer> keyedWorkItemStream =
+          workItemStream.keyBy(keySelector);
 
-      SystemReduceFn<K, InputT, Iterable<InputT>, Iterable<InputT>, BoundedWindow> reduceFn =
-          SystemReduceFn.buffering(inputKvCoder.getValueCoder());
+      SystemReduceFn<K, byte[], Iterable<byte[]>, Iterable<byte[]>, BoundedWindow> reduceFn =
+          SystemReduceFn.buffering(ByteArrayCoder.of());
 
-      Coder<WindowedValue<KV<K, Iterable<InputT>>>> outputCoder =
-          context.getWindowedInputCoder(context.getOutput(transform));
-      TypeInformation<WindowedValue<KV<K, Iterable<InputT>>>> outputTypeInfo =
-          context.getTypeInfo(context.getOutput(transform));
+      Coder<WindowedValue<KV<K, Iterable<byte[]>>>> outputCoder =
+          WindowedValue.getFullCoder(
+              KvCoder.of(inputKvCoder.getKeyCoder(), IterableCoder.of(ByteArrayCoder.of())),
+              windowingStrategy.getWindowFn().windowCoder());
 
-      TupleTag<KV<K, Iterable<InputT>>> mainTag = new TupleTag<>("main output");
+      TypeInformation<WindowedValue<KV<K, Iterable<byte[]>>>> outputTypeInfo =
+          new CoderTypeInformation<>(outputCoder, context.getPipelineOptions());
+
+      TupleTag<KV<K, Iterable<byte[]>>> mainTag = new TupleTag<>("main output");
 
       String fullName = getCurrentTransformName(context);
-      WindowDoFnOperator<K, InputT, Iterable<InputT>> doFnOperator =
+      WindowDoFnOperator<K, byte[], Iterable<byte[]>> doFnOperator =
           new WindowDoFnOperator<>(
               reduceFn,
               fullName,
-              (Coder) windowedWorkItemCoder,
+              windowedWorkItemCoder,
               mainTag,
               Collections.emptyList(),
-              new DoFnOperator.MultiOutputOutputManagerFactory<>(mainTag, outputCoder),
+              new DoFnOperator.MultiOutputOutputManagerFactory<>(
+                  mainTag,
+                  outputCoder,
+                  new SerializablePipelineOptions(context.getPipelineOptions())),
               windowingStrategy,
               new HashMap<>(), /* side-input mapping */
               Collections.emptyList(), /* side inputs */
@@ -858,13 +982,15 @@ class FlinkStreamingTransformTranslators {
               inputKvCoder.getKeyCoder(),
               keySelector);
 
-      // our operator expects WindowedValue<KeyedWorkItem> while our input stream
-      // is WindowedValue<SingletonKeyedWorkItem>, which is fine but Java doesn't like it ...
-      @SuppressWarnings("unchecked")
-      SingleOutputStreamOperator<WindowedValue<KV<K, Iterable<InputT>>>> outDataStream =
+      final SingleOutputStreamOperator<WindowedValue<KV<K, Iterable<InputT>>>> outDataStream =
           keyedWorkItemStream
-              .transform(fullName, outputTypeInfo, (OneInputStreamOperator) doFnOperator)
-              .uid(fullName);
+              .transform(fullName, outputTypeInfo, doFnOperator)
+              .uid(fullName)
+              .flatMap(
+                  new ToGroupByKeyResult<>(
+                      context.getPipelineOptions(), inputKvCoder.getValueCoder()))
+              .returns(context.getTypeInfo(context.getOutput(transform)))
+              .name("ToGBKResult");
 
       context.setOutputDataStream(context.getOutput(transform), outDataStream);
     }
@@ -887,7 +1013,7 @@ class FlinkStreamingTransformTranslators {
       WindowingStrategy<?, BoundedWindow> windowingStrategy =
           (WindowingStrategy<?, BoundedWindow>) input.getWindowingStrategy();
 
-      return windowingStrategy.getWindowFn().isNonMerging()
+      return !windowingStrategy.needsMerge()
           || ((Combine.PerKey) transform).getSideInputs().isEmpty();
     }
 
@@ -912,23 +1038,25 @@ class FlinkStreamingTransformTranslators {
 
       DataStream<WindowedValue<KV<K, InputT>>> inputDataStream = context.getInputDataStream(input);
 
-      WindowedValue.FullWindowedValueCoder<SingletonKeyedWorkItem<K, InputT>>
-          windowedWorkItemCoder =
-              WindowedValue.getFullCoder(
-                  workItemCoder, input.getWindowingStrategy().getWindowFn().windowCoder());
+      WindowedValue.FullWindowedValueCoder<KeyedWorkItem<K, InputT>> windowedWorkItemCoder =
+          WindowedValue.getFullCoder(
+              workItemCoder, input.getWindowingStrategy().getWindowFn().windowCoder());
 
-      CoderTypeInformation<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemTypeInfo =
-          new CoderTypeInformation<>(windowedWorkItemCoder);
+      CoderTypeInformation<WindowedValue<KeyedWorkItem<K, InputT>>> workItemTypeInfo =
+          new CoderTypeInformation<>(windowedWorkItemCoder, context.getPipelineOptions());
 
-      DataStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemStream =
+      DataStream<WindowedValue<KeyedWorkItem<K, InputT>>> workItemStream =
           inputDataStream
-              .flatMap(new ToKeyedWorkItem<>())
+              .flatMap(new ToKeyedWorkItem<>(context.getPipelineOptions()))
               .returns(workItemTypeInfo)
               .name("ToKeyedWorkItem");
 
-      WorkItemKeySelector keySelector = new WorkItemKeySelector<>(inputKvCoder.getKeyCoder());
-      KeyedStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>, ByteBuffer>
-          keyedWorkItemStream = workItemStream.keyBy(keySelector);
+      WorkItemKeySelector<K, InputT> keySelector =
+          new WorkItemKeySelector<>(
+              inputKvCoder.getKeyCoder(),
+              new SerializablePipelineOptions(context.getPipelineOptions()));
+      KeyedStream<WindowedValue<KeyedWorkItem<K, InputT>>, ByteBuffer> keyedWorkItemStream =
+          workItemStream.keyBy(keySelector);
 
       GlobalCombineFn<? super InputT, ?, OutputT> combineFn = ((Combine.PerKey) transform).getFn();
       SystemReduceFn<K, InputT, ?, OutputT, BoundedWindow> reduceFn =
@@ -953,7 +1081,10 @@ class FlinkStreamingTransformTranslators {
                 (Coder) windowedWorkItemCoder,
                 mainTag,
                 Collections.emptyList(),
-                new DoFnOperator.MultiOutputOutputManagerFactory<>(mainTag, outputCoder),
+                new DoFnOperator.MultiOutputOutputManagerFactory<>(
+                    mainTag,
+                    outputCoder,
+                    new SerializablePipelineOptions(context.getPipelineOptions())),
                 windowingStrategy,
                 new HashMap<>(), /* side-input mapping */
                 Collections.emptyList(), /* side inputs */
@@ -961,13 +1092,8 @@ class FlinkStreamingTransformTranslators {
                 inputKvCoder.getKeyCoder(),
                 keySelector);
 
-        // our operator expects WindowedValue<KeyedWorkItem> while our input stream
-        // is WindowedValue<SingletonKeyedWorkItem>, which is fine but Java doesn't like it ...
-        @SuppressWarnings("unchecked")
         SingleOutputStreamOperator<WindowedValue<KV<K, OutputT>>> outDataStream =
-            keyedWorkItemStream
-                .transform(fullName, outputTypeInfo, (OneInputStreamOperator) doFnOperator)
-                .uid(fullName);
+            keyedWorkItemStream.transform(fullName, outputTypeInfo, doFnOperator).uid(fullName);
         context.setOutputDataStream(context.getOutput(transform), outDataStream);
       } else {
         Tuple2<Map<Integer, PCollectionView<?>>, DataStream<RawUnionValue>> transformSideInputs =
@@ -981,7 +1107,10 @@ class FlinkStreamingTransformTranslators {
                 (Coder) windowedWorkItemCoder,
                 mainTag,
                 Collections.emptyList(),
-                new DoFnOperator.MultiOutputOutputManagerFactory<>(mainTag, outputCoder),
+                new DoFnOperator.MultiOutputOutputManagerFactory<>(
+                    mainTag,
+                    outputCoder,
+                    new SerializablePipelineOptions(context.getPipelineOptions())),
                 windowingStrategy,
                 transformSideInputs.f0,
                 sideInputs,
@@ -993,7 +1122,7 @@ class FlinkStreamingTransformTranslators {
         // allowed to have only one input keyed, normally.
 
         TwoInputTransformation<
-                WindowedValue<SingletonKeyedWorkItem<K, InputT>>,
+                WindowedValue<KeyedWorkItem<K, InputT>>,
                 RawUnionValue,
                 WindowedValue<KV<K, OutputT>>>
             rawFlinkTransform =
@@ -1001,7 +1130,7 @@ class FlinkStreamingTransformTranslators {
                     keyedWorkItemStream.getTransformation(),
                     transformSideInputs.f1.broadcast().getTransformation(),
                     transform.getName(),
-                    (TwoInputStreamOperator) doFnOperator,
+                    doFnOperator,
                     outputTypeInfo,
                     keyedWorkItemStream.getParallelism());
 
@@ -1047,23 +1176,25 @@ class FlinkStreamingTransformTranslators {
               inputKvCoder.getValueCoder(),
               input.getWindowingStrategy().getWindowFn().windowCoder());
 
-      WindowedValue.ValueOnlyWindowedValueCoder<SingletonKeyedWorkItem<K, InputT>>
-          windowedWorkItemCoder = WindowedValue.getValueOnlyCoder(workItemCoder);
+      WindowedValue.ValueOnlyWindowedValueCoder<KeyedWorkItem<K, InputT>> windowedWorkItemCoder =
+          WindowedValue.getValueOnlyCoder(workItemCoder);
 
-      CoderTypeInformation<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemTypeInfo =
-          new CoderTypeInformation<>(windowedWorkItemCoder);
+      CoderTypeInformation<WindowedValue<KeyedWorkItem<K, InputT>>> workItemTypeInfo =
+          new CoderTypeInformation<>(windowedWorkItemCoder, context.getPipelineOptions());
 
       DataStream<WindowedValue<KV<K, InputT>>> inputDataStream = context.getInputDataStream(input);
 
-      DataStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> workItemStream =
+      DataStream<WindowedValue<KeyedWorkItem<K, InputT>>> workItemStream =
           inputDataStream
-              .flatMap(new ToKeyedWorkItemInGlobalWindow<>())
+              .flatMap(new ToKeyedWorkItemInGlobalWindow<>(context.getPipelineOptions()))
               .returns(workItemTypeInfo)
               .name("ToKeyedWorkItem");
 
-      KeyedStream<WindowedValue<SingletonKeyedWorkItem<K, InputT>>, ByteBuffer>
-          keyedWorkItemStream =
-              workItemStream.keyBy(new WorkItemKeySelector<>(inputKvCoder.getKeyCoder()));
+      KeyedStream<WindowedValue<KeyedWorkItem<K, InputT>>, ByteBuffer> keyedWorkItemStream =
+          workItemStream.keyBy(
+              new WorkItemKeySelector<>(
+                  inputKvCoder.getKeyCoder(),
+                  new SerializablePipelineOptions(context.getPipelineOptions())));
 
       context.setOutputDataStream(context.getOutput(transform), keyedWorkItemStream);
     }
@@ -1071,19 +1202,32 @@ class FlinkStreamingTransformTranslators {
 
   private static class ToKeyedWorkItemInGlobalWindow<K, InputT>
       extends RichFlatMapFunction<
-          WindowedValue<KV<K, InputT>>, WindowedValue<SingletonKeyedWorkItem<K, InputT>>> {
+          WindowedValue<KV<K, InputT>>, WindowedValue<KeyedWorkItem<K, InputT>>> {
+
+    private final SerializablePipelineOptions options;
+
+    ToKeyedWorkItemInGlobalWindow(PipelineOptions options) {
+      this.options = new SerializablePipelineOptions(options);
+    }
+
+    @Override
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
+    }
 
     @Override
     public void flatMap(
         WindowedValue<KV<K, InputT>> inWithMultipleWindows,
-        Collector<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> out)
+        Collector<WindowedValue<KeyedWorkItem<K, InputT>>> out)
         throws Exception {
 
       // we need to wrap each one work item per window for now
       // since otherwise the PushbackSideInputRunner will not correctly
       // determine whether side inputs are ready
       //
-      // this is tracked as https://issues.apache.org/jira/browse/BEAM-1850
+      // this is tracked as https://github.com/apache/beam/issues/18358
       for (WindowedValue<KV<K, InputT>> in : inWithMultipleWindows.explodeWindows()) {
         SingletonKeyedWorkItem<K, InputT> workItem =
             new SingletonKeyedWorkItem<>(
@@ -1102,7 +1246,7 @@ class FlinkStreamingTransformTranslators {
     public void translateNode(
         PTransform<PCollection<T>, PCollection<T>> transform,
         FlinkStreamingTranslationContext context) {
-      Map<TupleTag<?>, PValue> allInputs = context.getInputs(transform);
+      Map<TupleTag<?>, PCollection<?>> allInputs = context.getInputs(transform);
 
       if (allInputs.isEmpty()) {
 
@@ -1121,7 +1265,8 @@ class FlinkStreamingTransformTranslators {
                 .returns(
                     new CoderTypeInformation<>(
                         WindowedValue.getFullCoder(
-                            (Coder<T>) VoidCoder.of(), GlobalWindow.Coder.INSTANCE)));
+                            (Coder<T>) VoidCoder.of(), GlobalWindow.Coder.INSTANCE),
+                        context.getPipelineOptions()));
         context.setOutputDataStream(context.getOutput(transform), result);
 
       } else {
@@ -1165,19 +1310,31 @@ class FlinkStreamingTransformTranslators {
 
   static class ToKeyedWorkItem<K, InputT>
       extends RichFlatMapFunction<
-          WindowedValue<KV<K, InputT>>, WindowedValue<SingletonKeyedWorkItem<K, InputT>>> {
+          WindowedValue<KV<K, InputT>>, WindowedValue<KeyedWorkItem<K, InputT>>> {
+
+    private final SerializablePipelineOptions options;
+
+    ToKeyedWorkItem(PipelineOptions options) {
+      this.options = new SerializablePipelineOptions(options);
+    }
+
+    @Override
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
+    }
 
     @Override
     public void flatMap(
         WindowedValue<KV<K, InputT>> inWithMultipleWindows,
-        Collector<WindowedValue<SingletonKeyedWorkItem<K, InputT>>> out)
-        throws Exception {
+        Collector<WindowedValue<KeyedWorkItem<K, InputT>>> out) {
 
       // we need to wrap each one work item per window for now
       // since otherwise the PushbackSideInputRunner will not correctly
       // determine whether side inputs are ready
       //
-      // this is tracked as https://issues.apache.org/jira/browse/BEAM-1850
+      // this is tracked as https://github.com/apache/beam/issues/18358
       for (WindowedValue<KV<K, InputT>> in : inWithMultipleWindows.explodeWindows()) {
         SingletonKeyedWorkItem<K, InputT> workItem =
             new SingletonKeyedWorkItem<>(
@@ -1188,19 +1345,75 @@ class FlinkStreamingTransformTranslators {
     }
   }
 
-  /**
-   * A translator just to vend the URN. This will need to be moved to runners-core-construction-java
-   * once SDF is reorganized appropriately.
-   */
-  private static class SplittableParDoProcessElementsTranslator
-      extends PTransformTranslation.TransformPayloadTranslator.NotSerializable<
-          SplittableParDoViaKeyedWorkItems.ProcessElements<?, ?, ?, ?>> {
+  static class ToBinaryKeyedWorkItem<K, InputT>
+      extends RichFlatMapFunction<
+          WindowedValue<KV<K, InputT>>, WindowedValue<KeyedWorkItem<K, byte[]>>> {
 
-    private SplittableParDoProcessElementsTranslator() {}
+    private final SerializablePipelineOptions options;
+    private final Coder<InputT> valueCoder;
+
+    ToBinaryKeyedWorkItem(PipelineOptions options, Coder<InputT> valueCoder) {
+      this.options = new SerializablePipelineOptions(options);
+      this.valueCoder = valueCoder;
+    }
 
     @Override
-    public String getUrn(SplittableParDoViaKeyedWorkItems.ProcessElements<?, ?, ?, ?> transform) {
-      return SPLITTABLE_PROCESS_URN;
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
+    }
+
+    @Override
+    public void flatMap(
+        WindowedValue<KV<K, InputT>> inWithMultipleWindows,
+        Collector<WindowedValue<KeyedWorkItem<K, byte[]>>> out)
+        throws CoderException {
+
+      // we need to wrap each one work item per window for now
+      // since otherwise the PushbackSideInputRunner will not correctly
+      // determine whether side inputs are ready
+      //
+      // this is tracked as https://github.com/apache/beam/issues/18358
+      for (WindowedValue<KV<K, InputT>> in : inWithMultipleWindows.explodeWindows()) {
+        final byte[] binaryValue =
+            CoderUtils.encodeToByteArray(valueCoder, in.getValue().getValue());
+        final SingletonKeyedWorkItem<K, byte[]> workItem =
+            new SingletonKeyedWorkItem<>(in.getValue().getKey(), in.withValue(binaryValue));
+        out.collect(in.withValue(workItem));
+      }
+    }
+  }
+
+  static class ToGroupByKeyResult<KeyT, ValueT>
+      extends RichFlatMapFunction<
+          WindowedValue<KV<KeyT, Iterable<byte[]>>>, WindowedValue<KV<KeyT, Iterable<ValueT>>>> {
+
+    private final SerializablePipelineOptions options;
+    private final Coder<ValueT> valueCoder;
+
+    ToGroupByKeyResult(PipelineOptions options, Coder<ValueT> valueCoder) {
+      this.options = new SerializablePipelineOptions(options);
+      this.valueCoder = valueCoder;
+    }
+
+    @Override
+    public void open(Configuration parameters) {
+      // Initialize FileSystems for any coders which may want to use the FileSystem,
+      // see https://issues.apache.org/jira/browse/BEAM-8303
+      FileSystems.setDefaultPipelineOptions(options.get());
+    }
+
+    @Override
+    public void flatMap(
+        WindowedValue<KV<KeyT, Iterable<byte[]>>> element,
+        Collector<WindowedValue<KV<KeyT, Iterable<ValueT>>>> collector)
+        throws CoderException {
+      final List<ValueT> result = new ArrayList<>();
+      for (byte[] binaryValue : element.getValue().getValue()) {
+        result.add(CoderUtils.decodeFromByteArray(valueCoder, binaryValue));
+      }
+      collector.collect(element.withValue(KV.of(element.getValue().getKey(), result)));
     }
   }
 
@@ -1219,43 +1432,9 @@ class FlinkStreamingTransformTranslators {
               new CreateStreamingFlinkViewPayloadTranslator())
           .put(
               SplittableParDoViaKeyedWorkItems.ProcessElements.class,
-              new SplittableParDoProcessElementsTranslator())
-          .put(
-              SplittableParDoViaKeyedWorkItems.GBKIntoKeyedWorkItems.class,
-              new SplittableParDoGbkIntoKeyedWorkItemsPayloadTranslator())
+              PTransformTranslation.TransformPayloadTranslator.NotSerializable.forUrn(
+                  SPLITTABLE_PROCESS_URN))
           .build();
-    }
-  }
-
-  /**
-   * A translator just to vend the URN. This will need to be moved to runners-core-construction-java
-   * once SDF is reorganized appropriately.
-   */
-  private static class SplittableParDoProcessElementsPayloadTranslator
-      extends PTransformTranslation.TransformPayloadTranslator.NotSerializable<
-          SplittableParDoViaKeyedWorkItems.ProcessElements<?, ?, ?, ?>> {
-
-    private SplittableParDoProcessElementsPayloadTranslator() {}
-
-    @Override
-    public String getUrn(SplittableParDoViaKeyedWorkItems.ProcessElements<?, ?, ?, ?> transform) {
-      return SPLITTABLE_PROCESS_URN;
-    }
-  }
-
-  /**
-   * A translator just to vend the URN. This will need to be moved to runners-core-construction-java
-   * once SDF is reorganized appropriately.
-   */
-  private static class SplittableParDoGbkIntoKeyedWorkItemsPayloadTranslator
-      extends PTransformTranslation.TransformPayloadTranslator.NotSerializable<
-          SplittableParDoViaKeyedWorkItems.GBKIntoKeyedWorkItems<?, ?>> {
-
-    private SplittableParDoGbkIntoKeyedWorkItemsPayloadTranslator() {}
-
-    @Override
-    public String getUrn(SplittableParDoViaKeyedWorkItems.GBKIntoKeyedWorkItems<?, ?> transform) {
-      return SplittableParDo.SPLITTABLE_GBKIKWI_URN;
     }
   }
 
@@ -1272,6 +1451,47 @@ class FlinkStreamingTransformTranslators {
     }
   }
 
+  /** A translator to support {@link TestStream} with Flink. */
+  private static class TestStreamTranslator<T>
+      extends FlinkStreamingPipelineTranslator.StreamTransformTranslator<TestStream<T>> {
+
+    @Override
+    void translateNode(TestStream<T> testStream, FlinkStreamingTranslationContext context) {
+      Coder<T> valueCoder = testStream.getValueCoder();
+
+      // Coder for the Elements in the TestStream
+      TestStream.TestStreamCoder<T> testStreamCoder = TestStream.TestStreamCoder.of(valueCoder);
+      final byte[] payload;
+      try {
+        payload = CoderUtils.encodeToByteArray(testStreamCoder, testStream);
+      } catch (CoderException e) {
+        throw new RuntimeException("Could not encode TestStream.", e);
+      }
+
+      SerializableFunction<byte[], TestStream<T>> testStreamDecoder =
+          bytes -> {
+            try {
+              return CoderUtils.decodeFromByteArray(
+                  TestStream.TestStreamCoder.of(valueCoder), bytes);
+            } catch (CoderException e) {
+              throw new RuntimeException("Can't decode TestStream payload.", e);
+            }
+          };
+
+      WindowedValue.FullWindowedValueCoder<T> elementCoder =
+          WindowedValue.getFullCoder(valueCoder, GlobalWindow.Coder.INSTANCE);
+
+      DataStreamSource<WindowedValue<T>> source =
+          context
+              .getExecutionEnvironment()
+              .addSource(
+                  new TestStreamSource<>(testStreamDecoder, payload),
+                  new CoderTypeInformation<>(elementCoder, context.getPipelineOptions()));
+
+      context.setOutputDataStream(context.getOutput(testStream), source);
+    }
+  }
+
   /**
    * Wrapper for {@link UnboundedSourceWrapper}, which simplifies output type, namely, removes
    * {@link ValueWithRecordId}.
@@ -1279,8 +1499,8 @@ class FlinkStreamingTransformTranslators {
   static class UnboundedSourceWrapperNoValueWithRecordId<
           OutputT, CheckpointMarkT extends UnboundedSource.CheckpointMark>
       extends RichParallelSourceFunction<WindowedValue<OutputT>>
-      implements ProcessingTimeCallback,
-          StoppableFunction,
+      implements ProcessingTimeCallbackCompat,
+          BeamStoppableFunction,
           CheckpointListener,
           CheckpointedFunction {
 
@@ -1291,7 +1511,7 @@ class FlinkStreamingTransformTranslators {
       return unboundedSourceWrapper;
     }
 
-    private UnboundedSourceWrapperNoValueWithRecordId(
+    UnboundedSourceWrapperNoValueWithRecordId(
         UnboundedSourceWrapper<OutputT, CheckpointMarkT> unboundedSourceWrapper) {
       this.unboundedSourceWrapper = unboundedSourceWrapper;
     }

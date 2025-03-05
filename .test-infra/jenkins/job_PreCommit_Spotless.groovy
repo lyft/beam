@@ -21,12 +21,25 @@ import PrecommitJobBuilder
 PrecommitJobBuilder builder = new PrecommitJobBuilder(
     scope: this,
     nameBase: 'Spotless',
-    gradleTask: 'spotlessCheck',
+    gradleTask: 'spotlessCheck checkStyleMain checkStyleTest',
     triggerPathPatterns: [
       '^buildSrc/.*$',
       '^sdks/java/.*$',
       '^runners/.*$',
       '^examples/java/.*$',
+      '^examples/kotlin/.*$',
+      '^.test-infra/jenkins/.*$',
     ]
-)
-builder.build()
+    )
+builder.build {
+  publishers {
+    recordIssues {
+      tools {
+        checkStyle {
+          pattern('**/build/reports/checkstyle/*.xml')
+        }
+      }
+      enabledForFailure(true)
+    }
+  }
+}

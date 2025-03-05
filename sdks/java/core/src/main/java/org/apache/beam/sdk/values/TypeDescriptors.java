@@ -26,6 +26,8 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.ProcessFunction;
+import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.checkerframework.checker.nullness.qual.NonNull;
 
 /**
  * A utility class for creating {@link TypeDescriptor} objects for different types, such as Java
@@ -347,7 +349,7 @@ public class TypeDescriptors {
    */
   @SuppressWarnings("unchecked")
   public static <T, V> TypeDescriptor<V> extractFromTypeParameters(
-      T instance, Class<? super T> supertype, TypeVariableExtractor<T, V> extractor) {
+      @NonNull T instance, Class<? super T> supertype, TypeVariableExtractor<T, V> extractor) {
     return extractFromTypeParameters(
         (TypeDescriptor<T>) TypeDescriptor.of(instance.getClass()), supertype, extractor);
   }
@@ -370,7 +372,7 @@ public class TypeDescriptors {
 
     // Get the actual supertype of the type being analyzed, hopefully with all type parameters
     // resolved, e.g. ProcessFunction<Integer, String>
-    TypeDescriptor supertypeDescriptor = type.getSupertype(supertype);
+    TypeDescriptor<? super T> supertypeDescriptor = type.getSupertype(supertype);
 
     // Substitute actual supertype into the extractor, e.g.
     // TypeVariableExtractor<ProcessFunction<Integer, String>, Integer>
@@ -394,6 +396,12 @@ public class TypeDescriptors {
         new TypeVariableExtractor<ProcessFunction<InputT, OutputT>, InputT>() {});
   }
 
+  /** Binary compatibility adapter for {@link #inputOf(ProcessFunction)}. */
+  public static <InputT, OutputT> TypeDescriptor<InputT> inputOf(
+      SerializableFunction<InputT, OutputT> fn) {
+    return inputOf((ProcessFunction<InputT, OutputT>) fn);
+  }
+
   /**
    * Returns a type descriptor for the output of the given {@link ProcessFunction}, subject to Java
    * type erasure: may contain unresolved type variables if the type was erased.
@@ -404,6 +412,12 @@ public class TypeDescriptors {
         fn,
         ProcessFunction.class,
         new TypeVariableExtractor<ProcessFunction<InputT, OutputT>, OutputT>() {});
+  }
+
+  /** Binary compatibility adapter for {@link #outputOf(ProcessFunction)}. */
+  public static <InputT, OutputT> TypeDescriptor<OutputT> outputOf(
+      SerializableFunction<InputT, OutputT> fn) {
+    return outputOf((ProcessFunction<InputT, OutputT>) fn);
   }
 
   /** Like {@link #inputOf(ProcessFunction)} but for {@link Contextful.Fn}. */

@@ -17,47 +17,42 @@
  */
 package org.apache.beam.runners.samza;
 
-import java.time.Duration;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.ServiceLoader;
+import java.util.Set;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
-import org.apache.beam.runners.fnexecution.GrpcFnServer;
-import org.apache.beam.runners.fnexecution.ServerFactory;
-import org.apache.beam.runners.fnexecution.control.ControlClientPool;
-import org.apache.beam.runners.fnexecution.control.FnApiControlClientPoolService;
-import org.apache.beam.runners.fnexecution.control.InstructionRequestHandler;
-import org.apache.beam.runners.fnexecution.control.JobBundleFactory;
-import org.apache.beam.runners.fnexecution.control.MapControlClientPool;
-import org.apache.beam.runners.fnexecution.control.SingleEnvironmentInstanceJobBundleFactory;
-import org.apache.beam.runners.fnexecution.data.GrpcDataService;
-import org.apache.beam.runners.fnexecution.environment.EnvironmentFactory;
-import org.apache.beam.runners.fnexecution.environment.RemoteEnvironment;
-import org.apache.beam.runners.fnexecution.state.GrpcStateService;
-import org.apache.beam.runners.samza.metrics.SamzaMetricsContainer;
+import org.apache.beam.runners.core.construction.SplittableParDo;
+import org.apache.beam.runners.core.construction.renderer.PipelineDotRenderer;
+import org.apache.beam.runners.fnexecution.provisioning.JobInfo;
+import org.apache.beam.runners.jobsubmission.PortablePipelineResult;
 import org.apache.beam.runners.samza.translation.ConfigBuilder;
+import org.apache.beam.runners.samza.translation.ConfigContext;
 import org.apache.beam.runners.samza.translation.PViewToIdMapper;
 import org.apache.beam.runners.samza.translation.PortableTranslationContext;
 import org.apache.beam.runners.samza.translation.SamzaPipelineTranslator;
 import org.apache.beam.runners.samza.translation.SamzaPortablePipelineTranslator;
 import org.apache.beam.runners.samza.translation.SamzaTransformOverrides;
+import org.apache.beam.runners.samza.translation.StateIdParser;
 import org.apache.beam.runners.samza.translation.TranslationContext;
-import org.apache.beam.runners.samza.util.PipelineDotRenderer;
+import org.apache.beam.runners.samza.util.PipelineJsonRenderer;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineRunner;
-import org.apache.beam.sdk.fn.IdGenerators;
-import org.apache.beam.sdk.fn.stream.OutboundObserverFactory;
 import org.apache.beam.sdk.metrics.MetricsEnvironment;
+import org.apache.beam.sdk.options.ExperimentalOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.options.PipelineOptionsValidator;
 import org.apache.beam.sdk.values.PValue;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterators;
 import org.apache.samza.application.StreamApplication;
 import org.apache.samza.config.Config;
-import org.apache.samza.metrics.MetricsRegistryMap;
-import org.apache.samza.operators.ContextManager;
-import org.apache.samza.operators.StreamGraph;
+import org.apache.samza.context.ExternalContext;
+import org.apache.samza.metrics.MetricsReporter;
+import org.apache.samza.metrics.MetricsReporterFactory;
 import org.apache.samza.runtime.ApplicationRunner;
-import org.apache.samza.task.TaskContext;
+import org.apache.samza.runtime.ApplicationRunners;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,180 +60,151 @@ import org.slf4j.LoggerFactory;
  * A {@link PipelineRunner} that executes the operations in the {@link Pipeline} into an equivalent
  * Samza plan.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SamzaRunner extends PipelineRunner<SamzaPipelineResult> {
   private static final Logger LOG = LoggerFactory.getLogger(SamzaRunner.class);
-  // temporarily hardcode the worker id before we start supporting multiple workers
-  private static final String SAMZA_WORKER_ID = "samza_py_worker_id";
-
-  private GrpcFnServer<FnApiControlClientPoolService> fnControlServer;
-  private GrpcFnServer<GrpcDataService> fnDataServer;
-  private GrpcFnServer<GrpcStateService> fnStateServer;
-  private ControlClientPool controlClientPool;
-  private JobBundleFactory jobBundleFactory;
-  private ExecutorService dataExecutor;
+  private static final String BEAM_DOT_GRAPH = "beamDotGraph";
+  public static final String BEAM_JSON_GRAPH = "beamJsonGraph";
 
   public static SamzaRunner fromOptions(PipelineOptions opts) {
-    final SamzaPipelineOptions samzaOptions = SamzaPipelineOptionsValidator.validate(opts);
+    final SamzaPipelineOptions samzaOptions =
+        PipelineOptionsValidator.validate(SamzaPipelineOptions.class, opts);
     return new SamzaRunner(samzaOptions);
   }
 
   private final SamzaPipelineOptions options;
+  private final SamzaPipelineLifeCycleListener listener;
 
-  public SamzaRunner(SamzaPipelineOptions options) {
+  private SamzaRunner(SamzaPipelineOptions options) {
     this.options = options;
+    final Iterator<SamzaPipelineLifeCycleListener.Registrar> listenerReg =
+        ServiceLoader.load(SamzaPipelineLifeCycleListener.Registrar.class).iterator();
+    this.listener =
+        listenerReg.hasNext() ? Iterators.getOnlyElement(listenerReg).getLifeCycleListener() : null;
   }
 
-  private static void closeAutoClosable(AutoCloseable closeable) {
-    try (AutoCloseable closer = closeable) {
-      // do nothing
-    } catch (Exception e) {
-      LOG.error(
-          "Failed to close {}. Ignore since this is shutdown process...",
-          closeable.getClass().getSimpleName(),
-          e);
+  public PortablePipelineResult runPortablePipeline(RunnerApi.Pipeline pipeline, JobInfo jobInfo) {
+    final String dotGraph = PipelineDotRenderer.toDotString(pipeline);
+    LOG.info("Portable pipeline to run DOT graph:\n{}", dotGraph);
+
+    final ConfigBuilder configBuilder = new ConfigBuilder(options);
+    SamzaPortablePipelineTranslator.createConfig(pipeline, configBuilder, options);
+    configBuilder.put(BEAM_DOT_GRAPH, dotGraph);
+
+    final Config config = configBuilder.build();
+    options.setConfigOverride(config);
+
+    if (listener != null) {
+      listener.onInit(config, options);
     }
-  }
 
-  private void setUpContextManager(
-      StreamGraph streamGraph, SamzaExecutionContext executionContext) {
-    streamGraph.withContextManager(
-        new ContextManager() {
-          @Override
-          public void init(Config config, TaskContext context) {
-            if (executionContext.getMetricsContainer() == null) {
-              final MetricsRegistryMap metricsRegistry =
-                  (MetricsRegistryMap) context.getSamzaContainerContext().metricsRegistry;
-              executionContext.setMetricsContainer(new SamzaMetricsContainer(metricsRegistry));
-            }
-
-            if (SamzaRunnerOverrideConfigs.isPortableMode(options)) {
-              if (jobBundleFactory == null) {
-                try {
-                  final long waitTimeoutMs =
-                      SamzaRunnerOverrideConfigs.getControlClientWaitTimeoutMs(options);
-                  final InstructionRequestHandler instructionHandler =
-                      controlClientPool
-                          .getSource()
-                          .take(SAMZA_WORKER_ID, Duration.ofMillis(waitTimeoutMs));
-                  final EnvironmentFactory environmentFactory =
-                      environment -> RemoteEnvironment.forHandler(environment, instructionHandler);
-                  // TODO: use JobBundleFactoryBase.WrappedSdkHarnessClient.wrapping
-                  jobBundleFactory =
-                      SingleEnvironmentInstanceJobBundleFactory.create(
-                          environmentFactory,
-                          fnDataServer,
-                          fnStateServer,
-                          IdGenerators.incrementingLongs());
-                } catch (Exception e) {
-                  throw new RuntimeException(
-                      "Running samza in Beam portable mode but failed to create job bundle factory",
-                      e);
-                }
-                executionContext.setJobBundleFactory(jobBundleFactory);
-              }
-            }
-
-            context.setUserContext(executionContext);
-          }
-
-          @Override
-          public void close() {
-            closeAutoClosable(fnControlServer);
-            fnControlServer = null;
-            closeAutoClosable(fnDataServer);
-            fnDataServer = null;
-            closeAutoClosable(fnStateServer);
-            fnStateServer = null;
-            if (dataExecutor != null) {
-              dataExecutor.shutdown();
-              dataExecutor = null;
-            }
-            controlClientPool = null;
-            closeAutoClosable(jobBundleFactory);
-            jobBundleFactory = null;
-          }
-        });
-  }
-
-  private void setUpFnApiServer() {
-    controlClientPool = MapControlClientPool.create();
-    dataExecutor = Executors.newCachedThreadPool();
-    try {
-      fnControlServer =
-          GrpcFnServer.allocatePortAndCreateFor(
-              FnApiControlClientPoolService.offeringClientsToPool(
-                  controlClientPool.getSink(), () -> SAMZA_WORKER_ID),
-              ServerFactory.createWithPortSupplier(
-                  () -> SamzaRunnerOverrideConfigs.getFnControlPort(options)));
-
-      fnDataServer =
-          GrpcFnServer.allocatePortAndCreateFor(
-              GrpcDataService.create(dataExecutor, OutboundObserverFactory.serverDirect()),
-              ServerFactory.createDefault());
-
-      fnStateServer =
-          GrpcFnServer.allocatePortAndCreateFor(
-              GrpcStateService.create(), ServerFactory.createDefault());
-    } catch (Exception e) {
-      LOG.error("Failed to set up fn api servers", e);
-      throw new RuntimeException(e);
-    }
-  }
-
-  SamzaPipelineResult runPortablePipeline(RunnerApi.Pipeline pipeline) {
-    final SamzaExecutionContext executionContext = new SamzaExecutionContext();
-    // TODO: this will be moved to setUpContextManager in samza 1.0 migration
-    setUpFnApiServer();
-    ConfigBuilder configBuilder = new ConfigBuilder(options);
-    SamzaPortablePipelineTranslator.createConfig(pipeline, configBuilder);
-    final ApplicationRunner runner = ApplicationRunner.fromConfig(configBuilder.build());
+    final SamzaExecutionContext executionContext = new SamzaExecutionContext(options);
+    final Map<String, MetricsReporterFactory> reporterFactories = getMetricsReporters();
     final StreamApplication app =
-        (streamGraph, config) -> {
-          setUpContextManager(streamGraph, executionContext);
+        appDescriptor -> {
+          appDescriptor
+              .withApplicationContainerContextFactory(executionContext.new Factory())
+              .withMetricsReporterFactories(reporterFactories);
           SamzaPortablePipelineTranslator.translate(
-              pipeline, new PortableTranslationContext(streamGraph, options));
+              pipeline, new PortableTranslationContext(appDescriptor, options, jobInfo));
         };
-    final SamzaPipelineResult result = new SamzaPipelineResult(app, runner, executionContext);
-    runner.run(app);
-    return result;
+
+    ApplicationRunner runner = runSamzaApp(app, config);
+    return new SamzaPortablePipelineResult(app, runner, executionContext, listener, config);
   }
 
   @Override
   public SamzaPipelineResult run(Pipeline pipeline) {
+    // TODO(https://github.com/apache/beam/issues/20530): Use SDF read as default for non-portable
+    // execution when we address performance issue.
+    if (!ExperimentalOptions.hasExperiment(pipeline.getOptions(), "beam_fn_api")) {
+      SplittableParDo.convertReadBasedSplittableDoFnsToPrimitiveReadsIfNecessary(pipeline);
+    }
+
     MetricsEnvironment.setMetricsSupported(true);
 
     if (LOG.isDebugEnabled()) {
-      LOG.debug("Pre-processed Beam pipeline:\n{}", PipelineDotRenderer.toDotString(pipeline));
+      LOG.debug(
+          "Pre-processed Beam pipeline in dot format:\n{}",
+          PipelineDotRenderer.toDotString(pipeline));
     }
 
     pipeline.replaceAll(SamzaTransformOverrides.getDefaultOverrides());
-
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Post-processed Beam pipeline:\n{}", PipelineDotRenderer.toDotString(pipeline));
-    }
-
-    // Add a dummy source for use in special cases (TestStream, empty flatten)
-    final PValue dummySource = pipeline.apply("Dummy Input Source", Create.of("dummy"));
     final Map<PValue, String> idMap = PViewToIdMapper.buildIdMap(pipeline);
+    final Set<String> nonUniqueStateIds = StateIdParser.scan(pipeline);
+    final ConfigContext configCtx = new ConfigContext(idMap, nonUniqueStateIds, options);
+
+    final String dotGraph = PipelineDotRenderer.toDotString(pipeline);
+    LOG.info("Beam pipeline DOT graph:\n{}", dotGraph);
+
+    final String jsonGraph = PipelineJsonRenderer.toJsonString(pipeline, configCtx);
+    LOG.info("Beam pipeline JSON graph:\n{}", jsonGraph);
 
     final ConfigBuilder configBuilder = new ConfigBuilder(options);
-    SamzaPipelineTranslator.createConfig(pipeline, options, idMap, configBuilder);
-    final ApplicationRunner runner = ApplicationRunner.fromConfig(configBuilder.build());
+    SamzaPipelineTranslator.createConfig(pipeline, configCtx, configBuilder);
+    configBuilder.put(BEAM_DOT_GRAPH, dotGraph);
+    configBuilder.put(BEAM_JSON_GRAPH, jsonGraph);
 
-    final SamzaExecutionContext executionContext = new SamzaExecutionContext();
+    final Config config = configBuilder.build();
+    options.setConfigOverride(config);
+
+    if (listener != null) {
+      listener.onInit(config, options);
+    }
+
+    final SamzaExecutionContext executionContext = new SamzaExecutionContext(options);
+    final Map<String, MetricsReporterFactory> reporterFactories = getMetricsReporters();
 
     final StreamApplication app =
-        new StreamApplication() {
-          @Override
-          public void init(StreamGraph streamGraph, Config config) {
-            setUpContextManager(streamGraph, executionContext);
-            SamzaPipelineTranslator.translate(
-                pipeline, new TranslationContext(streamGraph, idMap, options, dummySource));
-          }
+        appDescriptor -> {
+          appDescriptor.withApplicationContainerContextFactory(executionContext.new Factory());
+          appDescriptor.withMetricsReporterFactories(reporterFactories);
+
+          SamzaPipelineTranslator.translate(
+              pipeline, new TranslationContext(appDescriptor, idMap, nonUniqueStateIds, options));
         };
 
-    final SamzaPipelineResult result = new SamzaPipelineResult(app, runner, executionContext);
-    runner.run(app);
-    return result;
+    // perform a final round of validation for the pipeline options now that all configs are
+    // generated
+    SamzaPipelineOptionsValidator.validate(options);
+    ApplicationRunner runner = runSamzaApp(app, config);
+    return new SamzaPipelineResult(runner, executionContext, listener, config);
+  }
+
+  private Map<String, MetricsReporterFactory> getMetricsReporters() {
+    if (options.getMetricsReporters() != null) {
+      final Map<String, MetricsReporterFactory> reporters = new HashMap<>();
+      for (int i = 0; i < options.getMetricsReporters().size(); i++) {
+        final String name = "beam-metrics-reporter-" + i;
+        final MetricsReporter reporter = options.getMetricsReporters().get(i);
+
+        reporters.put(name, (MetricsReporterFactory) (nm, processorId, config) -> reporter);
+        LOG.info(name + ": " + reporter.getClass().getName());
+      }
+      return reporters;
+    } else {
+      return Collections.emptyMap();
+    }
+  }
+
+  private ApplicationRunner runSamzaApp(StreamApplication app, Config config) {
+
+    final ApplicationRunner runner = ApplicationRunners.getApplicationRunner(app, config);
+
+    ExternalContext externalContext = null;
+    if (listener != null) {
+      externalContext = listener.onStart();
+    }
+
+    runner.run(externalContext);
+
+    if (listener != null
+        && options.getSamzaExecutionEnvironment() == SamzaExecutionEnvironment.YARN) {
+      listener.onSubmit();
+    }
+
+    return runner;
   }
 }

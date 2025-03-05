@@ -26,9 +26,16 @@ import java.math.BigDecimal;
 import org.apache.beam.sdk.extensions.euphoria.core.client.io.Collector;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TypeDescriptors;
+import org.joda.time.Duration;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /** Test operator FlatMap. */
+@RunWith(JUnit4.class)
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class FlatMapTest {
 
   @Test
@@ -87,5 +94,29 @@ public class FlatMapTest {
         FlatMap.of(dataset).using((String s, Collector<String> c) -> c.collect(s)).output();
     final FlatMap map = (FlatMap) TestUtils.getProducer(mapped);
     assertFalse(map.getName().isPresent());
+  }
+
+  @Test
+  public void testBuild_TimestampSkew() {
+    final PCollection<String> dataset = TestUtils.createMockDataset(TypeDescriptors.strings());
+    final PCollection<String> mapped =
+        FlatMap.of(dataset)
+            .using((String s, Collector<String> c) -> c.collect(s))
+            .eventTimeBy(in -> System.currentTimeMillis(), Duration.millis(100))
+            .output();
+    final FlatMap map = (FlatMap) TestUtils.getProducer(mapped);
+    assertEquals(100, map.getAllowedTimestampSkew().getMillis());
+  }
+
+  @Test
+  public void testBuild_NoTimestampSkew() {
+    final PCollection<String> dataset = TestUtils.createMockDataset(TypeDescriptors.strings());
+    final PCollection<String> mapped =
+        FlatMap.of(dataset)
+            .using((String s, Collector<String> c) -> c.collect(s))
+            .eventTimeBy(in -> System.currentTimeMillis())
+            .output();
+    final FlatMap map = (FlatMap) TestUtils.getProducer(mapped);
+    assertEquals(Long.MAX_VALUE, map.getAllowedTimestampSkew().getMillis());
   }
 }

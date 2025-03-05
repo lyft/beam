@@ -17,10 +17,10 @@
  */
 package org.apache.beam.sdk.io;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkNotNull;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Verify.verify;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Verify.verify;
 
 import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
@@ -29,7 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.NoSuchElementException;
-import javax.annotation.Nullable;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
@@ -37,7 +37,8 @@ import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,13 +63,18 @@ import org.slf4j.LoggerFactory;
  *
  * @param <T> Type of records represented by the source.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
   private static final Logger LOG = LoggerFactory.getLogger(FileBasedSource.class);
 
   private final ValueProvider<String> fileOrPatternSpec;
   private final EmptyMatchTreatment emptyMatchTreatment;
-  @Nullable private MatchResult.Metadata singleFileMetadata;
+  private MatchResult.@Nullable Metadata singleFileMetadata;
   private final Mode mode;
+
+  private final AtomicReference<@Nullable Long> filesSizeBytes;
 
   /** A given {@code FileBasedSource} represents a file resource of one of these types. */
   public enum Mode {
@@ -88,6 +94,7 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
     this.mode = Mode.FILEPATTERN;
     this.emptyMatchTreatment = emptyMatchTreatment;
     this.fileOrPatternSpec = fileOrPatternSpec;
+    this.filesSizeBytes = new AtomicReference<>();
   }
 
   /**
@@ -120,6 +127,7 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
     mode = Mode.SINGLE_FILE_OR_SUBRANGE;
     this.singleFileMetadata = checkNotNull(fileMetadata, "fileMetadata");
     this.fileOrPatternSpec = StaticValueProvider.of(fileMetadata.resourceId().toString());
+    this.filesSizeBytes = new AtomicReference<>();
 
     // This field will be unused in this mode.
     this.emptyMatchTreatment = EmptyMatchTreatment.DISALLOW;
@@ -130,7 +138,7 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
    *
    * @throws IllegalArgumentException if this source is in {@link Mode#FILEPATTERN} mode.
    */
-  protected final MatchResult.Metadata getSingleFileMetadata() {
+  public final MatchResult.Metadata getSingleFileMetadata() {
     checkArgument(
         mode == Mode.SINGLE_FILE_OR_SUBRANGE,
         "This function should only be called for a single file, not %s",
@@ -219,6 +227,11 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
     String fileOrPattern = fileOrPatternSpec.get();
 
     if (mode == Mode.FILEPATTERN) {
+      Long maybeNumBytes = filesSizeBytes.get();
+      if (maybeNumBytes != null) {
+        return maybeNumBytes;
+      }
+
       long totalSize = 0;
       List<Metadata> allMatches = FileSystems.match(fileOrPattern, emptyMatchTreatment).metadata();
       for (Metadata metadata : allMatches) {
@@ -229,6 +242,8 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
           fileOrPattern,
           allMatches.size(),
           totalSize);
+
+      filesSizeBytes.compareAndSet(null, totalSize);
       return totalSize;
     } else {
       long start = getStartOffset();
@@ -436,7 +451,7 @@ public abstract class FileBasedSource<T> extends OffsetBasedSource<T> {
   public abstract static class FileBasedReader<T> extends OffsetBasedReader<T> {
 
     // Initialized in startImpl
-    @Nullable private ReadableByteChannel channel = null;
+    private @Nullable ReadableByteChannel channel = null;
 
     /**
      * Subclasses should not perform IO operations at the constructor. All IO operations should be

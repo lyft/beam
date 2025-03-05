@@ -17,7 +17,7 @@
  */
 package org.apache.beam.sdk.io.xml;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.value.AutoValue;
 import java.io.IOException;
@@ -27,7 +27,6 @@ import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import javax.annotation.Nullable;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
 import javax.xml.bind.Marshaller;
@@ -41,6 +40,7 @@ import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.OffsetBasedSource;
 import org.apache.beam.sdk.io.ReadAllViaFileBasedSource;
 import org.apache.beam.sdk.io.fs.ResourceId;
+import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.SerializableFunction;
@@ -49,9 +49,13 @@ import org.apache.beam.sdk.transforms.display.HasDisplayData;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Transforms for reading and writing XML files using JAXB mappers. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class XmlIO {
   // CHECKSTYLE.OFF: JavadocStyle
   /**
@@ -153,20 +157,16 @@ public class XmlIO {
 
   @AutoValue
   abstract static class MappingConfiguration<T> implements HasDisplayData, Serializable {
-    @Nullable
-    abstract String getRootElement();
 
-    @Nullable
-    abstract String getRecordElement();
+    abstract @Nullable String getRootElement();
 
-    @Nullable
-    abstract Class<T> getRecordClass();
+    abstract @Nullable String getRecordElement();
 
-    @Nullable
-    abstract String getCharset();
+    abstract @Nullable Class<T> getRecordClass();
 
-    @Nullable
-    abstract ValidationEventHandler getValidationEventHandler();
+    abstract @Nullable String getCharset();
+
+    abstract @Nullable ValidationEventHandler getValidationEventHandler();
 
     abstract Builder<T> toBuilder();
 
@@ -231,8 +231,7 @@ public class XmlIO {
   public abstract static class Read<T> extends PTransform<PBegin, PCollection<T>> {
     abstract MappingConfiguration<T> getConfiguration();
 
-    @Nullable
-    abstract String getFileOrPatternSpec();
+    abstract @Nullable ValueProvider<String> getFileOrPatternSpec();
 
     abstract Compression getCompression();
 
@@ -244,7 +243,7 @@ public class XmlIO {
     abstract static class Builder<T> {
       abstract Builder<T> setConfiguration(MappingConfiguration<T> configuration);
 
-      abstract Builder<T> setFileOrPatternSpec(String fileOrPatternSpec);
+      abstract Builder<T> setFileOrPatternSpec(ValueProvider<String> fileOrPatternSpec);
 
       abstract Builder<T> setCompression(Compression compression);
 
@@ -291,6 +290,14 @@ public class XmlIO {
      * file should be of the form defined in {@link #read}.
      */
     public Read<T> from(String fileOrPatternSpec) {
+      return from(StaticValueProvider.of(fileOrPatternSpec));
+    }
+
+    /**
+     * Reads a single XML file or a set of XML files defined by a Java "glob" file pattern. Each XML
+     * file should be of the form defined in {@link #read}. Using ValueProviders.
+     */
+    public Read<T> from(ValueProvider<String> fileOrPatternSpec) {
       return toBuilder().setFileOrPatternSpec(fileOrPatternSpec).build();
     }
 
@@ -371,9 +378,7 @@ public class XmlIO {
 
     @VisibleForTesting
     BoundedSource<T> createSource() {
-      return CompressedSource.from(
-              new XmlSource<>(
-                  StaticValueProvider.of(getFileOrPatternSpec()), getConfiguration(), 1L))
+      return CompressedSource.from(new XmlSource<>(getFileOrPatternSpec(), getConfiguration(), 1L))
           .withCompression(getCompression());
     }
 
@@ -455,17 +460,14 @@ public class XmlIO {
   /** Implementation of {@link #write}. */
   @AutoValue
   public abstract static class Write<T> extends PTransform<PCollection<T>, PDone> {
-    @Nullable
-    abstract String getFilenamePrefix();
 
-    @Nullable
-    abstract Class<T> getRecordClass();
+    abstract @Nullable String getFilenamePrefix();
 
-    @Nullable
-    abstract String getRootElement();
+    abstract @Nullable Class<T> getRecordClass();
 
-    @Nullable
-    abstract String getCharset();
+    abstract @Nullable String getRootElement();
+
+    abstract @Nullable String getCharset();
 
     abstract Builder<T> toBuilder();
 
@@ -616,8 +618,7 @@ public class XmlIO {
   public abstract static class Sink<T> implements FileIO.Sink<T> {
     abstract Class<T> getRecordClass();
 
-    @Nullable
-    abstract String getRootElement();
+    abstract @Nullable String getRootElement();
 
     abstract String getCharset();
 
@@ -673,6 +674,7 @@ public class XmlIO {
     @Override
     public void flush() throws IOException {
       outputStream.write(("\n</" + getRootElement() + ">").getBytes(Charset.forName(getCharset())));
+      outputStream.flush();
     }
   }
 }

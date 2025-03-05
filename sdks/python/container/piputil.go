@@ -20,25 +20,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/apache/beam/sdks/go/pkg/beam/util/execx"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/util/execx"
 )
-
-var (
-	pip = pipLocation()
-)
-
-func pipLocation() string {
-  if v, ok := os.LookupEnv("pip"); ok {
-    return v
-  }
-  return "/usr/local/bin/pip"
-}
 
 // pipInstallRequirements installs the given requirement, if present.
 func pipInstallRequirements(files []string, dir, name string) error {
@@ -48,18 +37,30 @@ func pipInstallRequirements(files []string, dir, name string) error {
 			// as possible PyPI downloads. In the first round the --find-links
 			// option will make sure that only things staged in the worker will be
 			// used without following their dependencies.
-			args := []string{"install", "-r", filepath.Join(dir, name), "--no-index", "--no-deps", "--find-links", dir}
-			if err := execx.Execute(pip, args...); err != nil {
-				return err
+			args := []string{"-m", "pip", "install", "-q", "-r", filepath.Join(dir, name), "--no-cache-dir", "--disable-pip-version-check", "--no-index", "--no-deps", "--find-links", dir}
+			if err := execx.Execute("python", args...); err != nil {
+				fmt.Println("Some packages could not be installed solely from the requirements cache. Installing packages from PyPI.")
 			}
 			// The second install round opens up the search for packages on PyPI and
 			// also installs dependencies. The key is that if all the packages have
 			// been installed in the first round then this command will be a no-op.
-			args = []string{"install", "-r", filepath.Join(dir, name), "--find-links", dir}
-			return execx.Execute(pip, args...)
+			args = []string{"-m", "pip", "install", "-q", "-r", filepath.Join(dir, name), "--no-cache-dir", "--disable-pip-version-check", "--find-links", dir}
+			return execx.Execute("python", args...)
 		}
 	}
 	return nil
+}
+
+// isPackageInstalled checks if the given package is installed in the
+// environment.
+func isPackageInstalled(pkgName string) bool {
+	cmd := exec.Command("python", "-m", "pip", "show", pkgName)
+	if err := cmd.Run(); err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return false
+		}
+	}
+	return true
 }
 
 // pipInstallPackage installs the given package, if present.
@@ -83,23 +84,23 @@ func pipInstallPackage(files []string, dir, name string, force, optional bool, e
 				// avoiding reinstallation of dependencies.  Note now that if any needed
 				// dependencies were not installed, they will still be missing.
 				//
-				// Next, we run "pip install" on the package without any flags.  Since the
+				// Next, we run "pip install" on the package without these flags.  Since the
 				// installed version will match the package specified, the package itself
 				// will not be reinstalled, but its dependencies will now be resolved and
 				// installed if necessary.  This achieves our goal outlined above.
-				args := []string{"install", "--upgrade", "--force-reinstall", "--no-deps",
+				args := []string{"-m", "pip", "install", "-q", "--no-cache-dir", "--disable-pip-version-check", "--upgrade", "--force-reinstall", "--no-deps",
 					filepath.Join(dir, packageSpec)}
-				err := execx.Execute(pip, args...)
+				err := execx.Execute("python", args...)
 				if err != nil {
 					return err
 				}
-				args = []string{"install", filepath.Join(dir, packageSpec)}
-				return execx.Execute(pip, args...)
+				args = []string{"-m", "pip", "install", "-q", "--no-cache-dir", "--disable-pip-version-check", filepath.Join(dir, packageSpec)}
+				return execx.Execute("python", args...)
 			}
 
 			// Case when we do not perform a forced reinstall.
-			args := []string{"install", filepath.Join(dir, packageSpec)}
-			return execx.Execute(pip, args...)
+			args := []string{"-m", "pip", "install", "-q", "--no-cache-dir", "--disable-pip-version-check", filepath.Join(dir, packageSpec)}
+			return execx.Execute("python", args...)
 		}
 	}
 	if optional {
@@ -118,7 +119,7 @@ func installExtraPackages(files []string, extraPackagesFile, dir string) error {
 		}
 
 		// Found the manifest. Install extra packages.
-		manifest, err := ioutil.ReadFile(filepath.Join(dir, extraPackagesFile))
+		manifest, err := os.ReadFile(filepath.Join(dir, extraPackagesFile))
 		if err != nil {
 			return fmt.Errorf("failed to read extra packages manifest file: %v", err)
 		}
@@ -159,8 +160,11 @@ func findBeamSdkWhl(files []string, acceptableWhlSpecs []string) string {
 // SDK from source tarball provided in sdkSrcFile.
 func installSdk(files []string, workDir string, sdkSrcFile string, acceptableWhlSpecs []string, required bool) error {
 	sdkWhlFile := findBeamSdkWhl(files, acceptableWhlSpecs)
+
 	if sdkWhlFile != "" {
-		err := pipInstallPackage(files, workDir, sdkWhlFile, false, false, []string{"gcp"})
+		// by default, pip rejects to install wheel if same version already installed
+		isDev := strings.Contains(sdkWhlFile, ".dev")
+		err := pipInstallPackage(files, workDir, sdkWhlFile, isDev, false, []string{"gcp"})
 		if err == nil {
 			return nil
 		}

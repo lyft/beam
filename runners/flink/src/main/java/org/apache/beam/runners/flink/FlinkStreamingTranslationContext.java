@@ -17,7 +17,7 @@
  */
 package org.apache.beam.runners.flink;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -34,7 +34,8 @@ import org.apache.beam.sdk.values.PInput;
 import org.apache.beam.sdk.values.POutput;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -43,24 +44,27 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
  * Helper for keeping track of which {@link DataStream DataStreams} map to which {@link PTransform
  * PTransforms}.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class FlinkStreamingTranslationContext {
 
   private final StreamExecutionEnvironment env;
   private final PipelineOptions options;
 
   /**
-   * Keeps a mapping between the output value of the PTransform (in Dataflow) and the Flink Operator
-   * that produced it, after the translation of the correspondinf PTransform to its Flink
-   * equivalent.
+   * Keeps a mapping between the output value of the PTransform and the Flink Operator that produced
+   * it, after the translation of the correspondinf PTransform to its Flink equivalent.
    */
-  private final Map<PValue, DataStream<?>> dataStreams;
+  private final Map<PValue, DataStream<?>> dataStreams = new HashMap<>();
+
+  private final Map<PValue, PTransform<?, ?>> producers = new HashMap<>();
 
   private AppliedPTransform<?, ?, ?> currentTransform;
 
   public FlinkStreamingTranslationContext(StreamExecutionEnvironment env, PipelineOptions options) {
     this.env = checkNotNull(env);
     this.options = checkNotNull(options);
-    this.dataStreams = new HashMap<>();
   }
 
   public StreamExecutionEnvironment getExecutionEnvironment() {
@@ -77,9 +81,17 @@ class FlinkStreamingTranslationContext {
   }
 
   public void setOutputDataStream(PValue value, DataStream<?> set) {
+    final PTransform<?, ?> previousProducer = producers.put(value, currentTransform.getTransform());
+    Preconditions.checkArgument(
+        previousProducer == null, "PValue can only have a single producer.");
     if (!dataStreams.containsKey(value)) {
       dataStreams.put(value, set);
     }
+  }
+
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  <T extends PValue> PTransform<?, T> getProducer(T value) {
+    return (PTransform) producers.get(value);
   }
 
   /**
@@ -92,8 +104,7 @@ class FlinkStreamingTranslationContext {
   }
 
   public <T> Coder<WindowedValue<T>> getWindowedInputCoder(PCollection<T> collection) {
-    Coder<T> valueCoder = collection.getCoder();
-
+    final Coder<T> valueCoder = collection.getCoder();
     return WindowedValue.getFullCoder(
         valueCoder, collection.getWindowingStrategy().getWindowFn().windowCoder());
   }
@@ -110,12 +121,7 @@ class FlinkStreamingTranslationContext {
 
   @SuppressWarnings("unchecked")
   public <T> TypeInformation<WindowedValue<T>> getTypeInfo(PCollection<T> collection) {
-    Coder<T> valueCoder = collection.getCoder();
-    WindowedValue.FullWindowedValueCoder<T> windowedValueCoder =
-        WindowedValue.getFullCoder(
-            valueCoder, collection.getWindowingStrategy().getWindowFn().windowCoder());
-
-    return new CoderTypeInformation<>(windowedValueCoder);
+    return new CoderTypeInformation<>(getWindowedInputCoder(collection), options);
   }
 
   public AppliedPTransform<?, ?, ?> getCurrentTransform() {
@@ -127,7 +133,7 @@ class FlinkStreamingTranslationContext {
     return (T) Iterables.getOnlyElement(TransformInputs.nonAdditionalInputs(currentTransform));
   }
 
-  public <T extends PInput> Map<TupleTag<?>, PValue> getInputs(PTransform<T, ?> transform) {
+  public <T extends PInput> Map<TupleTag<?>, PCollection<?>> getInputs(PTransform<T, ?> transform) {
     return currentTransform.getInputs();
   }
 
@@ -136,7 +142,7 @@ class FlinkStreamingTranslationContext {
     return (T) Iterables.getOnlyElement(currentTransform.getOutputs().values());
   }
 
-  public <OutputT extends POutput> Map<TupleTag<?>, PValue> getOutputs(
+  public <OutputT extends POutput> Map<TupleTag<?>, PCollection<?>> getOutputs(
       PTransform<?, OutputT> transform) {
     return currentTransform.getOutputs();
   }

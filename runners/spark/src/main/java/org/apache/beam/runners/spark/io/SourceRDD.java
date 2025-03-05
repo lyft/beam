@@ -17,8 +17,8 @@
  */
 package org.apache.beam.runners.spark.io;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -27,17 +27,16 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import org.apache.beam.runners.core.construction.SerializablePipelineOptions;
-import org.apache.beam.runners.core.metrics.MetricsContainerStepMap;
 import org.apache.beam.runners.spark.SparkPipelineOptions;
 import org.apache.beam.runners.spark.metrics.MetricsAccumulator;
+import org.apache.beam.runners.spark.metrics.MetricsContainerStepMapAccumulator;
 import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.Source;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.metrics.MetricsContainer;
 import org.apache.beam.sdk.metrics.MetricsEnvironment;
 import org.apache.beam.sdk.util.WindowedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.spark.Accumulator;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
 import org.apache.spark.Dependency;
 import org.apache.spark.HashPartitioner;
 import org.apache.spark.InterruptibleIterator;
@@ -53,6 +52,10 @@ import scala.Option;
 import scala.collection.JavaConversions;
 
 /** Classes implementing Beam {@link Source} {@link RDD}s. */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SourceRDD {
 
   /**
@@ -67,7 +70,7 @@ public class SourceRDD {
     private final int numPartitions;
     private final long bundleSize;
     private final String stepName;
-    private final Accumulator<MetricsContainerStepMap> metricsAccum;
+    private final MetricsContainerStepMapAccumulator metricsAccum;
 
     // to satisfy Scala API.
     private static final scala.collection.immutable.Seq<Dependency<?>> NIL =
@@ -136,7 +139,7 @@ public class SourceRDD {
     @Override
     public scala.collection.Iterator<WindowedValue<T>> compute(
         final Partition split, final TaskContext context) {
-      final MetricsContainer metricsContainer = metricsAccum.localValue().getContainer(stepName);
+      final MetricsContainer metricsContainer = metricsAccum.value().getContainer(stepName);
 
       @SuppressWarnings("unchecked")
       final BoundedSource.BoundedReader<T> reader = createReader((SourcePartition<T>) split);
@@ -274,7 +277,7 @@ public class SourceRDD {
       return 41 * (41 + rddId) + index;
     }
 
-    public Source<T> getSource() {
+    Source<T> getSource() {
       return source;
     }
   }
@@ -327,7 +330,8 @@ public class SourceRDD {
     @Override
     public Option<Partitioner> partitioner() {
       // setting the partitioner helps to "keep" the same partitioner in the following
-      // mapWithState read for Read.Unbounded, preventing a post-mapWithState shuffle.
+      // mapWithState read for SplittableParDo.PrimitiveUnboundedRead, preventing a
+      // post-mapWithState shuffle.
       return scala.Some.apply(partitioner);
     }
 

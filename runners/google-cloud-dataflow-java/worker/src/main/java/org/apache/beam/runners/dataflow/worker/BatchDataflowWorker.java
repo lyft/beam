@@ -21,42 +21,30 @@ import com.google.api.services.dataflow.model.MapTask;
 import com.google.api.services.dataflow.model.WorkItem;
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.List;
+import java.util.Collection;
 import java.util.function.Function;
-import javax.annotation.Nullable;
-import org.apache.beam.model.fnexecution.v1.BeamFnApi.RemoteGrpcPort;
-import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.core.metrics.ExecutionStateSampler;
 import org.apache.beam.runners.dataflow.DataflowRunner;
 import org.apache.beam.runners.dataflow.options.DataflowWorkerHarnessOptions;
-import org.apache.beam.runners.dataflow.worker.SdkHarnessRegistry.SdkWorkerHarness;
 import org.apache.beam.runners.dataflow.worker.apiary.FixMultiOutputInfosOnParDoInstructions;
 import org.apache.beam.runners.dataflow.worker.counters.CounterSet;
-import org.apache.beam.runners.dataflow.worker.graph.CloneAmbiguousFlattensFunction;
-import org.apache.beam.runners.dataflow.worker.graph.CreateExecutableStageNodeFunction;
-import org.apache.beam.runners.dataflow.worker.graph.CreateRegisterFnOperationFunction;
-import org.apache.beam.runners.dataflow.worker.graph.DeduceFlattenLocationsFunction;
-import org.apache.beam.runners.dataflow.worker.graph.DeduceNodeLocationsFunction;
 import org.apache.beam.runners.dataflow.worker.graph.Edges.Edge;
-import org.apache.beam.runners.dataflow.worker.graph.LengthPrefixUnknownCoders;
 import org.apache.beam.runners.dataflow.worker.graph.MapTaskToNetworkFunction;
 import org.apache.beam.runners.dataflow.worker.graph.Networks;
 import org.apache.beam.runners.dataflow.worker.graph.Nodes.Node;
-import org.apache.beam.runners.dataflow.worker.graph.Nodes.RemoteGrpcPortNode;
-import org.apache.beam.runners.dataflow.worker.graph.RegisterNodeFunction;
-import org.apache.beam.runners.dataflow.worker.graph.ReplacePgbkWithPrecombineFunction;
 import org.apache.beam.runners.dataflow.worker.status.DebugCapture;
+import org.apache.beam.runners.dataflow.worker.status.DebugCapture.Capturable;
 import org.apache.beam.runners.dataflow.worker.status.WorkerStatusPages;
 import org.apache.beam.runners.dataflow.worker.util.MemoryMonitor;
 import org.apache.beam.sdk.fn.IdGenerator;
 import org.apache.beam.sdk.fn.IdGenerators;
 import org.apache.beam.sdk.util.Weighted;
 import org.apache.beam.sdk.util.WeightedValue;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Optional;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.Cache;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.cache.CacheBuilder;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.MutableNetwork;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Optional;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.Cache;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.cache.CacheBuilder;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.MutableNetwork;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +55,9 @@ import org.slf4j.LoggerFactory;
  * <p>DataflowWorker presents one public interface, getAndPerformWork(), which uses the
  * WorkUnitClient to get work, execute it, and update the work.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class BatchDataflowWorker implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(BatchDataflowWorker.class);
 
@@ -115,7 +106,7 @@ public class BatchDataflowWorker implements Closeable {
    */
   private final Cache<?, ?> sideInputWeakReferenceCache;
 
-  private static final int DEFAULT_STATUS_PORT = 18081;
+  private static final int DEFAULT_STATUS_PORT = 8081;
 
   /** Status pages returning health of worker. */
   private WorkerStatusPages statusPages;
@@ -140,7 +131,6 @@ public class BatchDataflowWorker implements Closeable {
   /** How many concurrent write operations to a cache should we allow. */
   private static final int CACHE_CONCURRENCY_LEVEL = 4 * Runtime.getRuntime().availableProcessors();
 
-  private final SdkHarnessRegistry sdkHarnessRegistry;
   private final Function<MapTask, MutableNetwork<Node, Edge>> mapTaskToNetwork;
 
   private final MemoryMonitor memoryMonitor;
@@ -156,40 +146,14 @@ public class BatchDataflowWorker implements Closeable {
   static BatchDataflowWorker forBatchIntrinsicWorkerHarness(
       WorkUnitClient workUnitClient, DataflowWorkerHarnessOptions options) {
     return new BatchDataflowWorker(
-        null,
-        SdkHarnessRegistries.emptySdkHarnessRegistry(),
-        workUnitClient,
-        IntrinsicMapTaskExecutorFactory.defaultFactory(),
-        options);
-  }
-
-  /**
-   * Returns a {@link BatchDataflowWorker} configured to execute user functions via the Beam "Fn
-   * API".
-   *
-   * <p>This is also known as the "portable" or "Beam model" approach.
-   */
-  static BatchDataflowWorker forBatchFnWorkerHarness(
-      @Nullable RunnerApi.Pipeline pipeline,
-      SdkHarnessRegistry sdkHarnessRegistry,
-      WorkUnitClient workUnitClient,
-      DataflowWorkerHarnessOptions options) {
-    return new BatchDataflowWorker(
-        pipeline,
-        sdkHarnessRegistry,
-        workUnitClient,
-        BeamFnMapTaskExecutorFactory.defaultFactory(),
-        options);
+        workUnitClient, IntrinsicMapTaskExecutorFactory.defaultFactory(), options);
   }
 
   protected BatchDataflowWorker(
-      @Nullable RunnerApi.Pipeline pipeline,
-      SdkHarnessRegistry sdkHarnessRegistry,
       WorkUnitClient workUnitClient,
       DataflowMapTaskExecutorFactory mapTaskExecutorFactory,
       DataflowWorkerHarnessOptions options) {
     this.mapTaskExecutorFactory = mapTaskExecutorFactory;
-    this.sdkHarnessRegistry = sdkHarnessRegistry;
     this.workUnitClient = workUnitClient;
     this.options = options;
 
@@ -209,53 +173,15 @@ public class BatchDataflowWorker implements Closeable {
             .build();
 
     this.memoryMonitor = MemoryMonitor.fromOptions(options);
-    this.statusPages = WorkerStatusPages.create(DEFAULT_STATUS_PORT, this.memoryMonitor);
+    this.statusPages =
+        WorkerStatusPages.create(DEFAULT_STATUS_PORT, this.memoryMonitor, () -> true);
 
     if (!DataflowRunner.hasExperiment(options, "disable_debug_capture")) {
       this.debugCaptureManager =
           initializeAndStartDebugCaptureManager(options, statusPages.getDebugCapturePages());
     }
 
-    // TODO: this conditional -> two implementations of common interface, or
-    // param/injection
-    if (DataflowRunner.hasExperiment(options, "beam_fn_api")) {
-      Function<MutableNetwork<Node, Edge>, MutableNetwork<Node, Edge>> transformToRunnerNetwork;
-      Function<MutableNetwork<Node, Edge>, Node> sdkFusedStage;
-      Function<MutableNetwork<Node, Edge>, MutableNetwork<Node, Edge>> lengthPrefixUnknownCoders =
-          LengthPrefixUnknownCoders::forSdkNetwork;
-      if (DataflowRunner.hasExperiment(options, "use_executable_stage_bundle_execution")) {
-        sdkFusedStage = new CreateExecutableStageNodeFunction(pipeline, idGenerator);
-        transformToRunnerNetwork =
-            new CreateRegisterFnOperationFunction(
-                idGenerator,
-                this::createPortNode,
-                lengthPrefixUnknownCoders.andThen(sdkFusedStage),
-                true);
-      } else {
-        sdkFusedStage =
-            pipeline == null
-                ? RegisterNodeFunction.withoutPipeline(
-                    idGenerator, sdkHarnessRegistry.beamFnStateApiServiceDescriptor())
-                : RegisterNodeFunction.forPipeline(
-                    pipeline, idGenerator, sdkHarnessRegistry.beamFnStateApiServiceDescriptor());
-        transformToRunnerNetwork =
-            new CreateRegisterFnOperationFunction(
-                idGenerator,
-                this::createPortNode,
-                lengthPrefixUnknownCoders.andThen(sdkFusedStage),
-                false);
-      }
-      mapTaskToNetwork =
-          mapTaskToBaseNetwork
-              .andThen(new ReplacePgbkWithPrecombineFunction())
-              .andThen(new DeduceNodeLocationsFunction())
-              .andThen(new DeduceFlattenLocationsFunction())
-              .andThen(new CloneAmbiguousFlattensFunction())
-              .andThen(transformToRunnerNetwork)
-              .andThen(LengthPrefixUnknownCoders::andReplaceForRunnerNetwork);
-    } else {
-      mapTaskToNetwork = mapTaskToBaseNetwork;
-    }
+    this.mapTaskToNetwork = mapTaskToBaseNetwork;
 
     this.memoryMonitorThread = startMemoryMonitorThread(memoryMonitor);
 
@@ -263,7 +189,7 @@ public class BatchDataflowWorker implements Closeable {
   }
 
   private static DebugCapture.Manager initializeAndStartDebugCaptureManager(
-      DataflowWorkerHarnessOptions options, List<DebugCapture.Capturable> debugCapturePages) {
+      DataflowWorkerHarnessOptions options, Collection<Capturable> debugCapturePages) {
     DebugCapture.Manager result = new DebugCapture.Manager(options, debugCapturePages);
     result.start();
     return result;
@@ -276,17 +202,6 @@ public class BatchDataflowWorker implements Closeable {
     result.setName("MemoryMonitor");
     result.start();
     return result;
-  }
-
-  private Node createPortNode(String predecessorId, String successorId) {
-    return RemoteGrpcPortNode.create(
-        RemoteGrpcPort.newBuilder()
-            .setApiServiceDescriptor(sdkHarnessRegistry.beamFnDataApiServiceDescriptor())
-            .build(),
-        idGenerator.getId(),
-        idGenerator.getId(),
-        predecessorId,
-        successorId);
   }
 
   /**
@@ -318,7 +233,6 @@ public class BatchDataflowWorker implements Closeable {
     LOG.debug("Executing: {}", workItem);
 
     DataflowWorkExecutor worker = null;
-    SdkWorkerHarness sdkWorkerHarness = sdkHarnessRegistry.getAvailableWorkerAndAssignWork();
     try {
       // Populate PipelineOptions with data from work unit.
       options.setProject(workItem.getProjectId());
@@ -348,12 +262,9 @@ public class BatchDataflowWorker implements Closeable {
         if (LOG.isDebugEnabled()) {
           LOG.debug("Network as Graphviz .dot: {}", Networks.toDot(network));
         }
+
         worker =
             mapTaskExecutorFactory.create(
-                sdkWorkerHarness.getControlClientHandler(),
-                sdkWorkerHarness.getGrpcDataFnServer(),
-                sdkHarnessRegistry.beamFnDataApiServiceDescriptor(),
-                sdkWorkerHarness.getGrpcStateFnServer(),
                 network,
                 options,
                 stageName,
@@ -376,7 +287,7 @@ public class BatchDataflowWorker implements Closeable {
       workItemStatusClient.setWorker(worker, executionContext);
 
       DataflowWorkProgressUpdater progressUpdater =
-          new DataflowWorkProgressUpdater(workItemStatusClient, workItem, worker);
+          new DataflowWorkProgressUpdater(workItemStatusClient, workItem, worker, options);
       executeWork(worker, progressUpdater);
       workItemStatusClient.reportSuccess();
       return true;
@@ -395,9 +306,6 @@ public class BatchDataflowWorker implements Closeable {
                   + "been marked for retry.",
               exn);
         }
-      }
-      if (sdkWorkerHarness != null) {
-        sdkHarnessRegistry.completeWork(sdkWorkerHarness);
       }
     }
   }
@@ -437,7 +345,7 @@ public class BatchDataflowWorker implements Closeable {
     try {
       this.memoryMonitorThread.join(timeoutMilliSec);
     } catch (InterruptedException ex) {
-      LOG.warn("Failed to wait for monitor thread to exit. Ex: {}", ex);
+      LOG.warn("Failed to wait for monitor thread to exit.", ex);
     }
     if (this.memoryMonitorThread.isAlive()) {
       LOG.warn("memoryMonitorThread didn't exit. Please, check for potential memory leaks.");

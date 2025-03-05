@@ -27,6 +27,8 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * A test of {@link ElasticsearchIO} on an independent Elasticsearch v5.x instance.
@@ -49,6 +51,7 @@ import org.junit.Test;
  * <p>It is likely that you will need to configure <code>thread_pool.bulk.queue_size: 250</code> (or
  * higher) in the backend Elasticsearch server for this test to run.
  */
+@RunWith(JUnit4.class)
 public class ElasticsearchIOIT {
   private static RestClient restClient;
   private static ElasticsearchPipelineOptions options;
@@ -79,8 +82,8 @@ public class ElasticsearchIOIT {
 
   @AfterClass
   public static void afterClass() throws Exception {
-    ElasticSearchIOTestUtils.deleteIndex(writeConnectionConfiguration, restClient);
-    ElasticSearchIOTestUtils.deleteIndex(updateConnectionConfiguration, restClient);
+    ElasticsearchIOTestUtils.deleteIndex(writeConnectionConfiguration, restClient);
+    ElasticsearchIOTestUtils.deleteIndex(updateConnectionConfiguration, restClient);
     restClient.close();
   }
 
@@ -105,6 +108,15 @@ public class ElasticsearchIOIT {
   }
 
   @Test
+  public void testWriteVolumeStateful() throws Exception {
+    // cannot share elasticsearchIOTestCommon because tests run in parallel.
+    ElasticsearchIOTestCommon elasticsearchIOTestCommonWrite =
+        new ElasticsearchIOTestCommon(writeConnectionConfiguration, restClient, true);
+    elasticsearchIOTestCommonWrite.setPipeline(pipeline);
+    elasticsearchIOTestCommonWrite.testWriteStateful();
+  }
+
+  @Test
   public void testSizesVolume() throws Exception {
     elasticsearchIOTestCommon.testSizes();
   }
@@ -124,14 +136,37 @@ public class ElasticsearchIOIT {
     elasticsearchIOTestCommonWrite.testWriteWithFullAddressing();
   }
 
+  @Test
+  public void testWriteWithAllowableErrors() throws Exception {
+    elasticsearchIOTestCommon.testWriteWithAllowedErrors();
+  }
+
+  @Test
+  public void testWriteWithRouting() throws Exception {
+    elasticsearchIOTestCommon.setPipeline(pipeline);
+    elasticsearchIOTestCommon.testWriteWithRouting();
+  }
+
+  @Test
+  public void testWriteScriptedUpsert() throws Exception {
+    elasticsearchIOTestCommon.setPipeline(pipeline);
+    elasticsearchIOTestCommon.testWriteScriptedUpsert();
+  }
+
+  @Test
+  public void testWriteWithDocVersion() throws Exception {
+    elasticsearchIOTestCommon.setPipeline(pipeline);
+    elasticsearchIOTestCommon.testWriteWithDocVersion();
+  }
+
   /**
    * This test verifies volume partial updates of Elasticsearch. The test dataset index is cloned
    * and then a new field is added to each document using a partial update. The test then asserts
-   * the updates where appied.
+   * the updates were applied.
    */
   @Test
   public void testWritePartialUpdate() throws Exception {
-    ElasticSearchIOTestUtils.copyIndex(
+    ElasticsearchIOTestUtils.copyIndex(
         restClient,
         readConnectionConfiguration.getIndex(),
         updateConnectionConfiguration.getIndex());
@@ -140,5 +175,39 @@ public class ElasticsearchIOIT {
         new ElasticsearchIOTestCommon(updateConnectionConfiguration, restClient, true);
     elasticsearchIOTestCommonUpdate.setPipeline(pipeline);
     elasticsearchIOTestCommonUpdate.testWritePartialUpdate();
+  }
+
+  /**
+   * This test verifies volume deletes of Elasticsearch. The test dataset index is cloned and then
+   * around half of the documents are deleted and the other half is partially updated using bulk
+   * delete request. The test then asserts the documents were deleted successfully.
+   */
+  @Test
+  public void testWriteWithIsDeletedFnWithPartialUpdates() throws Exception {
+    ElasticsearchIOTestUtils.copyIndex(
+        restClient,
+        readConnectionConfiguration.getIndex(),
+        updateConnectionConfiguration.getIndex());
+    ElasticsearchIOTestCommon elasticsearchIOTestCommonDeleteFn =
+        new ElasticsearchIOTestCommon(updateConnectionConfiguration, restClient, true);
+    elasticsearchIOTestCommonDeleteFn.setPipeline(pipeline);
+    elasticsearchIOTestCommonDeleteFn.testWriteWithIsDeletedFnWithPartialUpdates();
+  }
+
+  /**
+   * This test verifies volume deletes of Elasticsearch. The test dataset index is cloned and then
+   * around half of the documents are deleted using bulk delete request. The test then asserts the
+   * documents were deleted successfully.
+   */
+  @Test
+  public void testWriteWithIsDeletedFnWithoutPartialUpdate() throws Exception {
+    ElasticsearchIOTestUtils.copyIndex(
+        restClient,
+        readConnectionConfiguration.getIndex(),
+        updateConnectionConfiguration.getIndex());
+    ElasticsearchIOTestCommon elasticsearchIOTestCommonDeleteFn =
+        new ElasticsearchIOTestCommon(updateConnectionConfiguration, restClient, true);
+    elasticsearchIOTestCommonDeleteFn.setPipeline(pipeline);
+    elasticsearchIOTestCommonDeleteFn.testWriteWithIsDeletedFnWithoutPartialUpdate();
   }
 }

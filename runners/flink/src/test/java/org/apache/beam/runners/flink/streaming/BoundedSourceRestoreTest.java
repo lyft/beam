@@ -36,13 +36,10 @@ import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.ValueWithRecordId;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatusMaintainer;
 import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
 import org.apache.flink.util.OutputTag;
 import org.junit.Test;
@@ -102,10 +99,8 @@ public class BoundedSourceRestoreTest {
     boolean readFirstBatchOfElements = false;
     try {
       testHarness.open();
-      sourceOperator.run(
-          checkpointLock,
-          new TestStreamStatusMaintainer(),
-          new PartialCollector<>(emittedElements, firstBatchSize));
+      StreamSources.run(
+          sourceOperator, checkpointLock, new PartialCollector<>(emittedElements, firstBatchSize));
     } catch (SuccessException e) {
       // success
       readFirstBatchOfElements = true;
@@ -147,9 +142,9 @@ public class BoundedSourceRestoreTest {
     boolean readSecondBatchOfElements = false;
     try {
       restoredTestHarness.open();
-      restoredSourceOperator.run(
+      StreamSources.run(
+          restoredSourceOperator,
           checkpointLock,
-          new TestStreamStatusMaintainer(),
           new PartialCollector<>(emittedElements, secondBatchSize));
     } catch (SuccessException e) {
       // success
@@ -166,7 +161,7 @@ public class BoundedSourceRestoreTest {
 
   /** A collector which consumes only specified number of elements. */
   private static class PartialCollector<T>
-      implements Output<StreamRecord<WindowedValue<ValueWithRecordId<T>>>> {
+      implements StreamSources.OutputWrapper<StreamRecord<WindowedValue<ValueWithRecordId<T>>>> {
 
     private final Set<T> emittedElements;
     private final int elementsToConsumeLimit;
@@ -200,22 +195,5 @@ public class BoundedSourceRestoreTest {
 
     @Override
     public void close() {}
-  }
-
-  private static final class TestStreamStatusMaintainer implements StreamStatusMaintainer {
-
-    StreamStatus currentStreamStatus = StreamStatus.ACTIVE;
-
-    @Override
-    public void toggleStreamStatus(StreamStatus streamStatus) {
-      if (!currentStreamStatus.equals(streamStatus)) {
-        currentStreamStatus = streamStatus;
-      }
-    }
-
-    @Override
-    public StreamStatus getStreamStatus() {
-      return currentStreamStatus;
-    }
   }
 }

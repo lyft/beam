@@ -17,33 +17,39 @@
  */
 package org.apache.beam.runners.core.construction.graph;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Queue;
 import java.util.Set;
 import java.util.function.Function;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Maps;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Ordering;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.ElementOrder;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.EndpointPair;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.Graphs;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.MutableNetwork;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.Network;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.graph.NetworkBuilder;
+import javax.annotation.Nonnull;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Ordering;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.ElementOrder;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.EndpointPair;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.Graphs;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.MutableNetwork;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.Network;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.graph.NetworkBuilder;
 
 /** Static utility methods for {@link Network} instances that are directed. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class Networks {
   /**
    * An abstract class that can be extended to apply a function in a type safe manner.
@@ -224,8 +230,11 @@ public class Networks {
 
     Ordering<NodeT> maximumOrdering =
         new Ordering<NodeT>() {
+          @SuppressFBWarnings(
+              value = "NP_METHOD_PARAMETER_TIGHTENS_ANNOTATION",
+              justification = "https://github.com/google/guava/issues/920")
           @Override
-          public int compare(NodeT t0, NodeT t1) {
+          public int compare(@Nonnull NodeT t0, @Nonnull NodeT t1) {
             return (network.outDegree(t0) - network.inDegree(t0))
                 - (network.outDegree(t1) - network.inDegree(t1));
           }
@@ -268,7 +277,7 @@ public class Networks {
   public static <NodeT, EdgeT> String toDot(Network<NodeT, EdgeT> network) {
     StringBuilder builder = new StringBuilder();
     builder.append(String.format("digraph network {%n"));
-    Map<NodeT, String> nodeName = Maps.newIdentityHashMap();
+    IdentityHashMap<NodeT, String> nodeName = Maps.newIdentityHashMap();
     network.nodes().forEach(node -> nodeName.put(node, "n" + nodeName.size()));
     for (Entry<NodeT, String> nodeEntry : nodeName.entrySet()) {
       builder.append(

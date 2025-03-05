@@ -17,9 +17,10 @@
 package ioutilx
 
 import (
-	"errors"
 	"io"
 	"unsafe"
+
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
 )
 
 // ReadN reads exactly N bytes from the reader. Fails otherwise.
@@ -88,8 +89,10 @@ func ReadUnsafe(r io.Reader, b []byte) (int, error) {
 // compiles down to zero instructions.
 // USE CAREFULLY!
 // This was copied from the runtime; see issues 23382 and 7921.
+//
 //go:nosplit
 func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
+	//lint:ignore SA4016 see function comment
 	return unsafe.Pointer(x ^ 0)
 }

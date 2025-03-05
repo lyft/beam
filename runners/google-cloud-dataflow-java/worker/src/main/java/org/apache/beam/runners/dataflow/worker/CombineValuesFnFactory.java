@@ -24,7 +24,6 @@ import com.google.api.services.dataflow.model.SideInputInfo;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 import org.apache.beam.runners.core.GlobalCombineFnRunner;
 import org.apache.beam.runners.core.GlobalCombineFnRunners;
 import org.apache.beam.runners.core.SideInputReader;
@@ -38,6 +37,7 @@ import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.Combine.CombineFn;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.DoFnSchemaInformation;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.AppliedCombineFn;
 import org.apache.beam.sdk.util.DoFnInfo;
@@ -45,12 +45,17 @@ import org.apache.beam.sdk.util.SerializableUtils;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * A {@link ParDoFnFactory} to create instances of user {@link CombineFn} according to
  * specifications from the Dataflow service.
  */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 class CombineValuesFnFactory implements ParDoFnFactory {
 
   @Override
@@ -90,6 +95,8 @@ class CombineValuesFnFactory implements ParDoFnFactory {
         outputTupleTagsToReceiverIndices,
         executionContext.getStepContext(operationContext),
         operationContext,
+        doFnInfo.getDoFnSchemaInformation(),
+        doFnInfo.getSideInputMapping(),
         SimpleDoFnRunnerFactory.INSTANCE);
   }
 
@@ -138,7 +145,9 @@ class CombineValuesFnFactory implements ParDoFnFactory {
           combineFn.getSideInputViews(),
           inputCoder,
           Collections.emptyMap(), // Not needed here.
-          new TupleTag<>(PropertyNames.OUTPUT));
+          new TupleTag<>(PropertyNames.OUTPUT),
+          DoFnSchemaInformation.create(),
+          Collections.emptyMap());
     }
 
     private final GlobalCombineFnRunner<InputT, ?, OutputT> combineFnRunner;
@@ -202,7 +211,9 @@ class CombineValuesFnFactory implements ParDoFnFactory {
           combineFn.getSideInputViews(),
           inputCoder,
           Collections.emptyMap(), // Not needed here.
-          new TupleTag<>(PropertyNames.OUTPUT));
+          new TupleTag<>(PropertyNames.OUTPUT),
+          DoFnSchemaInformation.create(),
+          Collections.emptyMap());
     }
 
     private final GlobalCombineFnRunner<InputT, AccumT, ?> combineFnRunner;
@@ -260,7 +271,9 @@ class CombineValuesFnFactory implements ParDoFnFactory {
           combineFn.getSideInputViews(),
           inputCoder,
           Collections.emptyMap(), // Not needed here.
-          new TupleTag<>(PropertyNames.OUTPUT));
+          new TupleTag<>(PropertyNames.OUTPUT),
+          DoFnSchemaInformation.create(),
+          Collections.emptyMap());
     }
 
     private final GlobalCombineFnRunner<?, AccumT, ?> combineFnRunner;
@@ -308,7 +321,9 @@ class CombineValuesFnFactory implements ParDoFnFactory {
           combineFn.getSideInputViews(),
           inputCoder,
           Collections.emptyMap(), // Not needed here.
-          new TupleTag<>(PropertyNames.OUTPUT));
+          new TupleTag<>(PropertyNames.OUTPUT),
+          DoFnSchemaInformation.create(),
+          Collections.emptyMap());
     }
 
     private final GlobalCombineFnRunner<?, AccumT, OutputT> combineFnRunner;

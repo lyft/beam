@@ -17,33 +17,39 @@
  */
 package org.apache.beam.runners.dataflow;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects.firstNonNull;
+import static org.apache.beam.sdk.util.Preconditions.checkArgumentNotNull;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects.firstNonNull;
 
 import com.google.api.client.util.ArrayMap;
 import com.google.api.services.dataflow.model.JobMetrics;
 import com.google.api.services.dataflow.model.MetricUpdate;
-import com.google.auto.value.AutoValue;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import javax.annotation.Nullable;
-import org.apache.beam.runners.core.construction.metrics.MetricFiltering;
-import org.apache.beam.runners.core.construction.metrics.MetricKey;
+import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.sdk.metrics.DistributionResult;
 import org.apache.beam.sdk.metrics.GaugeResult;
+import org.apache.beam.sdk.metrics.MetricFiltering;
+import org.apache.beam.sdk.metrics.MetricKey;
 import org.apache.beam.sdk.metrics.MetricName;
 import org.apache.beam.sdk.metrics.MetricQueryResults;
 import org.apache.beam.sdk.metrics.MetricResult;
 import org.apache.beam.sdk.metrics.MetricResults;
 import org.apache.beam.sdk.metrics.MetricsFilter;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Objects;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.sdk.runners.AppliedPTransform;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Objects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.BiMap;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Implementation of {@link MetricResults} for the Dataflow Runner. */
+@SuppressWarnings({
+  "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+})
 class DataflowMetrics extends MetricResults {
   private static final Logger LOG = LoggerFactory.getLogger(DataflowMetrics.class);
   /**
@@ -61,7 +67,7 @@ class DataflowMetrics extends MetricResults {
    * After the job has finished running, Metrics no longer will change, so their results are cached
    * here.
    */
-  private JobMetrics cachedMetricResults = null;
+  private @Nullable JobMetrics cachedMetricResults = null;
 
   /**
    * Constructor for the DataflowMetrics class.
@@ -88,7 +94,7 @@ class DataflowMetrics extends MetricResults {
   }
 
   @Override
-  public MetricQueryResults queryMetrics(@Nullable MetricsFilter filter) {
+  public MetricQueryResults queryMetrics(MetricsFilter filter) {
     List<MetricUpdate> metricUpdates;
     ImmutableList<MetricResult<Long>> counters = ImmutableList.of();
     ImmutableList<MetricResult<DistributionResult>> distributions = ImmutableList.of();
@@ -100,7 +106,7 @@ class DataflowMetrics extends MetricResults {
       LOG.warn("Unable to query job metrics.\n");
       return MetricQueryResults.create(counters, distributions, gauges);
     }
-    metricUpdates = firstNonNull(jobMetrics.getMetrics(), Collections.<MetricUpdate>emptyList());
+    metricUpdates = firstNonNull(jobMetrics.getMetrics(), Collections.emptyList());
     return populateMetricQueryResults(metricUpdates, filter);
   }
 
@@ -109,7 +115,7 @@ class DataflowMetrics extends MetricResults {
       // Metric results have been cached after the job ran.
       return cachedMetricResults;
     }
-    JobMetrics result = dataflowClient.getJobMetrics(dataflowPipelineJob.jobId);
+    JobMetrics result = dataflowClient.getJobMetrics(dataflowPipelineJob.getJobId());
     if (dataflowPipelineJob.getState().isTerminal()) {
       // Add current query result to the cache.
       cachedMetricResults = result;
@@ -141,12 +147,7 @@ class DataflowMetrics extends MetricResults {
       } else if (committed.getDistribution() != null && attempted.getDistribution() != null) {
         // distribution metric
         DistributionResult value = getDistributionValue(committed);
-        distributionResults.add(
-            DataflowMetricResult.create(
-                metricKey.metricName(),
-                metricKey.stepName(),
-                isStreamingJob ? null : value, // Committed
-                value)); // Attempted
+        distributionResults.add(MetricResult.create(metricKey, !isStreamingJob, value));
         /* In Dataflow streaming jobs, only ATTEMPTED metrics are available.
          * In Dataflow batch jobs, only COMMITTED metrics are available, but
          * we must provide ATTEMPTED, so we use COMMITTED as a good approximation.
@@ -155,12 +156,7 @@ class DataflowMetrics extends MetricResults {
       } else if (committed.getScalar() != null && attempted.getScalar() != null) {
         // counter metric
         Long value = getCounterValue(committed);
-        counterResults.add(
-            DataflowMetricResult.create(
-                metricKey.metricName(),
-                metricKey.stepName(),
-                isStreamingJob ? null : value, // Committed
-                value)); // Attempted
+        counterResults.add(MetricResult.create(metricKey, !isStreamingJob, value));
         /* In Dataflow streaming jobs, only ATTEMPTED metrics are available.
          * In Dataflow batch jobs, only COMMITTED metrics are available, but
          * we must provide ATTEMPTED, so we use COMMITTED as a good approximation.
@@ -191,10 +187,10 @@ class DataflowMetrics extends MetricResults {
         return DistributionResult.IDENTITY_ELEMENT;
       }
       ArrayMap distributionMap = (ArrayMap) metricUpdate.getDistribution();
-      Long count = ((Number) distributionMap.get("count")).longValue();
-      Long min = ((Number) distributionMap.get("min")).longValue();
-      Long max = ((Number) distributionMap.get("max")).longValue();
-      Long sum = ((Number) distributionMap.get("sum")).longValue();
+      long count = ((Number) distributionMap.get("count")).longValue();
+      long min = ((Number) distributionMap.get("min")).longValue();
+      long max = ((Number) distributionMap.get("max")).longValue();
+      long sum = ((Number) distributionMap.get("sum")).longValue();
       return DistributionResult.create(sum, count, min, max);
     }
 
@@ -250,25 +246,73 @@ class DataflowMetrics extends MetricResults {
     }
 
     /**
+     * Returns the user step name for a given internal step name.
+     *
+     * @param internalStepName internal step name used by Dataflow
+     * @return user step name used to identify the metric
+     */
+    private @Nullable String getUserStepName(String internalStepName) {
+      @Nullable String portableUserStepName = getPortableUserStepName(internalStepName);
+      if (portableUserStepName != null) {
+        return portableUserStepName;
+      } else {
+        return getNonPortableUserStepName(internalStepName);
+      }
+    }
+
+    private @Nullable String getPortableUserStepName(String internalStepName) {
+      RunnerApi.@Nullable Pipeline pipelineProto = dataflowPipelineJob.getPipelineProto();
+      if (pipelineProto == null) {
+        return null;
+      }
+
+      RunnerApi.@Nullable PTransform transform =
+          pipelineProto.getComponents().getTransformsMap().get(internalStepName);
+      if (transform == null) {
+        return null;
+      }
+
+      return transform.getUniqueName();
+    }
+
+    private @Nullable String getNonPortableUserStepName(String internalStepName) {
+      // If we can't translate internal step names to user step names, we just skip them altogether.
+      BiMap<AppliedPTransform<?, ?, ?>, String> transformStepNames =
+          dataflowPipelineJob.getTransformStepNames();
+      if (transformStepNames == null) {
+        return null;
+      }
+
+      @Nullable
+      AppliedPTransform<?, ?, ?> appliedPTransform =
+          transformStepNames.inverse().get(internalStepName);
+      if (appliedPTransform == null) {
+        return null;
+      }
+
+      return appliedPTransform.getFullName();
+    }
+
+    /**
      * Build an {@link MetricKey} that serves as a hash key for a metric update.
      *
      * @return a {@link MetricKey} that can be hashed and used to identify a metric.
      */
-    private MetricKey getMetricHashKey(MetricUpdate metricUpdate) {
-      String fullStepName = metricUpdate.getName().getContext().get("step");
-      if (dataflowPipelineJob.transformStepNames == null
-          || !dataflowPipelineJob.transformStepNames.inverse().containsKey(fullStepName)) {
-        // If we can't translate internal step names to user step names, we just skip them
-        // altogether.
+    private @Nullable MetricKey getMetricHashKey(MetricUpdate metricUpdate) {
+      @Nullable String internalStepName = metricUpdate.getName().getContext().get("step");
+      checkArgumentNotNull(
+          internalStepName, "MetricUpdate has null internal step name: %s", metricUpdate);
+
+      @Nullable String namespace = metricUpdate.getName().getContext().get("namespace");
+      checkArgumentNotNull(namespace, "MetricUpdate has null namespace: %s", metricUpdate);
+
+      @Nullable String userStepName = getUserStepName(internalStepName);
+      if (userStepName == null) {
         return null;
       }
-      fullStepName =
-          dataflowPipelineJob.transformStepNames.inverse().get(fullStepName).getFullName();
+
       return MetricKey.create(
-          fullStepName,
-          MetricName.named(
-              metricUpdate.getName().getContext().get("namespace"),
-              metricUpdate.getName().getName()));
+          userStepName, MetricName.named(namespace, metricUpdate.getName().getName()));
     }
 
     private void buildMetricsIndex() {
@@ -282,7 +326,7 @@ class DataflowMetrics extends MetricResults {
           continue;
         }
 
-        MetricKey updateKey = getMetricHashKey(update);
+        @Nullable MetricKey updateKey = getMetricHashKey(update);
         if (updateKey == null || !MetricFiltering.matches(filter, updateKey)) {
           // Skip unmatched metrics early.
           continue;
@@ -326,40 +370,6 @@ class DataflowMetrics extends MetricResults {
           extractor.getCounterResults(),
           extractor.getDistributionResults(),
           extractor.getGaugeResults());
-    }
-  }
-
-  @AutoValue
-  abstract static class DataflowMetricResult<T> implements MetricResult<T> {
-    // need to define these here so they appear in the correct order
-    // and the generated constructor is usable and consistent
-    @Override
-    public abstract MetricName getName();
-
-    @Override
-    public abstract String getStep();
-
-    @Nullable
-    protected abstract T committedInternal();
-
-    @Override
-    public abstract T getAttempted();
-
-    @Override
-    public T getCommitted() {
-      T committed = committedInternal();
-      if (committed == null) {
-        throw new UnsupportedOperationException(
-            "This runner does not currently support committed"
-                + " metrics results. Please use 'attempted' instead.");
-      }
-      return committed;
-    }
-
-    public static <T> MetricResult<T> create(
-        MetricName name, String scope, T committed, T attempted) {
-      return new AutoValue_DataflowMetrics_DataflowMetricResult<>(
-          name, scope, committed, attempted);
     }
   }
 }

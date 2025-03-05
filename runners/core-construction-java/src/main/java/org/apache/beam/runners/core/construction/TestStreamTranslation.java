@@ -18,7 +18,7 @@
 package org.apache.beam.runners.core.construction;
 
 import static org.apache.beam.runners.core.construction.PTransformTranslation.TEST_STREAM_TRANSFORM_URN;
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.google.auto.service.AutoService;
 import java.io.IOException;
@@ -36,7 +36,7 @@ import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TimestampedValue;
-import org.apache.beam.vendor.grpc.v1p13p1.com.google.protobuf.ByteString;
+import org.apache.beam.vendor.grpc.v1p54p0.com.google.protobuf.ByteString;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 
@@ -44,15 +44,23 @@ import org.joda.time.Instant;
  * Utility methods for translating a {@link TestStream} to and from {@link RunnerApi}
  * representations.
  */
+@SuppressWarnings({
+  "rawtypes" // TODO(https://github.com/apache/beam/issues/20447)
+})
 public class TestStreamTranslation {
 
-  private static TestStream<?> testStreamFromProtoPayload(
+  public static <T> TestStream<T> testStreamFromProtoPayload(
       RunnerApi.TestStreamPayload testStreamPayload, RehydratedComponents components)
       throws IOException {
 
-    Coder<Object> coder = (Coder<Object>) components.getCoder(testStreamPayload.getCoderId());
+    Coder<T> coder = (Coder<T>) components.getCoder(testStreamPayload.getCoderId());
 
-    List<TestStream.Event<Object>> events = new ArrayList<>();
+    return testStreamFromProtoPayload(testStreamPayload, coder);
+  }
+
+  public static <T> TestStream<T> testStreamFromProtoPayload(
+      RunnerApi.TestStreamPayload testStreamPayload, Coder<T> coder) throws IOException {
+    List<TestStream.Event<T>> events = new ArrayList<>();
 
     for (RunnerApi.TestStreamPayload.Event event : testStreamPayload.getEventsList()) {
       events.add(eventFromProto(event, coder));

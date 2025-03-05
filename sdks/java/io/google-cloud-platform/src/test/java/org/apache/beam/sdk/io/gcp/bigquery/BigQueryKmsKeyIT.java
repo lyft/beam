@@ -30,10 +30,12 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.Method;
 import org.apache.beam.sdk.io.gcp.testing.BigqueryClient;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestPipelineOptions;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.sdk.testing.UsesKms;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.slf4j.Logger;
@@ -46,13 +48,14 @@ import org.slf4j.LoggerFactory;
  * used.
  */
 @RunWith(JUnit4.class)
+@Category(UsesKms.class)
 public class BigQueryKmsKeyIT {
 
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryKmsKeyIT.class);
 
   private static final BigqueryClient BQ_CLIENT = new BigqueryClient("BigQueryKmsKeyIT");
   private static final String BIG_QUERY_DATASET_ID =
-      "bq_query_to_table_" + System.currentTimeMillis() + "_" + (new SecureRandom().nextInt(32));
+      "bq_query_to_table_" + System.currentTimeMillis() + "_" + new SecureRandom().nextInt(32);
   private static final TableSchema OUTPUT_SCHEMA =
       new TableSchema()
           .setFields(ImmutableList.of(new TableFieldSchema().setName("fruit").setType("STRING")));

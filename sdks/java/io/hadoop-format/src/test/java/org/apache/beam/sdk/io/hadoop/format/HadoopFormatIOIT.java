@@ -20,19 +20,34 @@ package org.apache.beam.sdk.io.hadoop.format;
 import static org.apache.beam.sdk.io.common.IOITHelper.executeWithRetry;
 import static org.apache.beam.sdk.io.common.IOITHelper.readIOTestPipelineOptions;
 import static org.apache.beam.sdk.io.common.TestRow.getExpectedHashForRowCount;
+import static org.junit.Assert.assertNotEquals;
 
+import com.google.cloud.Timestamp;
 import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.Function;
+import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.io.GenerateSequence;
 import org.apache.beam.sdk.io.common.DatabaseTestHelper;
 import org.apache.beam.sdk.io.common.HashingFn;
 import org.apache.beam.sdk.io.common.PostgresIOTestPipelineOptions;
 import org.apache.beam.sdk.io.common.TestRow;
 import org.apache.beam.sdk.io.hadoop.SerializableConfiguration;
+import org.apache.beam.sdk.options.Default;
+import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.testutils.NamedTestResult;
+import org.apache.beam.sdk.testutils.metrics.IOITMetrics;
+import org.apache.beam.sdk.testutils.metrics.MetricsReader;
+import org.apache.beam.sdk.testutils.metrics.TimeMonitor;
+import org.apache.beam.sdk.testutils.publishing.InfluxDBSettings;
 import org.apache.beam.sdk.transforms.Combine;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.Reshuffle;
 import org.apache.beam.sdk.transforms.Values;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
@@ -50,7 +65,11 @@ import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 import org.postgresql.ds.PGSimpleDataSource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * A test of {@link org.apache.beam.sdk.io.hadoop.format.HadoopFormatIO} on an independent postgres
@@ -75,26 +94,52 @@ import org.postgresql.ds.PGSimpleDataSource;
  * <p>Please see 'build_rules.gradle' file for instructions regarding running this test using Beam
  * performance testing framework.
  */
+@RunWith(JUnit4.class)
 public class HadoopFormatIOIT {
+
+  private static final String NAMESPACE = HadoopFormatIOIT.class.getName();
 
   private static PGSimpleDataSource dataSource;
   private static Integer numberOfRows;
   private static String tableName;
   private static SerializableConfiguration hadoopConfiguration;
+  private static InfluxDBSettings settings;
+  private static HadoopFormatIOITOptions options;
+
+  // For some reason PostgreSQLContainer is a generic class
+  @SuppressWarnings("rawtypes")
+  private static PostgreSQLContainer postgreSQLContainer;
 
   @Rule public TestPipeline writePipeline = TestPipeline.create();
   @Rule public TestPipeline readPipeline = TestPipeline.create();
   @Rule public TemporaryFolder tmpFolder = new TemporaryFolder();
 
+  public interface HadoopFormatIOITOptions extends PostgresIOTestPipelineOptions {
+    @Description("Whether to use testcontainers")
+    @Default.Boolean(false)
+    Boolean isWithTestcontainers();
+
+    void setWithTestcontainers(Boolean withTestcontainers);
+  }
+
   @BeforeClass
   public static void setUp() throws Exception {
-    PostgresIOTestPipelineOptions options =
-        readIOTestPipelineOptions(PostgresIOTestPipelineOptions.class);
+    options = readIOTestPipelineOptions(HadoopFormatIOITOptions.class);
+    if (options.isWithTestcontainers()) {
+      setPostgresContainer();
+    }
 
     dataSource = DatabaseTestHelper.getPostgresDataSource(options);
     numberOfRows = options.getNumberOfRecords();
     tableName = DatabaseTestHelper.getTestTableName("HadoopFormatIOIT");
-
+    if (!options.isWithTestcontainers()) {
+      settings =
+          InfluxDBSettings.builder()
+              .withHost(options.getInfluxHost())
+              .withDatabase(options.getInfluxDatabase())
+              .withMeasurement(options.getInfluxMeasurement())
+              .get();
+    }
     executeWithRetry(HadoopFormatIOIT::createTable);
     setupHadoopConfiguration(options);
   }
@@ -137,6 +182,9 @@ public class HadoopFormatIOIT {
   @AfterClass
   public static void tearDown() throws Exception {
     executeWithRetry(HadoopFormatIOIT::deleteTable);
+    if (postgreSQLContainer != null) {
+      postgreSQLContainer.stop();
+    }
   }
 
   private static void deleteTable() throws SQLException {
@@ -148,6 +196,8 @@ public class HadoopFormatIOIT {
     writePipeline
         .apply("Generate sequence", GenerateSequence.from(0).to(numberOfRows))
         .apply("Produce db rows", ParDo.of(new TestRow.DeterministicallyConstructTestRowFn()))
+        .apply("Prevent fusion before writing", Reshuffle.viaRandomKey())
+        .apply("Collect write time", ParDo.of(new TimeMonitor<>(NAMESPACE, "write_time")))
         .apply("Construct rows for DBOutputFormat", ParDo.of(new ConstructDBOutputFormatRowFn()))
         .apply(
             "Write using Hadoop OutputFormat",
@@ -157,7 +207,8 @@ public class HadoopFormatIOIT {
                 .withExternalSynchronization(
                     new HDFSSynchronization(tmpFolder.getRoot().getAbsolutePath())));
 
-    writePipeline.run().waitUntilFinish();
+    PipelineResult writeResult = writePipeline.run();
+    PipelineResult.State writeState = writeResult.waitUntilFinish();
 
     PCollection<String> consolidatedHashcode =
         readPipeline
@@ -165,20 +216,89 @@ public class HadoopFormatIOIT {
                 "Read using Hadoop InputFormat",
                 HadoopFormatIO.<LongWritable, TestRowDBWritable>read()
                     .withConfiguration(hadoopConfiguration.get()))
+            .apply("Collect read time", ParDo.of(new TimeMonitor<>(NAMESPACE, "read_time")))
             .apply("Get values only", Values.create())
             .apply("Values as string", ParDo.of(new TestRow.SelectNameFn()))
             .apply("Calculate hashcode", Combine.globally(new HashingFn()));
 
     PAssert.thatSingleton(consolidatedHashcode).isEqualTo(getExpectedHashForRowCount(numberOfRows));
 
-    readPipeline.run().waitUntilFinish();
+    PipelineResult readResult = readPipeline.run();
+    PipelineResult.State readState = readResult.waitUntilFinish();
+
+    if (!options.isWithTestcontainers()) {
+      collectAndPublishMetrics(writeResult, readResult);
+    }
+    // Fail the test if pipeline failed.
+    assertNotEquals(PipelineResult.State.FAILED, writeState);
+    assertNotEquals(PipelineResult.State.FAILED, readState);
+  }
+
+  private void collectAndPublishMetrics(PipelineResult writeResult, PipelineResult readResult) {
+    String uuid = UUID.randomUUID().toString();
+    String timestamp = Timestamp.now().toString();
+
+    Set<Function<MetricsReader, NamedTestResult>> readSuppliers = getReadSuppliers(uuid, timestamp);
+    Set<Function<MetricsReader, NamedTestResult>> writeSuppliers =
+        getWriteSuppliers(uuid, timestamp);
+
+    IOITMetrics readMetrics =
+        new IOITMetrics(readSuppliers, readResult, NAMESPACE, uuid, timestamp);
+    IOITMetrics writeMetrics =
+        new IOITMetrics(writeSuppliers, writeResult, NAMESPACE, uuid, timestamp);
+    readMetrics.publishToInflux(settings);
+    writeMetrics.publishToInflux(settings);
+  }
+
+  private Set<Function<MetricsReader, NamedTestResult>> getWriteSuppliers(
+      String uuid, String timestamp) {
+    Set<Function<MetricsReader, NamedTestResult>> suppliers = new HashSet<>();
+    suppliers.add(getTimeMetric(uuid, timestamp, "write_time"));
+    suppliers.add(
+        reader ->
+            NamedTestResult.create(
+                uuid,
+                timestamp,
+                "data_size",
+                DatabaseTestHelper.getPostgresTableSize(dataSource, tableName)
+                    .orElseThrow(() -> new IllegalStateException("Unable to fetch table size"))));
+    return suppliers;
+  }
+
+  private Set<Function<MetricsReader, NamedTestResult>> getReadSuppliers(
+      String uuid, String timestamp) {
+    Set<Function<MetricsReader, NamedTestResult>> suppliers = new HashSet<>();
+    suppliers.add(getTimeMetric(uuid, timestamp, "read_time"));
+    return suppliers;
+  }
+
+  private Function<MetricsReader, NamedTestResult> getTimeMetric(
+      final String uuid, final String timestamp, final String metricName) {
+    return reader -> {
+      long startTime = reader.getStartTimeMetric(metricName);
+      long endTime = reader.getEndTimeMetric(metricName);
+      return NamedTestResult.create(uuid, timestamp, metricName, (endTime - startTime) / 1e3);
+    };
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static void setPostgresContainer() {
+    postgreSQLContainer =
+        new PostgreSQLContainer(DockerImageName.parse("postgres").withTag("latest"))
+            .withDatabaseName(options.getPostgresDatabaseName())
+            .withUsername(options.getPostgresUsername())
+            .withPassword(options.getPostgresPassword());
+    postgreSQLContainer.start();
+    options.setPostgresServerName(postgreSQLContainer.getContainerIpAddress());
+    options.setPostgresPort(postgreSQLContainer.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT));
+    options.setPostgresSsl(false);
   }
 
   /**
    * Uses the input {@link TestRow} values as seeds to produce new {@link KV}s for {@link
    * HadoopFormatIO}.
    */
-  public static class ConstructDBOutputFormatRowFn
+  static class ConstructDBOutputFormatRowFn
       extends DoFn<TestRow, KV<TestRowDBWritable, NullWritable>> {
     @ProcessElement
     public void processElement(ProcessContext c) {

@@ -17,11 +17,27 @@
  */
 package org.apache.beam.sdk.io.redis;
 
-import java.io.IOException;
-import java.net.ServerSocket;
+import static java.util.stream.Collectors.toList;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists.transform;
+import static org.hamcrest.CoreMatchers.hasItems;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import org.apache.beam.sdk.coders.KvCoder;
+import org.apache.beam.sdk.coders.MapCoder;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.io.common.NetworkTestHelper;
+import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.redis.RedisIO.Write.Method;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
@@ -29,231 +45,374 @@ import org.apache.beam.sdk.transforms.Count;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableMap;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.StreamEntryID;
+import redis.clients.jedis.resps.StreamEntry;
 import redis.embedded.RedisServer;
 
 /** Test on the Redis IO. */
+@RunWith(JUnit4.class)
 public class RedisIOTest {
 
-  private static final String REDIS_HOST = "::1";
+  private static final String REDIS_HOST = "localhost";
+  private static final Long NO_EXPIRATION = -1L;
 
-  @Rule public TestPipeline writePipeline = TestPipeline.create();
-  @Rule public TestPipeline readPipeline = TestPipeline.create();
+  @Rule public TestPipeline p = TestPipeline.create();
 
-  private EmbeddedRedis embeddedRedis;
+  private static RedisServer server;
+  private static int port;
 
-  @Before
-  public void before() throws Exception {
-    embeddedRedis = new EmbeddedRedis();
+  private static Jedis client;
+
+  @BeforeClass
+  public static void beforeClass() throws Exception {
+    port = NetworkTestHelper.getAvailableLocalPort();
+    server = new RedisServer(port);
+    server.start();
+    client = RedisConnectionConfiguration.create(REDIS_HOST, port).connect();
   }
 
-  @After
-  public void after() throws Exception {
-    embeddedRedis.close();
-  }
-
-  private ArrayList<KV<String, String>> ingestData(String prefix, int numKeys) {
-    ArrayList<KV<String, String>> data = new ArrayList<>();
-    for (int i = 0; i < numKeys; i++) {
-      KV<String, String> kv = KV.of(prefix + "-key " + i, "value " + i);
-      data.add(kv);
-    }
-    PCollection<KV<String, String>> write = writePipeline.apply(Create.of(data));
-    write.apply(RedisIO.write().withEndpoint("::1", embeddedRedis.getPort()));
-    writePipeline.run();
-    return data;
+  @AfterClass
+  public static void afterClass() {
+    client.close();
+    server.stop();
   }
 
   @Test
-  public void testBulkRead() throws Exception {
-    ArrayList<KV<String, String>> data = ingestData("bulkread", 100);
+  public void testRead() {
+    List<KV<String, String>> data = buildIncrementalData("bulkread", 10);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
+
     PCollection<KV<String, String>> read =
-        readPipeline.apply(
+        p.apply(
             "Read",
             RedisIO.read()
-                .withEndpoint("::1", embeddedRedis.getPort())
+                .withEndpoint(REDIS_HOST, port)
                 .withKeyPattern("bulkread*")
                 .withBatchSize(10));
     PAssert.that(read).containsInAnyOrder(data);
-    readPipeline.run();
+    p.run();
   }
 
   @Test
-  public void testWriteReadUsingDefaultAppendMethod() throws Exception {
-    ArrayList<KV<String, String>> data = new ArrayList<>();
-    for (int i = 0; i < 8000; i++) {
-      KV<String, String> kv = KV.of("key " + i, "value " + i);
-      data.add(kv);
-    }
-    PCollection<KV<String, String>> write = writePipeline.apply(Create.of(data));
-    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, embeddedRedis.getPort()));
-
-    writePipeline.run();
+  public void testReadSplitBig() {
+    List<KV<String, String>> data = buildIncrementalData("bigset", 1000);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
 
     PCollection<KV<String, String>> read =
-        readPipeline.apply(
+        p.apply(
             "Read",
             RedisIO.read()
-                .withEndpoint(REDIS_HOST, embeddedRedis.getPort())
-                .withKeyPattern("key*"));
+                .withEndpoint(REDIS_HOST, port)
+                .withKeyPattern("bigset*")
+                .withBatchSize(8));
+    PAssert.that(read).containsInAnyOrder(data);
+    p.run();
+  }
+
+  @Test
+  public void testReadSplitSmall() {
+    List<KV<String, String>> data = buildIncrementalData("smallset", 5);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
+
+    PCollection<KV<String, String>> read =
+        p.apply(
+            "Read",
+            RedisIO.read()
+                .withEndpoint(REDIS_HOST, port)
+                .withKeyPattern("smallset*")
+                .withBatchSize(20));
+    PAssert.that(read).containsInAnyOrder(data);
+    p.run();
+  }
+
+  @Test
+  public void testReadWithKeyPattern() {
+    List<KV<String, String>> data = buildIncrementalData("pattern", 10);
+    data.forEach(kv -> client.set(kv.getKey(), kv.getValue()));
+
+    PCollection<KV<String, String>> read =
+        p.apply("Read", RedisIO.read().withEndpoint(REDIS_HOST, port).withKeyPattern("pattern*"));
     PAssert.that(read).containsInAnyOrder(data);
 
     PCollection<KV<String, String>> readNotMatch =
-        readPipeline.apply(
+        p.apply(
             "ReadNotMatch",
-            RedisIO.read()
-                .withEndpoint(REDIS_HOST, embeddedRedis.getPort())
-                .withKeyPattern("foobar*"));
+            RedisIO.read().withEndpoint(REDIS_HOST, port).withKeyPattern("foobar*"));
     PAssert.thatSingleton(readNotMatch.apply(Count.globally())).isEqualTo(0L);
 
-    readPipeline.run();
+    p.run();
   }
 
   @Test
-  public void testConfiguration() {
-    RedisIO.Write writeOp = RedisIO.write().withEndpoint("test", 111);
-    Assert.assertEquals(111, writeOp.connectionConfiguration().port());
-    Assert.assertEquals("test", writeOp.connectionConfiguration().host());
-  }
+  public void testWriteWithMethodSet() {
+    String key = "testWriteWithMethodSet";
+    client.set(key, "value");
 
-  @Test
-  public void testWriteReadUsingSetMethod() throws Exception {
-    String key = "key";
-    String value = "value";
     String newValue = "newValue";
+    PCollection<KV<String, String>> write = p.apply(Create.of(KV.of(key, newValue)));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.SET));
+    p.run();
 
-    Jedis jedis =
-        RedisConnectionConfiguration.create(REDIS_HOST, embeddedRedis.getPort()).connect();
-    jedis.set(key, value);
-
-    PCollection<KV<String, String>> write = writePipeline.apply(Create.of(KV.of(key, newValue)));
-    write.apply(
-        RedisIO.write().withEndpoint(REDIS_HOST, embeddedRedis.getPort()).withMethod(Method.SET));
-
-    writePipeline.run();
-
-    PCollection<KV<String, String>> read =
-        readPipeline.apply(
-            "Read",
-            RedisIO.read().withEndpoint(REDIS_HOST, embeddedRedis.getPort()).withKeyPattern(key));
-    PAssert.that(read).containsInAnyOrder(Collections.singletonList(KV.of(key, newValue)));
-
-    readPipeline.run();
+    assertEquals(newValue, client.get(key));
+    assertEquals(NO_EXPIRATION, Long.valueOf(client.ttl(key)));
   }
 
   @Test
-  public void testWriteReadUsingLpushMethod() throws Exception {
-    String key = "key";
-    String value = "value";
+  public void testWriteWithMethodSetWithExpiration() {
+    String key = "testWriteWithMethodSet";
+    client.set(key, "value");
+
     String newValue = "newValue";
-
-    Jedis jedis =
-        RedisConnectionConfiguration.create(REDIS_HOST, embeddedRedis.getPort()).connect();
-    jedis.lpush(key, value);
-
-    PCollection<KV<String, String>> write = writePipeline.apply(Create.of(KV.of(key, newValue)));
+    PCollection<KV<String, String>> write = p.apply(Create.of(KV.of(key, newValue)));
     write.apply(
-        RedisIO.write().withEndpoint(REDIS_HOST, embeddedRedis.getPort()).withMethod(Method.LPUSH));
+        RedisIO.write()
+            .withEndpoint(REDIS_HOST, port)
+            .withMethod(Method.SET)
+            .withExpireTime(10_000L));
+    p.run();
 
-    writePipeline.run();
-
-    List<String> values = jedis.lrange(key, 0, -1);
-    Assert.assertEquals(newValue + value, String.join("", values));
+    assertEquals(newValue, client.get(key));
+    Long expireTime = client.pttl(key);
+    assertTrue(expireTime.toString(), 9_000 <= expireTime && expireTime <= 10_0000);
+    client.del(key);
   }
 
   @Test
-  public void testWriteReadUsingRpushMethod() throws Exception {
-    String key = "key";
+  public void testWriteWithMethodLPush() {
+    String key = "testWriteWithMethodLPush";
     String value = "value";
+    client.lpush(key, value);
+
     String newValue = "newValue";
+    PCollection<KV<String, String>> write = p.apply(Create.of(KV.of(key, newValue)));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.LPUSH));
+    p.run();
 
-    Jedis jedis =
-        RedisConnectionConfiguration.create(REDIS_HOST, embeddedRedis.getPort()).connect();
-    jedis.lpush(key, value);
+    List<String> values = client.lrange(key, 0, -1);
+    assertEquals(newValue + value, String.join("", values));
+  }
 
-    PCollection<KV<String, String>> write = writePipeline.apply(Create.of(KV.of(key, newValue)));
+  @Test
+  public void testWriteWithMethodRPush() {
+    String key = "testWriteWithMethodRPush";
+    String value = "value";
+    client.lpush(key, value);
+
+    String newValue = "newValue";
+    PCollection<KV<String, String>> write = p.apply(Create.of(KV.of(key, newValue)));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.RPUSH));
+    p.run();
+
+    List<String> values = client.lrange(key, 0, -1);
+    assertEquals(value + newValue, String.join("", values));
+  }
+
+  @Test
+  public void testWriteWithMethodSAdd() {
+    String key = "testWriteWithMethodSAdd";
+    List<String> values = Arrays.asList("0", "1", "2", "3", "2", "4", "0", "5");
+    List<KV<String, String>> data = buildConstantKeyList(key, values);
+
+    PCollection<KV<String, String>> write = p.apply(Create.of(data));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.SADD));
+    p.run();
+
+    Set<String> expected = new HashSet<>(values);
+    Set<String> members = client.smembers(key);
+    assertEquals(expected, members);
+  }
+
+  @Test
+  public void testWriteWithMethodPFAdd() {
+    String key = "testWriteWithMethodPFAdd";
+    List<String> values = Arrays.asList("0", "1", "2", "3", "2", "4", "0", "5");
+    List<KV<String, String>> data = buildConstantKeyList(key, values);
+
+    PCollection<KV<String, String>> write = p.apply(Create.of(data));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.PFADD));
+    p.run();
+
+    long count = client.pfcount(key);
+    assertEquals(6, count);
+    assertEquals(NO_EXPIRATION, Long.valueOf(client.ttl(key)));
+  }
+
+  @Test
+  public void testWriteWithMethodPFAddWithExpireTime() {
+    String key = "testWriteWithMethodPFAdd";
+    List<String> values = Arrays.asList("0", "1", "2", "3", "2", "4", "0", "5");
+    List<KV<String, String>> data = buildConstantKeyList(key, values);
+
+    PCollection<KV<String, String>> write = p.apply(Create.of(data));
     write.apply(
-        RedisIO.write().withEndpoint(REDIS_HOST, embeddedRedis.getPort()).withMethod(Method.RPUSH));
+        RedisIO.write()
+            .withEndpoint(REDIS_HOST, port)
+            .withMethod(Method.PFADD)
+            .withExpireTime(10_000L));
+    p.run();
 
-    writePipeline.run();
-
-    List<String> values = jedis.lrange(key, 0, -1);
-    Assert.assertEquals(value + newValue, String.join("", values));
+    long count = client.pfcount(key);
+    assertEquals(6, count);
+    Long expireTime = client.pttl(key);
+    assertTrue(expireTime.toString(), 9_000 <= expireTime && expireTime <= 10_0000);
+    client.del(key);
   }
 
   @Test
-  public void testWriteUsingHLLMethod() throws Exception {
-    String key = "key";
+  public void testWriteUsingINCRBY() {
+    String key = "key_incr";
+    List<String> values = Arrays.asList("0", "1", "2", "-3", "2", "4", "0", "5");
+    List<KV<String, String>> data = buildConstantKeyList(key, values);
 
-    Jedis jedis =
-        RedisConnectionConfiguration.create(REDIS_HOST, embeddedRedis.getPort()).connect();
+    PCollection<KV<String, String>> write = p.apply(Create.of(data));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.INCRBY));
 
-    PCollection<KV<String, String>> write =
-        writePipeline.apply(
-            Create.of(
-                KV.of(key, "0"),
-                KV.of(key, "1"),
-                KV.of(key, "2"),
-                KV.of(key, "3"),
-                KV.of(key, "2"),
-                KV.of(key, "4"),
-                KV.of(key, "0"),
-                KV.of(key, "5")));
+    p.run();
 
+    long count = Long.parseLong(client.get(key));
+    assertEquals(11, count);
+  }
+
+  @Test
+  public void testWriteUsingDECRBY() {
+    String key = "key_decr";
+
+    List<String> values = Arrays.asList("-10", "1", "2", "-3", "2", "4", "0", "5");
+    List<KV<String, String>> data = buildConstantKeyList(key, values);
+
+    PCollection<KV<String, String>> write = p.apply(Create.of(data));
+    write.apply(RedisIO.write().withEndpoint(REDIS_HOST, port).withMethod(Method.DECRBY));
+
+    p.run();
+
+    long count = Long.parseLong(client.get(key));
+    assertEquals(-1, count);
+  }
+
+  @Test
+  public void testWriteStreams() {
+
+    /* test data is 10 keys (stream IDs), each with two entries, each entry having one k/v pair of data */
+    List<String> redisKeys =
+        IntStream.range(0, 10).boxed().map(idx -> UUID.randomUUID().toString()).collect(toList());
+
+    Map<String, String> fooValues = ImmutableMap.of("sensor-id", "1234", "temperature", "19.8");
+    Map<String, String> barValues = ImmutableMap.of("sensor-id", "9999", "temperature", "18.2");
+
+    List<KV<String, Map<String, String>>> allData =
+        redisKeys.stream()
+            .flatMap(id -> Stream.of(KV.of(id, fooValues), KV.of(id, barValues)))
+            .collect(toList());
+
+    PCollection<KV<String, Map<String, String>>> write =
+        p.apply(
+            Create.of(allData)
+                .withCoder(
+                    KvCoder.of(
+                        StringUtf8Coder.of(),
+                        MapCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of()))));
+    write.apply(RedisIO.writeStreams().withEndpoint(REDIS_HOST, port));
+    p.run();
+
+    for (String key : redisKeys) {
+      List<StreamEntry> streamEntries =
+          client.xrange(key, (StreamEntryID) null, (StreamEntryID) null, Integer.MAX_VALUE);
+      assertEquals(2, streamEntries.size());
+      assertThat(transform(streamEntries, StreamEntry::getFields), hasItems(fooValues, barValues));
+    }
+  }
+
+  @Test
+  public void testWriteStreamsWithTruncation() {
+    /* test data is 10 keys (stream IDs), each with two entries, each entry having one k/v pair of data */
+    List<String> redisKeys =
+        IntStream.range(0, 10).boxed().map(idx -> UUID.randomUUID().toString()).collect(toList());
+
+    Map<String, String> fooValues = ImmutableMap.of("sensor-id", "1234", "temperature", "19.8");
+    Map<String, String> barValues = ImmutableMap.of("sensor-id", "9999", "temperature", "18.2");
+
+    List<KV<String, Map<String, String>>> allData =
+        redisKeys.stream()
+            .flatMap(id -> Stream.of(KV.of(id, fooValues), KV.of(id, barValues)))
+            .collect(toList());
+
+    PCollection<KV<String, Map<String, String>>> write =
+        p.apply(
+            Create.of(allData)
+                .withCoder(
+                    KvCoder.of(
+                        StringUtf8Coder.of(),
+                        MapCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of()))));
     write.apply(
-        RedisIO.write().withEndpoint(REDIS_HOST, embeddedRedis.getPort()).withMethod(Method.PFADD));
+        RedisIO.writeStreams()
+            .withEndpoint(REDIS_HOST, port)
+            .withMaxLen(1)
+            .withApproximateTrim(false));
+    p.run();
 
-    writePipeline.run();
-
-    long count = jedis.pfcount(key);
-    Assert.assertEquals(6, count);
+    for (String stream : redisKeys) {
+      long count = client.xlen(stream);
+      assertEquals(1, count);
+    }
   }
 
   @Test
-  public void testReadBuildsCorrectly() {
-    RedisIO.Read read = RedisIO.read().withEndpoint("test", 111).withAuth("pass").withTimeout(5);
-    Assert.assertEquals("test", read.connectionConfiguration().host());
-    Assert.assertEquals(111, read.connectionConfiguration().port());
-    Assert.assertEquals("pass", read.connectionConfiguration().auth());
-    Assert.assertEquals(5, read.connectionConfiguration().timeout());
+  public void redisCursorToByteKey() {
+    RedisCursor redisCursor = RedisCursor.of("80", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(ByteKey.of(0, 0, 0, 0, 0, 0, 0, 10), byteKey);
   }
 
   @Test
-  public void testWriteBuildsCorrectly() {
-    RedisIO.Write write = RedisIO.write().withEndpoint("test", 111).withAuth("pass").withTimeout(5);
-    Assert.assertEquals("test", write.connectionConfiguration().host());
-    Assert.assertEquals(111, write.connectionConfiguration().port());
-    Assert.assertEquals("pass", write.connectionConfiguration().auth());
-    Assert.assertEquals(5, write.connectionConfiguration().timeout());
-    Assert.assertEquals(Method.APPEND, write.method());
+  public void redisCursorToByteKeyZeroStart() {
+    RedisCursor redisCursor = RedisCursor.of("0", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(RedisCursor.ZERO_KEY, byteKey);
   }
 
-  /** Simple embedded Redis instance wrapper to control Redis server. */
-  private static class EmbeddedRedis implements AutoCloseable {
+  @Test
+  public void redisCursorToByteKeyZeroEnd() {
+    RedisCursor redisCursor = RedisCursor.of("0", 200, false);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    assertEquals(ByteKey.EMPTY, byteKey);
+  }
 
-    private final int port;
-    private final RedisServer redisServer;
+  @Test
+  public void redisCursorToByteKeyAndBack() {
+    RedisCursor redisCursor = RedisCursor.of("80", 200, true);
+    ByteKey byteKey = RedisCursor.redisCursorToByteKey(redisCursor);
+    RedisCursor result = RedisCursor.byteKeyToRedisCursor(byteKey, 200, true);
+    assertEquals(redisCursor.getCursor(), result.getCursor());
+  }
 
-    public EmbeddedRedis() throws IOException {
-      try (ServerSocket serverSocket = new ServerSocket(0)) {
-        port = serverSocket.getLocalPort();
-      }
-      redisServer = new RedisServer(port);
-      redisServer.start();
+  @Test
+  public void redisByteKeyToRedisCursor() {
+    ByteKey bytes = ByteKey.of(0, 0, 0, 0, 0, 25, 68, 103);
+    RedisCursor redisCursor = RedisCursor.byteKeyToRedisCursor(bytes, 1048586, true);
+    assertEquals("1885267", redisCursor.getCursor());
+  }
+
+  private static List<KV<String, String>> buildConstantKeyList(String key, List<String> values) {
+    List<KV<String, String>> data = new ArrayList<>();
+    for (String value : values) {
+      data.add(KV.of(key, value));
     }
+    return data;
+  }
 
-    public int getPort() {
-      return this.port;
+  private List<KV<String, String>> buildIncrementalData(String keyPrefix, int size) {
+    List<KV<String, String>> data = new ArrayList<>();
+    for (int i = 0; i < size; i++) {
+      data.add(KV.of(keyPrefix + i, String.valueOf(i)));
     }
-
-    @Override
-    public void close() {
-      redisServer.stop();
-    }
+    return data;
   }
 }

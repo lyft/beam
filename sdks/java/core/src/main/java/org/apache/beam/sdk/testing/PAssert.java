@@ -17,19 +17,20 @@
  */
 package org.apache.beam.sdk.testing;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
-import static org.junit.Assert.assertThat;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.Pipeline.PipelineVisitor;
 import org.apache.beam.sdk.PipelineRunner;
@@ -49,6 +50,7 @@ import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.Reify;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.Values;
@@ -71,9 +73,11 @@ import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.apache.beam.sdk.values.WindowingStrategy;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.Objects;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Iterables;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Lists;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Objects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 
 /**
@@ -97,14 +101,17 @@ import org.joda.time.Duration;
  * PCollection<Integer> sum =
  *     ints
  *     .apply(Combine.globally(new SumInts()));
- * PAssert.that(sum)
- *     .is(42);
+ * PAssert.thatSingleton(sum)
+ *     .isEqualTo(42);
  * ...
  * p.run();
  * }</pre>
  *
  * <p>JUnit and Hamcrest must be linked in by any code that uses PAssert.
  */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class PAssert {
   public static final String SUCCESS_COUNTER = "PAssertSuccess";
   public static final String FAILURE_COUNTER = "PAssertFailure";
@@ -116,7 +123,7 @@ public class PAssert {
   private static int assertCount = 0;
 
   private static String nextAssertionName() {
-    return "PAssert$" + (assertCount++);
+    return "PAssert$" + assertCount++;
   }
 
   // Do not instantiate.
@@ -192,7 +199,7 @@ public class PAssert {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
       if (this == o) {
         return true;
       }
@@ -228,6 +235,19 @@ public class PAssert {
 
     /**
      * Creates a new {@link IterableAssert} like this one, but with the assertion restricted to only
+     * run on the provided window.
+     *
+     * <p>The assertion will expect outputs to be produced to the provided window exactly once. If
+     * the upstream {@link Trigger} may produce output multiple times, consider instead using {@link
+     * #inFinalPane(BoundedWindow)} or {@link #inOnTimePane(BoundedWindow)}.
+     *
+     * @return a new {@link IterableAssert} like this one but with the assertion only applied to the
+     *     specified window.
+     */
+    IterableAssert<T> inOnlyPane(BoundedWindow window);
+
+    /**
+     * Creates a new {@link IterableAssert} like this one, but with the assertion restricted to only
      * run on the provided window, running the checker only on the final pane for each key.
      *
      * <p>If the input {@link WindowingStrategy} does not always produce final panes, the assertion
@@ -260,6 +280,15 @@ public class PAssert {
     IterableAssert<T> inEarlyPane(BoundedWindow window);
 
     /**
+     * Creates a new {@link IterableAssert} with the assertion restricted to only run on the
+     * provided window across all panes that were produced by the arrival of late data.
+     *
+     * @return a new {@link IterableAssert} like this one but with the assertion only applied to the
+     *     specified window.
+     */
+    IterableAssert<T> inLatePane(BoundedWindow window);
+
+    /**
      * Creates a new {@link IterableAssert} like this one, but with the assertion restricted to only
      * run on the provided window across all panes that were not produced by the arrival of late
      * data.
@@ -282,6 +311,22 @@ public class PAssert {
      * @return the same {@link IterableAssert} builder for further assertions
      */
     IterableAssert<T> containsInAnyOrder(T... expectedElements);
+
+    /**
+     * Asserts that the iterable in question matches the provided elements.
+     *
+     * @return the same {@link IterableAssert} builder for further assertions
+     */
+    IterableAssert<T> containsInAnyOrder(SerializableMatcher<? super T>... expectedElements);
+
+    /**
+     * Asserts that the iterable in question is empty.
+     *
+     * @return the same {@link IterableAssert} builder for further assertions
+     * @deprecated Prefer {@link #empty()} to this method.
+     */
+    @Deprecated
+    IterableAssert<T> containsInAnyOrder();
 
     /**
      * Asserts that the iterable in question contains the provided elements.
@@ -308,6 +353,20 @@ public class PAssert {
 
   /** Builder interface for assertions applicable to a single value. */
   public interface SingletonAssert<T> {
+    /**
+     * Creates a new {@link SingletonAssert} like this one, but with the assertion restricted to
+     * only run on the provided window.
+     *
+     * <p>The assertion will concatenate all panes present in the provided window if the {@link
+     * Trigger} produces multiple panes. If the windowing strategy accumulates fired panes and
+     * triggers fire multple times, consider using instead {@link #inFinalPane(BoundedWindow)} or
+     * {@link #inOnTimePane(BoundedWindow)}.
+     *
+     * @return a new {@link SingletonAssert} like this one but with the assertion only applied to
+     *     the specified window.
+     */
+    SingletonAssert<T> inWindow(BoundedWindow window);
+
     /**
      * Creates a new {@link SingletonAssert} like this one, but with the assertion restricted to
      * only run on the provided window.
@@ -353,6 +412,15 @@ public class PAssert {
      *     the specified window.
      */
     SingletonAssert<T> inEarlyPane(BoundedWindow window);
+
+    /**
+     * Creates a new {@link SingletonAssert} with the assertion restricted to only run on the
+     * provided window, running the checker only on late panes for each key.
+     *
+     * @return a new {@link SingletonAssert} like this one but with the assertion only applied to
+     *     the specified window.
+     */
+    SingletonAssert<T> inLatePane(BoundedWindow window);
 
     /**
      * Asserts that the value in question is equal to the provided value, according to {@link
@@ -427,8 +495,7 @@ public class PAssert {
    * PCollection<T>} with the specified reason. The provided PCollection must be a singleton.
    */
   public static <T> SingletonAssert<T> thatSingleton(String reason, PCollection<T> actual) {
-    return new PCollectionViewAssert<>(
-        actual, View.asSingleton(), actual.getCoder(), PAssertionSite.capture(reason));
+    return new PCollectionSingletonAssert<>(actual, PAssertionSite.capture(reason));
   }
 
   /**
@@ -489,7 +556,77 @@ public class PAssert {
         PAssertionSite.capture(reason));
   }
 
+  /**
+   * Constructs an {@link PCollectionListContentsAssert} for the provided {@link PCollectionList}.
+   */
+  public static <T> PCollectionListContentsAssert<T> thatList(PCollectionList<T> actual) {
+    return new PCollectionListContentsAssert<>(actual);
+  }
+
+  /**
+   * Constructs an {@link IterableAssert} for the elements of the flattened {@link PCollectionList}.
+   */
+  public static <T> IterableAssert<T> thatFlattened(PCollectionList<T> actual) {
+    PCollection<T> flatten = actual.apply(Flatten.pCollections());
+    return that(flatten.getName(), flatten);
+  }
+
+  /**
+   * Constructs an {@link IterableAssert} for the elements of the flattened {@link PCollectionList}
+   * with the specified reason.
+   */
+  public static <T> IterableAssert<T> thatFlattened(String reason, PCollectionList<T> actual) {
+    return new PCollectionContentsAssert<>(
+        actual.apply(Flatten.pCollections()), PAssertionSite.capture(reason));
+  }
+
   ////////////////////////////////////////////////////////////
+
+  /**
+   * An assert about the contents of each {@link PCollection} in the given {@link PCollectionList}.
+   */
+  protected static class PCollectionListContentsAssert<T> {
+    private final PCollectionList<T> pCollectionList;
+
+    public PCollectionListContentsAssert(PCollectionList<T> actual) {
+      this.pCollectionList = actual;
+    }
+
+    /**
+     * Applies one {@link SerializableFunction} to check the elements of each {@link PCollection} in
+     * the {@link PCollectionList}.
+     *
+     * <p>Returns this {@code PCollectionListContentsAssert}.
+     */
+    public PCollectionListContentsAssert<T> satisfies(
+        SerializableFunction<Iterable<T>, Void> checkerFn) {
+      for (int i = 0; i < pCollectionList.size(); i++) {
+        PAssert.that(pCollectionList.get(i)).satisfies(checkerFn);
+      }
+      return this;
+    }
+
+    /**
+     * Takes list of {@link SerializableFunction}s of the same size as {@link #pCollectionList}, and
+     * applies each matcher to the {@code PCollection} with the identical index in the {@link
+     * #pCollectionList}.
+     *
+     * <p>Returns this {@code PCollectionListContentsAssert}.
+     */
+    public PCollectionListContentsAssert<T> satisfies(
+        List<SerializableFunction<Iterable<T>, Void>> checkerFnList) {
+      if (checkerFnList == null) {
+        throw new IllegalArgumentException("List of SerializableFunction must not be null");
+      } else if (checkerFnList.size() != pCollectionList.size()) {
+        throw new IllegalArgumentException(
+            "List of SerializableFunction must be the same size as the PCollectionList");
+      }
+      for (int i = 0; i < pCollectionList.size(); i++) {
+        PAssert.that(pCollectionList.get(i)).satisfies(checkerFnList.get(i));
+      }
+      return this;
+    }
+  }
 
   /**
    * An {@link IterableAssert} about the contents of a {@link PCollection}. This does not require
@@ -522,6 +659,11 @@ public class PAssert {
     }
 
     @Override
+    public PCollectionContentsAssert<T> inOnlyPane(BoundedWindow window) {
+      return withPane(window, PaneExtractors.onlyPane(site));
+    }
+
+    @Override
     public PCollectionContentsAssert<T> inFinalPane(BoundedWindow window) {
       return withPane(window, PaneExtractors.finalPane());
     }
@@ -534,6 +676,11 @@ public class PAssert {
     @Override
     public PCollectionContentsAssert<T> inEarlyPane(BoundedWindow window) {
       return withPane(window, PaneExtractors.earlyPanes());
+    }
+
+    @Override
+    public PCollectionContentsAssert<T> inLatePane(BoundedWindow window) {
+      return withPane(window, PaneExtractors.latePanes());
     }
 
     @Override
@@ -599,9 +746,15 @@ public class PAssert {
      * <p>Returns this {@code IterableAssert}.
      */
     @SafeVarargs
-    final PCollectionContentsAssert<T> containsInAnyOrder(
+    @Override
+    public final PCollectionContentsAssert<T> containsInAnyOrder(
         SerializableMatcher<? super T>... elementMatchers) {
       return satisfies(SerializableMatchers.containsInAnyOrder(elementMatchers));
+    }
+
+    @Override
+    public PCollectionContentsAssert<T> containsInAnyOrder() {
+      return empty();
     }
 
     /**
@@ -625,29 +778,16 @@ public class PAssert {
         final SerializableMatcher<Iterable<? extends T>> matcher) {
       // Safe covariant cast. Could be elided by changing a lot of this file to use
       // more flexible bounds.
-      @SuppressWarnings({"rawtypes", "unchecked"})
+      @SuppressWarnings({
+        "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+        "unchecked"
+      })
       SerializableFunction<Iterable<T>, Void> checkerFn =
           (SerializableFunction) new MatcherCheckerFn<>(matcher);
       actual.apply(
-          "PAssert$" + (assertCount++),
+          "PAssert$" + assertCount++,
           new GroupThenAssert<>(checkerFn, rewindowingStrategy, paneExtractor, site));
       return this;
-    }
-
-    /** Check that the passed-in matchers match the existing data. */
-    protected static class MatcherCheckerFn<T> implements SerializableFunction<T, Void> {
-      private SerializableMatcher<T> matcher;
-
-      public MatcherCheckerFn(SerializableMatcher<T> matcher) {
-        this.matcher = matcher;
-      }
-
-      @Override
-      @Nullable
-      public Void apply(T actual) {
-        assertThat(actual, matcher);
-        return null;
-      }
     }
 
     /**
@@ -657,7 +797,8 @@ public class PAssert {
      */
     @Deprecated
     @Override
-    public boolean equals(Object o) {
+    @SuppressFBWarnings("EQ_UNUSUAL")
+    public boolean equals(@Nullable Object o) {
       throw new UnsupportedOperationException(
           "If you meant to test object equality, use .containsInAnyOrder instead.");
     }
@@ -714,6 +855,11 @@ public class PAssert {
     }
 
     @Override
+    public PCollectionSingletonIterableAssert<T> inOnlyPane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.onlyPane(site));
+    }
+
+    @Override
     public PCollectionSingletonIterableAssert<T> inFinalPane(BoundedWindow window) {
       return withPanes(window, PaneExtractors.finalPane());
     }
@@ -726,6 +872,11 @@ public class PAssert {
     @Override
     public PCollectionSingletonIterableAssert<T> inEarlyPane(BoundedWindow window) {
       return withPanes(window, PaneExtractors.earlyPanes());
+    }
+
+    @Override
+    public PCollectionSingletonIterableAssert<T> inLatePane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.latePanes());
     }
 
     @Override
@@ -765,11 +916,30 @@ public class PAssert {
       return satisfies(new AssertContainsInAnyOrderRelation<>(), expectedElements);
     }
 
+    @SafeVarargs
+    @Override
+    public final PCollectionSingletonIterableAssert<T> containsInAnyOrder(
+        SerializableMatcher<? super T>... elementMatchers) {
+      @SuppressWarnings({
+        "rawtypes", // TODO(https://github.com/apache/beam/issues/20447)
+        "unchecked"
+      })
+      SerializableFunction<Iterable<T>, Void> checkerFn =
+          (SerializableFunction)
+              new MatcherCheckerFn<>(SerializableMatchers.containsInAnyOrder(elementMatchers));
+      return satisfies(checkerFn);
+    }
+
+    @Override
+    public PCollectionSingletonIterableAssert<T> containsInAnyOrder() {
+      return empty();
+    }
+
     @Override
     public PCollectionSingletonIterableAssert<T> satisfies(
         SerializableFunction<Iterable<T>, Void> checkerFn) {
       actual.apply(
-          "PAssert$" + (assertCount++),
+          "PAssert$" + assertCount++,
           new GroupThenAssertForSingleton<>(checkerFn, rewindowingStrategy, paneExtractor, site));
       return this;
     }
@@ -779,6 +949,131 @@ public class PAssert {
       return satisfies(
           new CheckRelationAgainstExpected<>(
               relation, expectedElements, IterableCoder.of(elementCoder)));
+    }
+  }
+
+  /**
+   * A {@link SingletonAssert} about the contents of a {@link PCollection} when it contains a single
+   * value of type {@code T}. This does not require the runner to support side inputs.
+   */
+  private static class PCollectionSingletonAssert<T> implements SingletonAssert<T> {
+    private final PCollection<T> actual;
+    private final Coder<T> coder;
+    private final AssertionWindows rewindowingStrategy;
+    private final SimpleFunction<Iterable<ValueInSingleWindow<T>>, Iterable<T>> paneExtractor;
+
+    private final PAssertionSite site;
+
+    PCollectionSingletonAssert(PCollection<T> actual, PAssertionSite site) {
+      this(actual, IntoGlobalWindow.of(), PaneExtractors.allPanes(), site);
+    }
+
+    PCollectionSingletonAssert(
+        PCollection<T> actual,
+        AssertionWindows rewindowingStrategy,
+        SimpleFunction<Iterable<ValueInSingleWindow<T>>, Iterable<T>> paneExtractor,
+        PAssertionSite site) {
+      this.actual = actual;
+      this.coder = actual.getCoder();
+      this.rewindowingStrategy = rewindowingStrategy;
+      this.paneExtractor = paneExtractor;
+      this.site = site;
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inWindow(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.allPanes());
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inFinalPane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.finalPane());
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inOnTimePane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.onTimePane());
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inEarlyPane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.earlyPanes());
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inLatePane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.latePanes());
+    }
+
+    @Override
+    public SingletonAssert<T> isEqualTo(T expected) {
+      return satisfies(new AssertIsEqualToRelation<>(), expected);
+    }
+
+    @Override
+    public SingletonAssert<T> notEqualTo(T notExpected) {
+      return satisfies(new AssertNotEqualToRelation<>(), notExpected);
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> inOnlyPane(BoundedWindow window) {
+      return withPanes(window, PaneExtractors.onlyPane(site));
+    }
+
+    private PCollectionSingletonAssert<T> withPanes(
+        BoundedWindow window,
+        SimpleFunction<Iterable<ValueInSingleWindow<T>>, Iterable<T>> paneExtractor) {
+      @SuppressWarnings({"unchecked", "rawtypes"})
+      Coder<BoundedWindow> windowCoder =
+          (Coder) actual.getWindowingStrategy().getWindowFn().windowCoder();
+      return new PCollectionSingletonAssert<>(
+          actual, IntoStaticWindows.of(windowCoder, window), paneExtractor, site);
+    }
+
+    @Override
+    public PCollectionSingletonAssert<T> satisfies(SerializableFunction<T, Void> checkerFn) {
+      actual.apply(
+          "PAssert$" + assertCount++,
+          new GroupThenAssertForSingleton<>(checkerFn, rewindowingStrategy, paneExtractor, site));
+      return this;
+    }
+
+    /**
+     * Applies an {@link AssertRelation} to check the provided relation against the value of this
+     * assert and the provided expected value.
+     *
+     * <p>Returns this {@code SingletonAssert}.
+     */
+    private PCollectionSingletonAssert<T> satisfies(
+        AssertRelation<T, T> relation, final T expected) {
+      return satisfies(new CheckRelationAgainstExpected<>(relation, expected, coder));
+    }
+
+    /**
+     * @throws UnsupportedOperationException always
+     * @deprecated {@link Object#equals(Object)} is not supported on PAssert objects. If you meant
+     *     to test PCollection equality, use {@link #isEqualTo} instead.
+     */
+    @SuppressFBWarnings("EQ_UNUSUAL")
+    @Deprecated
+    @Override
+    public boolean equals(@Nullable Object o) {
+      throw new UnsupportedOperationException(
+          String.format(
+              "tests for Java equality of the %s object, not the PCollection in question. "
+                  + "Call a test method, such as isEqualTo.",
+              getClass().getSimpleName()));
+    }
+
+    /**
+     * @throws UnsupportedOperationException always.
+     * @deprecated {@link Object#hashCode()} is not supported on {@link PAssert} objects.
+     */
+    @Deprecated
+    @Override
+    public int hashCode() {
+      throw new UnsupportedOperationException(
+          String.format("%s.hashCode() is not supported.", SingletonAssert.class.getSimpleName()));
     }
   }
 
@@ -819,6 +1114,11 @@ public class PAssert {
     }
 
     @Override
+    public PCollectionViewAssert<ElemT, ViewT> inWindow(BoundedWindow window) {
+      return inPane(window, PaneExtractors.allPanes());
+    }
+
+    @Override
     public PCollectionViewAssert<ElemT, ViewT> inOnlyPane(BoundedWindow window) {
       return inPane(window, PaneExtractors.onlyPane(site));
     }
@@ -836,6 +1136,11 @@ public class PAssert {
     @Override
     public PCollectionViewAssert<ElemT, ViewT> inEarlyPane(BoundedWindow window) {
       return inPane(window, PaneExtractors.earlyPanes());
+    }
+
+    @Override
+    public PCollectionViewAssert<ElemT, ViewT> inLatePane(BoundedWindow window) {
+      return inPane(window, PaneExtractors.latePanes());
     }
 
     private PCollectionViewAssert<ElemT, ViewT> inPane(
@@ -867,7 +1172,7 @@ public class PAssert {
       actual
           .getPipeline()
           .apply(
-              "PAssert$" + (assertCount++),
+              "PAssert$" + assertCount++,
               new OneSideInputAssert<>(
                   CreateActual.from(actual, rewindowActuals, paneExtractor, view),
                   rewindowActuals.windowDummy(),
@@ -894,7 +1199,8 @@ public class PAssert {
      */
     @Deprecated
     @Override
-    public boolean equals(Object o) {
+    @SuppressFBWarnings("EQ_UNUSUAL")
+    public boolean equals(@Nullable Object o) {
       throw new UnsupportedOperationException(
           String.format(
               "tests for Java equality of the %s object, not the PCollection in question. "
@@ -1000,7 +1306,8 @@ public class PAssert {
   /**
    * A transform that gathers the contents of a {@link PCollection} into a single main input
    * iterable in the global window. This requires a runner to support {@link GroupByKey} in the
-   * global window, but not side inputs or other windowing or triggers.
+   * global window, but not side inputs or other windowing or triggers unless the input is
+   * non-trivially windowed or triggered.
    *
    * <p>If the {@link PCollection} is empty, this transform returns a {@link PCollection} containing
    * a single empty iterable, even though in practice most runners will not produce any element.
@@ -1017,6 +1324,41 @@ public class PAssert {
     @Override
     public PCollection<Iterable<ValueInSingleWindow<T>>> expand(PCollection<T> input) {
       final int combinedKey = 42;
+
+      if (input.getWindowingStrategy().equals(WindowingStrategy.globalDefault())
+          && rewindowingStrategy instanceof IntoGlobalWindow) {
+        // If we don't have to worry about complicated triggering semantics we can generate
+        // a much simpler pipeline.  This is particularly useful for bootstrapping runners so that
+        // we can run subsets of the validates runner test suite requiring support of only the
+        // most basic primitives.
+
+        // In order to ensure we actually get an (empty) iterable rather than an empty PCollection
+        // when the input is an empty PCollection, we flatten with a dummy PCollection containing
+        // an empty iterable before grouping on a singleton key and concatenating.
+        PCollection<Iterable<ValueInSingleWindow<T>>> actual =
+            input.apply(Reify.windows()).apply(ParDo.of(new ToSingletonIterables<>()));
+        PCollection<Iterable<ValueInSingleWindow<T>>> dummy =
+            input
+                .getPipeline()
+                .apply(
+                    Create.<Iterable<ValueInSingleWindow<T>>>of(
+                            ImmutableList.of(ImmutableList.of()))
+                        .withCoder(actual.getCoder()));
+        return PCollectionList.of(dummy)
+            .and(actual)
+            .apply(Flatten.pCollections())
+            .apply(
+                // Default end-of-window trigger disallowed for unbounded PCollections.
+                input.isBounded() == PCollection.IsBounded.UNBOUNDED
+                    ? Window.<Iterable<ValueInSingleWindow<T>>>configure()
+                        .triggering(Never.ever())
+                        .discardingFiredPanes()
+                    : Window.<Iterable<ValueInSingleWindow<T>>>configure())
+            .apply(WithKeys.of(combinedKey))
+            .apply(GroupByKey.create())
+            .apply(Values.create())
+            .apply(ParDo.of(new ConcatFn<>()));
+      }
 
       // Remove the triggering on both
       PTransform<
@@ -1070,9 +1412,16 @@ public class PAssert {
     }
   }
 
+  private static final class ToSingletonIterables<T> extends DoFn<T, Iterable<T>> {
+    @ProcessElement
+    public void processElement(ProcessContext c) {
+      c.output(ImmutableList.of(c.element()));
+    }
+  }
+
   private static final class ConcatFn<T> extends DoFn<Iterable<Iterable<T>>, Iterable<T>> {
     @ProcessElement
-    public void processElement(ProcessContext c) throws Exception {
+    public void processElement(ProcessContext c) {
       c.output(Iterables.concat(c.element()));
     }
   }
@@ -1113,22 +1462,20 @@ public class PAssert {
   }
 
   /**
-   * A transform that applies an assertion-checking function to a single iterable contained as the
-   * sole element of a {@link PCollection}.
+   * A transform that applies an assertion-checking function to the sole element of a {@link
+   * PCollection}.
    */
-  public static class GroupThenAssertForSingleton<T>
-      extends PTransform<PCollection<Iterable<T>>, PDone> implements Serializable {
-    private final SerializableFunction<Iterable<T>, Void> checkerFn;
+  public static class GroupThenAssertForSingleton<T> extends PTransform<PCollection<T>, PDone>
+      implements Serializable {
+    private final SerializableFunction<T, Void> checkerFn;
     private final AssertionWindows rewindowingStrategy;
-    private final SimpleFunction<Iterable<ValueInSingleWindow<Iterable<T>>>, Iterable<Iterable<T>>>
-        paneExtractor;
+    private final SimpleFunction<Iterable<ValueInSingleWindow<T>>, Iterable<T>> paneExtractor;
     private final PAssertionSite site;
 
     private GroupThenAssertForSingleton(
-        SerializableFunction<Iterable<T>, Void> checkerFn,
+        SerializableFunction<T, Void> checkerFn,
         AssertionWindows rewindowingStrategy,
-        SimpleFunction<Iterable<ValueInSingleWindow<Iterable<T>>>, Iterable<Iterable<T>>>
-            paneExtractor,
+        SimpleFunction<Iterable<ValueInSingleWindow<T>>, Iterable<T>> paneExtractor,
         PAssertionSite site) {
       this.checkerFn = checkerFn;
       this.rewindowingStrategy = rewindowingStrategy;
@@ -1137,7 +1484,7 @@ public class PAssert {
     }
 
     @Override
-    public PDone expand(PCollection<Iterable<T>> input) {
+    public PDone expand(PCollection<T> input) {
       input
           .apply("GroupGlobally", new GroupGlobally<>(rewindowingStrategy))
           .apply("GetPane", MapElements.via(paneExtractor))
@@ -1292,8 +1639,7 @@ public class PAssert {
     }
 
     @Override
-    @Nullable
-    public Void apply(T actual) {
+    public @Nullable Void apply(T actual) {
       assertThat(actual, equalTo(expected));
       return null;
     }
@@ -1311,8 +1657,7 @@ public class PAssert {
     }
 
     @Override
-    @Nullable
-    public Void apply(T actual) {
+    public @Nullable Void apply(T actual) {
       assertThat(actual, not(equalTo(expected)));
       return null;
     }
@@ -1341,8 +1686,7 @@ public class PAssert {
     }
 
     @Override
-    @Nullable
-    public Void apply(Iterable<T> actual) {
+    public @Nullable Void apply(Iterable<T> actual) {
       assertThat(actual, containsInAnyOrder(expected));
       return null;
     }
@@ -1555,6 +1899,21 @@ public class PAssert {
     int getPAssertCount() {
       checkState(pipelineVisited);
       return assertCount;
+    }
+  }
+
+  /** Check that the passed-in matchers match the existing data. */
+  protected static class MatcherCheckerFn<T> implements SerializableFunction<T, Void> {
+    private SerializableMatcher<T> matcher;
+
+    public MatcherCheckerFn(SerializableMatcher<T> matcher) {
+      this.matcher = matcher;
+    }
+
+    @Override
+    public @Nullable Void apply(T actual) {
+      assertThat(actual, matcher);
+      return null;
     }
   }
 }

@@ -21,16 +21,15 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.mongodb.DB;
-import com.mongodb.Mongo;
+import com.mongodb.MongoClient;
 import com.mongodb.gridfs.GridFS;
 import com.mongodb.gridfs.GridFSDBFile;
 import com.mongodb.gridfs.GridFSInputFile;
 import de.flapdoodle.embed.mongo.MongodExecutable;
 import de.flapdoodle.embed.mongo.MongodProcess;
 import de.flapdoodle.embed.mongo.MongodStarter;
-import de.flapdoodle.embed.mongo.config.IMongodConfig;
-import de.flapdoodle.embed.mongo.config.MongoCmdOptionsBuilder;
-import de.flapdoodle.embed.mongo.config.MongodConfigBuilder;
+import de.flapdoodle.embed.mongo.config.MongoCmdOptions;
+import de.flapdoodle.embed.mongo.config.MongodConfig;
 import de.flapdoodle.embed.mongo.config.Net;
 import de.flapdoodle.embed.mongo.config.Storage;
 import de.flapdoodle.embed.mongo.distribution.Version;
@@ -43,7 +42,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,6 +51,7 @@ import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.io.BoundedSource;
+import org.apache.beam.sdk.io.common.NetworkTestHelper;
 import org.apache.beam.sdk.io.mongodb.MongoDbGridFSIO.Read.BoundedGridFSSource;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -73,10 +72,13 @@ import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Test on the MongoDbGridFSIO. */
+@RunWith(JUnit4.class)
 public class MongoDBGridFSIOTest {
   private static final Logger LOG = LoggerFactory.getLogger(MongoDBGridFSIOTest.class);
 
@@ -93,24 +95,21 @@ public class MongoDBGridFSIOTest {
 
   @BeforeClass
   public static void start() throws Exception {
-    try (ServerSocket serverSocket = new ServerSocket(0)) {
-      port = serverSocket.getLocalPort();
-    }
-
+    port = NetworkTestHelper.getAvailableLocalPort();
     LOG.info("Starting MongoDB embedded instance on {}", port);
-    IMongodConfig mongodConfig =
-        new MongodConfigBuilder()
+    MongodConfig mongodConfig =
+        MongodConfig.builder()
             .version(Version.Main.PRODUCTION)
-            .configServer(false)
+            .isConfigServer(false)
             .replication(new Storage(MONGODB_LOCATION.getRoot().getPath(), null, 0))
             .net(new Net("localhost", port, Network.localhostIsIPv6()))
             .cmdOptions(
-                new MongoCmdOptionsBuilder()
+                MongoCmdOptions.builder()
                     .syncDelay(10)
                     .useNoPrealloc(true)
                     .useSmallFiles(true)
                     .useNoJournal(true)
-                    .verbose(false)
+                    .isVerbose(false)
                     .build())
             .build();
     mongodExecutable = mongodStarter.prepare(mongodConfig);
@@ -118,7 +117,7 @@ public class MongoDBGridFSIOTest {
 
     LOG.info("Insert test data");
 
-    Mongo client = new Mongo("localhost", port);
+    MongoClient client = new MongoClient("localhost", port);
     DB database = client.getDB(DATABASE);
     GridFS gridfs = new GridFS(database);
 
@@ -155,14 +154,14 @@ public class MongoDBGridFSIOTest {
       for (int y = 0; y < 5000; y++) {
         long time = now - random.nextInt(3600000);
         String name = scientists[y % scientists.length];
-        writer.write(Long.toString(time) + "\t");
+        writer.write(time + "\t");
         writer.write(name + "\t");
         writer.write(Integer.toString(random.nextInt(100)));
         writer.write("\n");
       }
       for (int y = 0; y < scientists.length; y++) {
         String name = scientists[y % scientists.length];
-        writer.write(Long.toString(now) + "\t");
+        writer.write(now + "\t");
         writer.write(name + "\t");
         writer.write("101");
         writer.write("\n");
@@ -227,7 +226,7 @@ public class MongoDBGridFSIOTest {
                         }
                       }
                     })
-                .withSkew(new Duration(3610000L))
+                .withSkew(Duration.millis(3610000L))
                 .withCoder(KvCoder.of(StringUtf8Coder.of(), VarIntCoder.of())));
 
     PAssert.thatSingleton(output.apply("Count All", Count.globally())).isEqualTo(50100L);
@@ -309,10 +308,10 @@ public class MongoDBGridFSIOTest {
 
     pipeline.run();
 
-    Mongo client = null;
+    MongoClient client = null;
     try {
       StringBuilder results = new StringBuilder();
-      client = new Mongo("localhost", port);
+      client = new MongoClient("localhost", port);
       DB database = client.getDB(DATABASE);
       GridFS gridfs = new GridFS(database, "WriteTest");
       List<GridFSDBFile> files = gridfs.find("WriteTestData");

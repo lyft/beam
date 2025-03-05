@@ -18,31 +18,45 @@
 package org.apache.beam.runners.samza;
 
 import static org.apache.beam.runners.core.metrics.MetricsContainerStepMap.asAttemptedOnlyMetricResults;
+import static org.apache.samza.config.TaskConfig.TASK_SHUTDOWN_MS;
 
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.metrics.MetricResults;
-import org.apache.samza.application.StreamApplication;
+import org.apache.beam.sdk.util.UserCodeException;
+import org.apache.samza.config.Config;
 import org.apache.samza.job.ApplicationStatus;
 import org.apache.samza.runtime.ApplicationRunner;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** The result from executing a Samza Pipeline. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class SamzaPipelineResult implements PipelineResult {
   private static final Logger LOG = LoggerFactory.getLogger(SamzaPipelineResult.class);
+  // allow some buffer on top of samza's own shutdown timeout
+  private static final long SHUTDOWN_TIMEOUT_BUFFER = 5000L;
+  private static final long DEFAULT_TASK_SHUTDOWN_MS = 30000L;
 
   private final SamzaExecutionContext executionContext;
   private final ApplicationRunner runner;
-  private final StreamApplication app;
+  private final SamzaPipelineLifeCycleListener listener;
+  private final long shutdownTiemoutMs;
 
   public SamzaPipelineResult(
-      StreamApplication app, ApplicationRunner runner, SamzaExecutionContext executionContext) {
+      ApplicationRunner runner,
+      SamzaExecutionContext executionContext,
+      SamzaPipelineLifeCycleListener listener,
+      Config config) {
     this.executionContext = executionContext;
     this.runner = runner;
-    this.app = app;
+    this.listener = listener;
+    this.shutdownTiemoutMs =
+        config.getLong(TASK_SHUTDOWN_MS, DEFAULT_TASK_SHUTDOWN_MS) + SHUTDOWN_TIMEOUT_BUFFER;
   }
 
   @Override
@@ -52,8 +66,10 @@ public class SamzaPipelineResult implements PipelineResult {
 
   @Override
   public State cancel() {
-    runner.kill(app);
-    return waitUntilFinish();
+    LOG.info("Start to cancel samza pipeline...");
+    runner.kill();
+    LOG.info("Start awaiting finish for {} ms.", shutdownTiemoutMs);
+    return waitUntilFinish(Duration.millis(shutdownTiemoutMs));
   }
 
   @Override
@@ -69,10 +85,16 @@ public class SamzaPipelineResult implements PipelineResult {
     }
 
     final StateInfo stateInfo = getStateInfo();
+
+    if (listener != null && (stateInfo.state == State.DONE || stateInfo.state == State.FAILED)) {
+      listener.onFinish();
+    }
+
     if (stateInfo.state == State.FAILED) {
       throw stateInfo.error;
     }
 
+    LOG.info("Pipeline finished. Final state: {}", stateInfo.state);
     return stateInfo.state;
   }
 
@@ -87,7 +109,7 @@ public class SamzaPipelineResult implements PipelineResult {
   }
 
   private StateInfo getStateInfo() {
-    final ApplicationStatus status = runner.status(app);
+    final ApplicationStatus status = runner.status();
     switch (status.getStatusCode()) {
       case New:
         return new StateInfo(State.STOPPED);
@@ -98,7 +120,8 @@ public class SamzaPipelineResult implements PipelineResult {
       case UnsuccessfulFinish:
         LOG.error(status.getThrowable().getMessage(), status.getThrowable());
         return new StateInfo(
-            State.FAILED, new Pipeline.PipelineExecutionException(status.getThrowable()));
+            State.FAILED,
+            new Pipeline.PipelineExecutionException(getUserCodeException(status.getThrowable())));
       default:
         return new StateInfo(State.UNKNOWN);
     }
@@ -116,5 +139,22 @@ public class SamzaPipelineResult implements PipelineResult {
       this.state = state;
       this.error = error;
     }
+  }
+
+  /**
+   * Some of the Beam unit tests relying on the exception message to do assertion. This function
+   * will find the original UserCodeException so the message will be exposed directly.
+   */
+  private static Throwable getUserCodeException(Throwable throwable) {
+    Throwable t = throwable;
+    while (t != null) {
+      if (t instanceof UserCodeException) {
+        return t;
+      }
+
+      t = t.getCause();
+    }
+
+    return throwable;
   }
 }

@@ -22,12 +22,14 @@ import static org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils.INTEGER
 import static org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils.VARCHAR;
 import static org.apache.beam.sdk.extensions.sql.utils.DateTimeUtils.parseTimestampWithUTCTimeZone;
 import static org.apache.beam.sdk.schemas.Schema.toSchema;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.stream.Stream;
 import org.apache.beam.sdk.extensions.sql.impl.ParseException;
 import org.apache.beam.sdk.extensions.sql.meta.Table;
@@ -232,7 +234,11 @@ public class BeamSqlCliTest {
             + "COMMENT '' LOCATION '/home/admin/orders'");
 
     String plan = cli.explainQuery("select * from person");
-    assertThat(plan, equalTo("BeamIOSourceRel(table=[[beam, person]])\n"));
+    assertThat(
+        plan,
+        equalTo(
+            "BeamCalcRel(expr#0..2=[{inputs}], proj#0..2=[{exprs}])\n"
+                + "  BeamIOSourceRel(table=[[beam, person]])\n"));
   }
 
   @Test
@@ -264,9 +270,9 @@ public class BeamSqlCliTest {
     assertEquals(3, row.getFieldCount());
 
     // test DATE field
-    assertEquals("2018-11-01", row.getDateTime("f_date").toString("yyyy-MM-dd"));
+    assertEquals("2018-11-01", row.getLogicalTypeValue("f_date", LocalDate.class).toString());
     // test TIME field
-    assertEquals("15:23:59.000", row.getDateTime("f_time").toString("HH:mm:ss.SSS"));
+    assertEquals("15:23:59", row.getLogicalTypeValue("f_time", LocalTime.class).toString());
     // test TIMESTAMP field
     assertEquals(parseTimestampWithUTCTimeZone("2018-07-01 21:26:07.123"), row.getDateTime("f_ts"));
   }

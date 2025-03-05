@@ -17,17 +17,22 @@
  */
 package org.apache.beam.sdk.metrics;
 
-// Intentionally package private, this is meant to be used with Metrics.java and
-// LabeledMetrics.java
-
 import java.io.Serializable;
+import org.apache.beam.sdk.annotations.Internal;
 
 /** Implementation of {@link Counter} that delegates to the instance for the current context. */
+@Internal
 public class DelegatingCounter implements Metric, Counter, Serializable {
   private final MetricName name;
+  private final boolean processWideContainer;
 
   public DelegatingCounter(MetricName name) {
+    this(name, false);
+  }
+
+  public DelegatingCounter(MetricName name, boolean processWideContainer) {
     this.name = name;
+    this.processWideContainer = processWideContainer;
   }
 
   /** Increment the counter. */
@@ -39,7 +44,10 @@ public class DelegatingCounter implements Metric, Counter, Serializable {
   /** Increment the counter by the given amount. */
   @Override
   public void inc(long n) {
-    MetricsContainer container = MetricsEnvironment.getCurrentContainer();
+    MetricsContainer container =
+        this.processWideContainer
+            ? MetricsEnvironment.getProcessWideContainer()
+            : MetricsEnvironment.getCurrentContainer();
     if (container != null) {
       container.getCounter(name).inc(n);
     }

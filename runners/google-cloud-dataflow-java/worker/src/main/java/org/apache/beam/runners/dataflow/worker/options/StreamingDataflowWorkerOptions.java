@@ -19,9 +19,9 @@ package org.apache.beam.runners.dataflow.worker.options;
 
 import java.io.IOException;
 import org.apache.beam.runners.dataflow.options.DataflowWorkerHarnessOptions;
-import org.apache.beam.runners.dataflow.worker.windmill.GrpcWindmillServer;
 import org.apache.beam.runners.dataflow.worker.windmill.WindmillServer;
 import org.apache.beam.runners.dataflow.worker.windmill.WindmillServerStub;
+import org.apache.beam.runners.dataflow.worker.windmill.grpcclient.GrpcWindmillServer;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.DefaultValueFactory;
 import org.apache.beam.sdk.options.Description;
@@ -32,6 +32,9 @@ import org.joda.time.Duration;
 /** [Internal] Options for configuring StreamingDataflowWorker. */
 @Description("[Internal] Options for configuring StreamingDataflowWorker.")
 @Hidden
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public interface StreamingDataflowWorkerOptions extends DataflowWorkerHarnessOptions {
   @Description("Stub for communicating with Windmill.")
   @Default.InstanceFactory(WindmillServerStubFactory.class)
@@ -69,6 +72,12 @@ public interface StreamingDataflowWorkerOptions extends DataflowWorkerHarnessOpt
 
   void setActiveWorkRefreshPeriodMillis(int value);
 
+  @Description("Necessary duration for a commit to be considered stuck and invalidated.")
+  @Default.Integer(10 * 60 * 1000)
+  int getStuckCommitDurationMillis();
+
+  void setStuckCommitDurationMillis(int value);
+
   @Description(
       "Period for sending 'global get config' requests to the service. The duration is "
           + "specified as seconds in 'PTx.yS' format, e.g. 'PT5.125S'."
@@ -91,6 +100,35 @@ public interface StreamingDataflowWorkerOptions extends DataflowWorkerHarnessOpt
   int getWindmillServiceStreamingRpcBatchLimit();
 
   void setWindmillServiceStreamingRpcBatchLimit(int value);
+
+  @Description("Log streaming rpc errors once out of every N.")
+  @Default.Integer(20)
+  int getWindmillServiceStreamingLogEveryNStreamFailures();
+
+  void setWindmillServiceStreamingLogEveryNStreamFailures(int value);
+
+  @Description("The health check period and timeout for grpc channel healthchecks")
+  @Default.Integer(40)
+  int getWindmillServiceRpcChannelAliveTimeoutSec();
+
+  void setWindmillServiceRpcChannelAliveTimeoutSec(int value);
+
+  @Description(
+      "If positive, frequency at which windmill service streaming rpcs will have application "
+          + "level health checks.")
+  @Default.Integer(10000)
+  int getWindmillServiceStreamingRpcHealthCheckPeriodMs();
+
+  void setWindmillServiceStreamingRpcHealthCheckPeriodMs(int value);
+
+  @Description(
+      "If positive, the number of messages to send on streaming rpc before checking isReady."
+          + "Higher values reduce cost of output overhead at the cost of more memory used in grpc "
+          + "buffers.")
+  @Default.Integer(10)
+  int getWindmillMessagesBetweenIsReadyChecks();
+
+  void setWindmillMessagesBetweenIsReadyChecks(int value);
 
   /**
    * Factory for creating local Windmill address. Reads from system propery 'windmill.hostport' for
@@ -169,7 +207,7 @@ public interface StreamingDataflowWorkerOptions extends DataflowWorkerHarnessOpt
           || streamingOptions.isEnableStreamingEngine()
           || streamingOptions.getLocalWindmillHostport().startsWith("grpc:")) {
         try {
-          return new GrpcWindmillServer(streamingOptions);
+          return GrpcWindmillServer.create(streamingOptions);
         } catch (IOException e) {
           throw new RuntimeException("Failed to create GrpcWindmillServer: ", e);
         }

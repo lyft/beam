@@ -15,27 +15,33 @@
 
 // Package direct contains the direct runner for running single-bundle
 // pipelines in the current process. Useful for testing.
+//
+// Deprecated: Use prism as a local runner instead.
+// Reliance on the direct runner leads to non-portable pipelines.
 package direct
 
 import (
 	"context"
-	"fmt"
 	"path"
 
-	"github.com/apache/beam/sdks/go/pkg/beam"
-	"github.com/apache/beam/sdks/go/pkg/beam/core/graph"
-	"github.com/apache/beam/sdks/go/pkg/beam/core/metrics"
-	"github.com/apache/beam/sdks/go/pkg/beam/core/runtime/exec"
-	"github.com/apache/beam/sdks/go/pkg/beam/core/typex"
-	"github.com/apache/beam/sdks/go/pkg/beam/log"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/graph"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/metrics"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/runtime/exec"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/core/typex"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/log"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/vet"
 )
 
 func init() {
 	beam.RegisterRunner("direct", Execute)
+	beam.RegisterRunner("DirectRunner", Execute)
 }
 
 // Execute runs the pipeline in-process.
-func Execute(ctx context.Context, p *beam.Pipeline) error {
+func Execute(ctx context.Context, p *beam.Pipeline) (beam.PipelineResult, error) {
 	log.Info(ctx, "Executing pipeline with the direct runner.")
 
 	if !beam.Initialized() {
@@ -44,26 +50,54 @@ func Execute(ctx context.Context, p *beam.Pipeline) error {
 
 	log.Info(ctx, "Pipeline:")
 	log.Info(ctx, p)
+	ctx = metrics.SetBundleID(ctx, "direct") // Ensure a metrics.Store exists.
+
+	if *jobopts.Strict {
+		log.Info(ctx, "Strict mode enabled, applying additional validation.")
+		if _, err := vet.Execute(ctx, p); err != nil {
+			return nil, errors.Wrap(err, "strictness check failed")
+		}
+		log.Info(ctx, "Strict mode validation passed.")
+	}
 
 	edges, _, err := p.Build()
 	if err != nil {
-		return fmt.Errorf("invalid pipeline: %v", err)
+		return nil, errors.Wrap(err, "invalid pipeline")
 	}
 	plan, err := Compile(edges)
 	if err != nil {
-		return fmt.Errorf("translation failed: %v", err)
+		return nil, errors.Wrap(err, "translation failed")
 	}
+	beam.PipelineOptions.LoadOptionsFromFlags(nil)
 	log.Info(ctx, plan)
 
 	if err = plan.Execute(ctx, "", exec.DataContext{}); err != nil {
 		plan.Down(ctx) // ignore any teardown errors
-		return err
+		return nil, err
 	}
 	if err = plan.Down(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	metrics.DumpToLog(ctx)
-	return nil
+
+	return newDirectPipelineResult(ctx)
+}
+
+type directPipelineResult struct {
+	jobID   string
+	metrics *metrics.Results
+}
+
+func newDirectPipelineResult(ctx context.Context) (*directPipelineResult, error) {
+	metrics := metrics.ResultsExtractor(ctx)
+	return &directPipelineResult{metrics: &metrics}, nil
+}
+
+func (pr directPipelineResult) Metrics() metrics.Results {
+	return *pr.metrics
+}
+
+func (pr directPipelineResult) JobID() string {
+	return pr.jobID
 }
 
 // Compile translates a pipeline to a multi-bundle execution plan.
@@ -220,19 +254,27 @@ func (b *builder) makeLink(id linkID) (exec.Node, error) {
 	var u exec.Node
 	switch edge.Op {
 	case graph.ParDo:
-		pardo := &exec.ParDo{UID: b.idgen.New(), Fn: edge.DoFn, Inbound: edge.Input, Out: out}
-		pardo.PID = path.Base(pardo.Fn.Name())
+		pardo := &exec.ParDo{
+			UID:     b.idgen.New(),
+			Fn:      edge.DoFn,
+			Inbound: edge.Input,
+			Out:     out,
+			PID:     path.Base(edge.DoFn.Name()),
+		}
+		u = pardo
+		if edge.DoFn.IsSplittable() {
+			u = &exec.SdfFallback{PDo: pardo}
+		}
 		if len(edge.Input) == 1 {
-			u = pardo
 			break
 		}
 
 		// ParDo w/ side input. We need to insert buffering and wait. We also need to
 		// ensure that we return the correct link node.
 
-		b.units = append(b.units, pardo)
+		b.units = append(b.units, u)
 
-		w := &wait{UID: b.idgen.New(), need: len(edge.Input) - 1, next: pardo}
+		w := &wait{UID: b.idgen.New(), need: len(edge.Input) - 1, next: u}
 		b.units = append(b.units, w)
 		b.links[linkID{edge.ID(), 0}] = w
 
@@ -249,7 +291,13 @@ func (b *builder) makeLink(id linkID) (exec.Node, error) {
 	case graph.Combine:
 		usesKey := typex.IsKV(edge.Input[0].Type)
 
-		u = &exec.Combine{UID: b.idgen.New(), Fn: edge.CombineFn, UsesKey: usesKey, Out: out[0]}
+		u = &exec.Combine{
+			UID:     b.idgen.New(),
+			Fn:      edge.CombineFn,
+			UsesKey: usesKey,
+			Out:     out[0],
+			PID:     path.Base(edge.CombineFn.Name()),
+		}
 
 	case graph.CoGBK:
 		u = &CoGBK{UID: b.idgen.New(), Edge: edge, Out: out[0]}
@@ -272,6 +320,12 @@ func (b *builder) makeLink(id linkID) (exec.Node, error) {
 
 		return b.links[id], nil
 
+	case graph.Reshuffle:
+		// Reshuffle is a no-op in the direct runner, as there's only a single bundle
+		// on a single worker. Hoist the next node up in the cache.
+		b.links[id] = out[0]
+		return b.links[id], nil
+
 	case graph.Flatten:
 		u = &exec.Flatten{UID: b.idgen.New(), N: len(edge.Input), Out: out[0]}
 
@@ -282,8 +336,11 @@ func (b *builder) makeLink(id linkID) (exec.Node, error) {
 	case graph.WindowInto:
 		u = &exec.WindowInto{UID: b.idgen.New(), Fn: edge.WindowFn, Out: out[0]}
 
+	case graph.External:
+		return nil, errors.Errorf("external transforms like %v are not supported in the Go direct runner, please execute your pipeline on a different runner", edge)
+
 	default:
-		return nil, fmt.Errorf("unexpected edge: %v", edge)
+		return nil, errors.Errorf("unexpected edge: %v", edge)
 	}
 
 	b.links[id] = u

@@ -17,7 +17,7 @@
  */
 package org.apache.beam.sdk.io.aws.sns;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.sns.AmazonSNS;
@@ -29,8 +29,7 @@ import com.google.auto.value.AutoValue;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.function.Predicate;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.metrics.Counter;
 import org.apache.beam.sdk.metrics.Metrics;
 import org.apache.beam.sdk.transforms.DoFn;
@@ -44,9 +43,10 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableSet;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableSet;
 import org.apache.http.HttpStatus;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,8 +78,20 @@ import org.slf4j.LoggerFactory;
  *   <li>need to specify AwsClientsProvider. You can pass on the default one BasicSnsProvider
  *   <li>an output tag where you can get results. Example in SnsIOTest
  * </ul>
+ *
+ * <p>By default, the output PublishResult contains only the messageId, all other fields are null.
+ * If you need the full ResponseMetadata and SdkHttpMetadata you can call {@link
+ * Write#withFullPublishResult}. If you need the HTTP status code but not the response headers you
+ * can call {@link Write#withFullPublishResultWithoutHeaders}.
+ *
+ * @deprecated Module <code>beam-sdks-java-io-amazon-web-services</code> is deprecated and will be
+ *     eventually removed. Please migrate to {@link org.apache.beam.sdk.io.aws2.sns.SnsIO} in module
+ *     <code>beam-sdks-java-io-amazon-web-services2</code>.
  */
-@Experimental(Experimental.Kind.SOURCE_SINK)
+@Deprecated
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public final class SnsIO {
 
   // Write data tp SNS
@@ -97,7 +109,10 @@ public final class SnsIO {
    * </ul>
    */
   @AutoValue
+  @AutoValue.CopyAnnotations
   public abstract static class RetryConfiguration implements Serializable {
+    private static final Duration DEFAULT_INITIAL_DURATION = Duration.standardSeconds(5);
+
     @VisibleForTesting
     static final RetryPredicate DEFAULT_RETRY_PREDICATE = new DefaultRetryPredicate();
 
@@ -105,18 +120,30 @@ public final class SnsIO {
 
     abstract Duration getMaxDuration();
 
+    abstract Duration getInitialDuration();
+
     abstract RetryPredicate getRetryPredicate();
 
     abstract Builder builder();
 
     public static RetryConfiguration create(int maxAttempts, Duration maxDuration) {
+      return create(maxAttempts, maxDuration, DEFAULT_INITIAL_DURATION);
+    }
+
+    @VisibleForTesting
+    static RetryConfiguration create(
+        int maxAttempts, Duration maxDuration, Duration initialDuration) {
       checkArgument(maxAttempts > 0, "maxAttempts should be greater than 0");
       checkArgument(
           maxDuration != null && maxDuration.isLongerThan(Duration.ZERO),
           "maxDuration should be greater than 0");
+      checkArgument(
+          initialDuration != null && initialDuration.isLongerThan(Duration.ZERO),
+          "initialDuration should be greater than 0");
       return new AutoValue_SnsIO_RetryConfiguration.Builder()
           .setMaxAttempts(maxAttempts)
           .setMaxDuration(maxDuration)
+          .setInitialDuration(initialDuration)
           .setRetryPredicate(DEFAULT_RETRY_PREDICATE)
           .build();
     }
@@ -127,6 +154,8 @@ public final class SnsIO {
 
       abstract SnsIO.RetryConfiguration.Builder setMaxDuration(Duration maxDuration);
 
+      abstract SnsIO.RetryConfiguration.Builder setInitialDuration(Duration initialDuration);
+
       abstract SnsIO.RetryConfiguration.Builder setRetryPredicate(RetryPredicate retryPredicate);
 
       abstract SnsIO.RetryConfiguration build();
@@ -135,7 +164,7 @@ public final class SnsIO {
     /**
      * An interface used to control if we retry the SNS Publish call when a {@link Throwable}
      * occurs. If {@link RetryPredicate#test(Object)} returns true, {@link Write} tries to resend
-     * the requests to the Solr server if the {@link RetryConfiguration} permits it.
+     * the requests to SNS if the {@link RetryConfiguration} permits it.
      */
     @FunctionalInterface
     interface RetryPredicate extends Predicate<Throwable>, Serializable {}
@@ -156,19 +185,19 @@ public final class SnsIO {
 
   /** Implementation of {@link #write}. */
   @AutoValue
+  @AutoValue.CopyAnnotations
   public abstract static class Write
       extends PTransform<PCollection<PublishRequest>, PCollectionTuple> {
-    @Nullable
-    abstract String getTopicName();
 
-    @Nullable
-    abstract AwsClientsProvider getAWSClientsProvider();
+    abstract @Nullable String getTopicName();
 
-    @Nullable
-    abstract RetryConfiguration getRetryConfiguration();
+    abstract @Nullable AwsClientsProvider getAWSClientsProvider();
 
-    @Nullable
-    abstract TupleTag<PublishResult> getResultOutputTag();
+    abstract @Nullable RetryConfiguration getRetryConfiguration();
+
+    abstract @Nullable TupleTag<PublishResult> getResultOutputTag();
+
+    abstract @Nullable Coder<PublishResult> getCoder();
 
     abstract Builder builder();
 
@@ -182,6 +211,8 @@ public final class SnsIO {
       abstract Builder setRetryConfiguration(RetryConfiguration retryConfiguration);
 
       abstract Builder setResultOutputTag(TupleTag<PublishResult> results);
+
+      abstract Builder setCoder(Coder<PublishResult> coder);
 
       abstract Write build();
     }
@@ -256,19 +287,49 @@ public final class SnsIO {
       return builder().setResultOutputTag(results).build();
     }
 
+    /**
+     * Encode the full {@code PublishResult} object, including sdkResponseMetadata and
+     * sdkHttpMetadata with the HTTP response headers.
+     */
+    public Write withFullPublishResult() {
+      return withCoder(PublishResultCoders.fullPublishResult());
+    }
+
+    /**
+     * Encode the full {@code PublishResult} object, including sdkResponseMetadata and
+     * sdkHttpMetadata but excluding the HTTP response headers.
+     */
+    public Write withFullPublishResultWithoutHeaders() {
+      return withCoder(PublishResultCoders.fullPublishResultWithoutHeaders());
+    }
+
+    /** Encode the {@code PublishResult} with the given coder. */
+    public Write withCoder(Coder<PublishResult> coder) {
+      return builder().setCoder(coder).build();
+    }
+
     @Override
     public PCollectionTuple expand(PCollection<PublishRequest> input) {
+      LoggerFactory.getLogger(SnsIO.class)
+          .warn(
+              "You are using a deprecated IO for Sns. Please migrate to module "
+                  + "'org.apache.beam:beam-sdks-java-io-amazon-web-services2'.");
+
       checkArgument(getTopicName() != null, "withTopicName() is required");
-      return input.apply(
-          ParDo.of(new SnsWriterFn(this))
-              .withOutputTags(getResultOutputTag(), TupleTagList.empty()));
+      PCollectionTuple result =
+          input.apply(
+              ParDo.of(new SnsWriterFn(this))
+                  .withOutputTags(getResultOutputTag(), TupleTagList.empty()));
+      if (getCoder() != null) {
+        result.get(getResultOutputTag()).setCoder(getCoder());
+      }
+      return result;
     }
 
     static class SnsWriterFn extends DoFn<PublishRequest, PublishResult> {
       @VisibleForTesting
-      static final String RETRY_ATTEMPT_LOG = "Error writing to SNS. Retry attempt[%d]";
+      static final String RETRY_ATTEMPT_LOG = "Error writing to SNS. Retry attempt[{}]";
 
-      private static final Duration RETRY_INITIAL_BACKOFF = Duration.standardSeconds(5);
       private transient FluentBackoff retryBackoff; // defaults to no retries
       private static final Logger LOG = LoggerFactory.getLogger(SnsWriterFn.class);
       private static final Counter SNS_WRITE_FAILURES =
@@ -290,14 +351,12 @@ public final class SnsIO {
             "Topic %s does not exist",
             spec.getTopicName());
 
-        retryBackoff =
-            FluentBackoff.DEFAULT
-                .withMaxRetries(0) // default to no retrying
-                .withInitialBackoff(RETRY_INITIAL_BACKOFF);
+        retryBackoff = FluentBackoff.DEFAULT.withMaxRetries(0); // default to no retrying
         if (spec.getRetryConfiguration() != null) {
           retryBackoff =
               retryBackoff
                   .withMaxRetries(spec.getRetryConfiguration().getMaxAttempts() - 1)
+                  .withInitialBackoff(spec.getRetryConfiguration().getInitialDuration())
                   .withMaxCumulativeBackoff(spec.getRetryConfiguration().getMaxDuration());
         }
       }
@@ -319,7 +378,7 @@ public final class SnsIO {
             if (spec.getRetryConfiguration() == null
                 || !spec.getRetryConfiguration().getRetryPredicate().test(ex)) {
               SNS_WRITE_FAILURES.inc();
-              LOG.info("Unable to publish message {} due to {} ", request.getMessage(), ex);
+              LOG.info("Unable to publish message {}.", request.getMessage(), ex);
               throw new IOException("Error writing to SNS (no attempt made to retry)", ex);
             }
 
@@ -331,7 +390,7 @@ public final class SnsIO {
                   ex);
             } else {
               // Note: this used in test cases to verify behavior
-              LOG.warn(String.format(RETRY_ATTEMPT_LOG, attempt), ex);
+              LOG.warn(RETRY_ATTEMPT_LOG, attempt, ex);
             }
           }
         }

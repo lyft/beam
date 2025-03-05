@@ -19,7 +19,6 @@ package org.apache.beam.sdk.extensions.euphoria.core.translate;
 
 import static java.util.Objects.requireNonNull;
 
-import javax.annotation.Nullable;
 import org.apache.beam.sdk.extensions.euphoria.core.client.accumulators.AccumulatorProvider;
 import org.apache.beam.sdk.extensions.euphoria.core.client.functional.BinaryFunctor;
 import org.apache.beam.sdk.extensions.euphoria.core.client.operator.Join;
@@ -32,8 +31,12 @@ import org.apache.beam.sdk.transforms.join.KeyedPCollectionTuple;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TupleTag;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** {@link OperatorTranslator Translator } for Euphoria {@link Join} operator. */
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
 public class JoinTranslator<LeftT, RightT, KeyT, OutputT>
     extends AbstractJoinTranslator<LeftT, RightT, KeyT, OutputT> {
 
@@ -60,7 +63,7 @@ public class JoinTranslator<LeftT, RightT, KeyT, OutputT>
           new AdaptableCollector<>(
               accumulatorProvider,
               operatorName,
-              ((ctx, elem) -> ctx.output(KV.of(ctx.element().getKey(), elem))));
+              (ctx, elem) -> ctx.output(KV.of(ctx.element().getKey(), elem)));
     }
 
     @ProcessElement

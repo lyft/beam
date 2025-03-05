@@ -17,13 +17,30 @@
  */
 package org.apache.beam.runners.samza;
 
-import org.apache.beam.runners.fnexecution.control.JobBundleFactory;
 import org.apache.beam.runners.samza.metrics.SamzaMetricsContainer;
+import org.apache.samza.context.ApplicationContainerContext;
+import org.apache.samza.context.ApplicationContainerContextFactory;
+import org.apache.samza.context.ContainerContext;
+import org.apache.samza.context.ExternalContext;
+import org.apache.samza.context.JobContext;
+import org.apache.samza.metrics.MetricsRegistryMap;
 
 /** Runtime context for the Samza runner. */
-public class SamzaExecutionContext {
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
+public class SamzaExecutionContext implements ApplicationContainerContext {
+
+  private final SamzaPipelineOptions options;
   private SamzaMetricsContainer metricsContainer;
-  private JobBundleFactory jobBundleFactory;
+
+  public SamzaExecutionContext(SamzaPipelineOptions options) {
+    this.options = options;
+  }
+
+  public SamzaPipelineOptions getPipelineOptions() {
+    return options;
+  }
 
   public SamzaMetricsContainer getMetricsContainer() {
     return this.metricsContainer;
@@ -33,11 +50,23 @@ public class SamzaExecutionContext {
     this.metricsContainer = metricsContainer;
   }
 
-  public JobBundleFactory getJobBundleFactory() {
-    return this.jobBundleFactory;
-  }
+  @Override
+  public void start() {}
 
-  void setJobBundleFactory(JobBundleFactory jobBundleFactory) {
-    this.jobBundleFactory = jobBundleFactory;
+  @Override
+  public void stop() {}
+
+  /** The factory to return this {@link SamzaExecutionContext}. */
+  public class Factory implements ApplicationContainerContextFactory<SamzaExecutionContext> {
+
+    @Override
+    public SamzaExecutionContext create(
+        ExternalContext externalContext, JobContext jobContext, ContainerContext containerContext) {
+
+      final MetricsRegistryMap metricsRegistry =
+          (MetricsRegistryMap) containerContext.getContainerMetricsRegistry();
+      SamzaExecutionContext.this.setMetricsContainer(new SamzaMetricsContainer(metricsRegistry));
+      return SamzaExecutionContext.this;
+    }
   }
 }

@@ -44,7 +44,7 @@ import org.apache.beam.sdk.util.common.ElementByteSizeObserver;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TypeDescriptor;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -62,10 +62,6 @@ public class CoderRegistryTest {
 
   @Rule public ExpectedLogs expectedLogs = ExpectedLogs.none(CoderRegistry.class);
 
-  private static class SerializableClass implements Serializable {}
-
-  private static class NotSerializableClass {}
-
   @Test
   public void testRegisterInstantiatedCoder() throws Exception {
     CoderRegistry registry = CoderRegistry.createDefault();
@@ -77,6 +73,10 @@ public class CoderRegistryTest {
   public void testSimpleDefaultCoder() throws Exception {
     CoderRegistry registry = CoderRegistry.createDefault();
     assertEquals(StringUtf8Coder.of(), registry.getCoder(String.class));
+    assertEquals(VarIntCoder.of(), registry.getCoder(Integer.class));
+    assertEquals(VarLongCoder.of(), registry.getCoder(Long.class));
+    assertEquals(FloatCoder.of(), registry.getCoder(Float.class));
+    assertEquals(DoubleCoder.of(), registry.getCoder(Double.class));
   }
 
   @Test
@@ -288,7 +288,7 @@ public class CoderRegistryTest {
     @Override
     public PCollection<KV<String, MySerializableGeneric<String>>> expand(
         PCollection<String> input) {
-      return input.apply(ParDo.of(new OutputDoFn()));
+      return input.apply(ParDo.of(new PTransformOutputingMySerializableGeneric.OutputDoFn()));
     }
   }
 

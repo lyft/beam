@@ -39,7 +39,7 @@ import org.apache.beam.runners.samza.metrics.SamzaMetricsContainer;
 import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Sets;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Sets;
 import org.apache.samza.Partition;
 import org.apache.samza.metrics.MetricsRegistryMap;
 import org.apache.samza.system.IncomingMessageEnvelope;
@@ -55,6 +55,7 @@ public class BoundedSourceSystemTest {
 
   // A reasonable time to wait to get all messages from the bounded source assuming no blocking.
   private static final long DEFAULT_TIMEOUT_MILLIS = 1000;
+  private static final String NULL_STRING = null;
 
   @Test
   public void testConsumerStartStop() throws IOException, InterruptedException {
@@ -215,9 +216,9 @@ public class BoundedSourceSystemTest {
 
     final BoundedSourceSystem.Consumer<String> consumer = createConsumer(source, 3);
 
-    consumer.register(ssp(0), null);
-    consumer.register(ssp(1), null);
-    consumer.register(ssp(2), null);
+    consumer.register(ssp(0), NULL_STRING);
+    consumer.register(ssp(1), NULL_STRING);
+    consumer.register(ssp(2), NULL_STRING);
     consumer.start();
 
     final Set<String> offsets = new HashSet<>();

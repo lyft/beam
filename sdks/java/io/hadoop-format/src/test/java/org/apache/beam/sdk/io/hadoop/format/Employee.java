@@ -17,8 +17,10 @@
  */
 package org.apache.beam.sdk.io.hadoop.format;
 
-import org.apache.beam.sdk.coders.AvroCoder;
+import java.util.Objects;
 import org.apache.beam.sdk.coders.DefaultCoder;
+import org.apache.beam.sdk.extensions.avro.coders.AvroCoder;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * This class is Employee POJO class with properties- employee name and address. Used in {@linkplain
@@ -54,7 +56,7 @@ public class Employee {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -64,15 +66,10 @@ public class Employee {
 
     Employee employeePojo = (Employee) o;
 
-    if (empName != null ? !empName.equals(employeePojo.empName) : employeePojo.empName != null) {
+    if (!Objects.equals(empName, employeePojo.empName)) {
       return false;
     }
-    if (empAddress != null
-        ? !empAddress.equals(employeePojo.empAddress)
-        : employeePojo.empAddress != null) {
-      return false;
-    }
-    return true;
+    return Objects.equals(empAddress, employeePojo.empAddress);
   }
 
   @Override

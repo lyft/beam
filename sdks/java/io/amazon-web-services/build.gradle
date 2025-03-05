@@ -18,40 +18,51 @@ import groovy.json.JsonOutput
  * limitations under the License.
  */
 
-plugins { id 'org.apache.beam.module' }
-applyJavaNature()
+plugins {
+  id 'org.apache.beam.module'
+}
+
+applyJavaNature(
+  automaticModuleName: 'org.apache.beam.sdk.io.aws',
+)
+
+provideIntegrationTestingDependencies()
+enableJavaPerformanceTesting()
 
 description = "Apache Beam :: SDKs :: Java :: IO :: Amazon Web Services"
 ext.summary = "IO library to read and write Amazon Web Services services from Beam."
 
-def aws_java_sdk_version = "1.11.319"
-
 dependencies {
-  shadow library.java.vendored_guava_20_0
-  shadow project(path: ":beam-sdks-java-core", configuration: "shadow")
-  shadow "com.amazonaws:aws-java-sdk-core:$aws_java_sdk_version"
-  shadow "com.amazonaws:aws-java-sdk-cloudwatch:$aws_java_sdk_version"
-  shadow "com.amazonaws:aws-java-sdk-s3:$aws_java_sdk_version"
-  shadow "com.amazonaws:aws-java-sdk-sqs:$aws_java_sdk_version"
-  shadow "com.amazonaws:aws-java-sdk-sns:$aws_java_sdk_version"
-  shadow "commons-lang:commons-lang:2.6"
-  shadow library.java.jackson_core
-  shadow library.java.jackson_annotations
-  shadow library.java.jackson_databind
-  shadow library.java.slf4j_api
-  runtime 'commons-codec:commons-codec:1.9'
-  runtime "org.apache.httpcomponents:httpclient:4.5.6"
-  testCompile project(path: ":beam-runners-direct-java", configuration: "shadow")
-  testCompile project(path: ":beam-sdks-java-core", configuration: "shadowTest")
-  testCompile project(path: ":beam-sdks-java-io-common", configuration: "shadow")
-  shadowTest library.java.guava_testlib
-  shadowTest library.java.hamcrest_core
-  shadowTest library.java.hamcrest_library
-  shadowTest library.java.mockito_core
-  shadowTest library.java.junit
-  shadowTest library.java.slf4j_jdk14
-  testCompile "io.findify:s3mock_2.12:0.2.4"
-  shadowTest group: 'org.elasticmq', name: 'elasticmq-rest-sqs_2.12', version: '0.14.1'
+  implementation library.java.vendored_guava_32_1_2_jre
+  implementation project(path: ":sdks:java:core", configuration: "shadow")
+  implementation library.java.aws_java_sdk_cloudwatch
+  implementation library.java.aws_java_sdk_core
+  implementation library.java.aws_java_sdk_dynamodb
+  implementation library.java.aws_java_sdk_s3
+  implementation library.java.aws_java_sdk_sns
+  implementation library.java.aws_java_sdk_sqs
+  implementation library.java.aws_java_sdk_sts
+  implementation library.java.jackson_core
+  implementation library.java.jackson_annotations
+  implementation library.java.jackson_databind
+  implementation library.java.slf4j_api
+  implementation library.java.joda_time
+  implementation library.java.http_core
+  runtimeOnly library.java.commons_codec
+  runtimeOnly "org.apache.httpcomponents:httpclient:4.5.12"
+  testImplementation project(path: ":sdks:java:core", configuration: "shadowTest")
+  testImplementation project(path: ":sdks:java:extensions:avro", configuration: "testRuntimeMigration")
+  testImplementation project(path: ":sdks:java:io:common", configuration: "testRuntimeMigration")
+  testImplementation "io.findify:s3mock_2.12:0.2.6"
+  testImplementation library.java.hamcrest
+  testImplementation library.java.mockito_core
+  testImplementation library.java.junit
+  testImplementation library.java.testcontainers_localstack
+  testImplementation "org.assertj:assertj-core:3.11.1"
+  testImplementation 'org.elasticmq:elasticmq-rest-sqs_2.12:0.15.6'
+  testRuntimeOnly library.java.slf4j_jdk14
+  testRuntimeOnly project(path: ":runners:direct-java", configuration: "shadow")
+  testImplementation project(path: ":runners:core-construction-java", configuration: "testRuntimeMigration")
 }
 
 test {
@@ -59,4 +70,5 @@ test {
       '--awsRegion=us-west-2',
       '--awsCredentialsProvider={"@type" : "AWSStaticCredentialsProvider", "awsAccessKeyId" : "key_id_value","awsSecretKey" : "secret_value"}'
   ])
+  maxParallelForks 4
 }

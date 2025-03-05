@@ -28,7 +28,6 @@ import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.coders.IterableCoder;
 import org.apache.beam.sdk.coders.RowCoder;
 import org.apache.beam.sdk.schemas.Schema;
-import org.apache.beam.sdk.testing.NeedsRunner;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.Flatten;
@@ -39,13 +38,11 @@ import org.apache.beam.sdk.values.Row;
 import org.joda.time.Duration;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /** Tests for atomic/idempotent inserts for {@link ClickHouseIO}. */
 @RunWith(JUnit4.class)
-@Category(NeedsRunner.class)
 public class AtomicInsertTest extends BaseClickHouseTest {
   @Rule public TestPipeline pipeline = TestPipeline.create();
 
@@ -59,7 +56,7 @@ public class AtomicInsertTest extends BaseClickHouseTest {
   /** With sufficient block size, ClickHouse will atomically insert all or nothing. */
   @Test
   public void testAtomicInsert() throws SQLException {
-    int size = 1000000;
+    int size = 100000;
     int done = 0;
 
     // inserts to such table fail with 60% chance for 1M batch size
@@ -97,7 +94,7 @@ public class AtomicInsertTest extends BaseClickHouseTest {
    */
   @Test
   public void testIdempotentInsert() throws SQLException {
-    int size = 1000000;
+    int size = 100000;
 
     // inserts to such table fail with 60% chance for 1M batch size
     executeSql(

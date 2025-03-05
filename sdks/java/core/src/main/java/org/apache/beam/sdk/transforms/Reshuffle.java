@@ -18,7 +18,6 @@
 package org.apache.beam.sdk.transforms;
 
 import java.util.concurrent.ThreadLocalRandom;
-import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Internal;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.ReshuffleTrigger;
@@ -29,14 +28,16 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TimestampedValue;
 import org.apache.beam.sdk.values.WindowingStrategy;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.primitives.UnsignedInteger;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Duration;
 
 /**
  * <b>For internal use only; no backwards compatibility guarantees.</b>
  *
  * <p>A {@link PTransform} that returns a {@link PCollection} equivalent to its input but
- * operationally provides some of the side effects of a {@link GroupByKey}, in particular preventing
- * fusion of the surrounding transforms, checkpointing and deduplication by id.
+ * operationally provides some of the side effects of a {@link GroupByKey}, in particular
+ * checkpointing, and preventing fusion of the surrounding transforms.
  *
  * <p>Performs a {@link GroupByKey} so that the data is key-partitioned. Configures the {@link
  * WindowingStrategy} so that no data is dropped, but doesn't affect the need for the user to
@@ -60,7 +61,6 @@ public class Reshuffle<K, V> extends PTransform<PCollection<KV<K, V>>, PCollecti
    * Encapsulates the sequence "pair input with unique key, apply {@link Reshuffle#of}, drop the
    * key" commonly used to break fusion.
    */
-  @Experimental
   public static <T> ViaRandomKey<T> viaRandomKey() {
     return new ViaRandomKey<>();
   }
@@ -109,36 +109,57 @@ public class Reshuffle<K, V> extends PTransform<PCollection<KV<K, V>>, PCollecti
   public static class ViaRandomKey<T> extends PTransform<PCollection<T>, PCollection<T>> {
     private ViaRandomKey() {}
 
+    private ViaRandomKey(@Nullable Integer numBuckets) {
+      this.numBuckets = numBuckets;
+    }
+
+    // The number of buckets to shard into. This is a performance optimization to prevent having
+    // unit sized bundles on the output. If unset, uses a random integer key.
+    private @Nullable Integer numBuckets;
+
+    public ViaRandomKey<T> withNumBuckets(@Nullable Integer numBuckets) {
+      return new ViaRandomKey<>(numBuckets);
+    }
+
     @Override
     public PCollection<T> expand(PCollection<T> input) {
       return input
-          .apply("Pair with random key", ParDo.of(new AssignShardFn<>()))
+          .apply("Pair with random key", ParDo.of(new AssignShardFn<>(numBuckets)))
           .apply(Reshuffle.of())
           .apply(Values.create());
     }
+  }
 
-    private static class AssignShardFn<T> extends DoFn<T, KV<Integer, T>> {
-      private int shard;
+  public static class AssignShardFn<T> extends DoFn<T, KV<Integer, T>> {
+    private int shard;
+    private @Nullable Integer numBuckets;
 
-      @Setup
-      public void setup() {
-        shard = ThreadLocalRandom.current().nextInt();
+    public AssignShardFn(@Nullable Integer numBuckets) {
+      this.numBuckets = numBuckets;
+    }
+
+    @Setup
+    public void setup() {
+      shard = ThreadLocalRandom.current().nextInt();
+    }
+
+    @ProcessElement
+    public void processElement(@Element T element, OutputReceiver<KV<Integer, T>> r) {
+      ++shard;
+      // Smear the shard into something more random-looking, to avoid issues
+      // with runners that don't properly hash the key being shuffled, but rely
+      // on it being random-looking. E.g. Spark takes the Java hashCode() of keys,
+      // which for Integer is a no-op and it is an issue:
+      // http://hydronitrogen.com/poor-hash-partitioning-of-timestamps-integers-and-longs-in-
+      // spark.html
+      // This hashing strategy is copied from
+      // org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Hashing.smear().
+      int hashOfShard = 0x1b873593 * Integer.rotateLeft(shard * 0xcc9e2d51, 15);
+      if (numBuckets != null) {
+        UnsignedInteger unsignedNumBuckets = UnsignedInteger.fromIntBits(numBuckets);
+        hashOfShard = UnsignedInteger.fromIntBits(hashOfShard).mod(unsignedNumBuckets).intValue();
       }
-
-      @ProcessElement
-      public void processElement(@Element T element, OutputReceiver<KV<Integer, T>> r) {
-        ++shard;
-        // Smear the shard into something more random-looking, to avoid issues
-        // with runners that don't properly hash the key being shuffled, but rely
-        // on it being random-looking. E.g. Spark takes the Java hashCode() of keys,
-        // which for Integer is a no-op and it is an issue:
-        // http://hydronitrogen.com/poor-hash-partitioning-of-timestamps-integers-and-longs-in-
-        // spark.html
-        // This hashing strategy is copied from
-        // org.apache.beam.vendor.guava.v20_0.com.google.common.collect.Hashing.smear().
-        int hashOfShard = 0x1b873593 * Integer.rotateLeft(shard * 0xcc9e2d51, 15);
-        r.output(KV.of(hashOfShard, element));
-      }
+      r.output(KV.of(hashOfShard, element));
     }
   }
 }

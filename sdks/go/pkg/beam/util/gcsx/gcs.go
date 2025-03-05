@@ -20,23 +20,27 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"path"
 
 	"cloud.google.com/go/storage"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/internal/errors"
 	"google.golang.org/api/option"
 )
 
+var userAgent = option.WithUserAgent("(GPN:Beam)")
+
 // NewClient creates a new GCS client with default application credentials, and supplied
-// OAuth scope. The OAuth scopes are defined in https://godoc.org/cloud.google.com/go/storage#pkg-constants.
+// OAuth scope. The OAuth scopes are defined in https://pkg.go.dev/cloud.google.com/go/storage#pkg-constants.
+// Sets the user agent to Beam.
 func NewClient(ctx context.Context, scope string) (*storage.Client, error) {
-	return storage.NewClient(ctx, option.WithScopes(scope))
+	return storage.NewClient(ctx, option.WithScopes(scope), userAgent)
 }
 
 // NewUnauthenticatedClient creates a new GCS client without authentication.
+// Sets the user agent to Beam.
 func NewUnauthenticatedClient(ctx context.Context) (*storage.Client, error) {
-	return storage.NewClient(ctx, option.WithoutAuthentication())
+	return storage.NewClient(ctx, option.WithoutAuthentication(), userAgent)
 }
 
 // Upload writes the given content to GCS. If the specified bucket does not
@@ -90,7 +94,7 @@ func ReadObject(ctx context.Context, client *storage.Client, bucket, object stri
 	if err != nil {
 		return nil, err
 	}
-	return ioutil.ReadAll(r)
+	return io.ReadAll(r)
 }
 
 // MakeObject creates a object location from bucket and path. For example,
@@ -111,10 +115,10 @@ func ParseObject(object string) (bucket, path string, err error) {
 	}
 
 	if parsed.Scheme != "gs" {
-		return "", "", fmt.Errorf("object %s must have 'gs' scheme", object)
+		return "", "", errors.Errorf("object %s must have 'gs' scheme", object)
 	}
 	if parsed.Host == "" {
-		return "", "", fmt.Errorf("object %s must have bucket", object)
+		return "", "", errors.Errorf("object %s must have bucket", object)
 	}
 	if parsed.Path == "" {
 		return parsed.Host, "", nil

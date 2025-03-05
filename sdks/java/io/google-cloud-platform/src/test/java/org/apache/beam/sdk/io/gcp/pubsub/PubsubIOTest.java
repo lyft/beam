@@ -18,6 +18,7 @@
 package org.apache.beam.sdk.io.gcp.pubsub;
 
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
@@ -26,25 +27,38 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
 
 import com.google.api.client.util.Clock;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.reflect.AvroSchema;
 import org.apache.beam.sdk.Pipeline;
-import org.apache.beam.sdk.coders.AvroCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.extensions.avro.coders.AvroCoder;
+import org.apache.beam.sdk.extensions.protobuf.Proto3SchemaMessages.Primitive;
+import org.apache.beam.sdk.extensions.protobuf.ProtoCoder;
+import org.apache.beam.sdk.extensions.protobuf.ProtoDomain;
 import org.apache.beam.sdk.io.AvroGeneratedUser;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubClient.IncomingMessage;
+import org.apache.beam.sdk.io.gcp.pubsub.PubsubClient.OutgoingMessage;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubClient.SubscriptionPath;
+import org.apache.beam.sdk.io.gcp.pubsub.PubsubClient.TopicPath;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO.Read;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubTestClient.PubsubTestClientFactory;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -52,29 +66,38 @@ import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.StaticValueProvider;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
-import org.apache.beam.sdk.testing.UsesUnboundedPCollections;
-import org.apache.beam.sdk.testing.ValidatesRunner;
+import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.MapElements;
+import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.DisplayDataEvaluator;
 import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.base.MoreObjects;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableList;
+import org.apache.beam.sdk.values.TimestampedValue;
+import org.apache.beam.sdk.values.TypeDescriptor;
+import org.apache.beam.sdk.values.TypeDescriptors;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.Instant;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TestRule;
+import org.junit.rules.Timeout;
 import org.junit.runner.Description;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.junit.runners.model.Statement;
-import org.testng.collections.Lists;
 
 /** Tests for PubsubIO Read and Write transforms. */
 @RunWith(JUnit4.class)
 public class PubsubIOTest {
+  @Rule public transient Timeout globalTimeout = Timeout.seconds(60);
   @Rule public ExpectedException thrown = ExpectedException.none();
 
   @Test
@@ -223,7 +246,6 @@ public class PubsubIOTest {
   }
 
   @Test
-  @Category({ValidatesRunner.class, UsesUnboundedPCollections.class})
   public void testPrimitiveReadDisplayData() {
     DisplayDataEvaluator evaluator = DisplayDataEvaluator.create();
     Set<DisplayData> displayData;
@@ -248,6 +270,23 @@ public class PubsubIOTest {
   }
 
   @Test
+  public void testReadWithPubsubGrpcClientFactory() {
+    String topic = "projects/project/topics/topic";
+    PubsubIO.Read<String> read =
+        PubsubIO.readStrings()
+            .fromTopic(StaticValueProvider.of(topic))
+            .withClientFactory(PubsubGrpcClient.FACTORY)
+            .withTimestampAttribute("myTimestamp")
+            .withIdAttribute("myId");
+
+    DisplayData displayData = DisplayData.from(read);
+
+    assertThat(displayData, hasDisplayItem("topic", topic));
+    assertThat(displayData, hasDisplayItem("timestampAttribute", "myTimestamp"));
+    assertThat(displayData, hasDisplayItem("idAttribute", "myId"));
+  }
+
+  @Test
   public void testWriteDisplayData() {
     String topic = "projects/project/topics/topic";
     PubsubIO.Write<?> write =
@@ -264,7 +303,6 @@ public class PubsubIOTest {
   }
 
   @Test
-  @Category(ValidatesRunner.class)
   public void testPrimitiveWriteDisplayData() {
     DisplayDataEvaluator evaluator = DisplayDataEvaluator.create();
     PubsubIO.Write<?> write = PubsubIO.writeStrings().to("projects/project/topics/topic");
@@ -280,11 +318,15 @@ public class PubsubIOTest {
     int intField;
     String stringField;
 
+    @AvroSchema("{\"type\": \"long\", \"logicalType\": \"timestamp-millis\"}")
+    public DateTime timestamp;
+
     public GenericClass() {}
 
-    public GenericClass(int intField, String stringField) {
+    public GenericClass(int intField, String stringField, DateTime timestamp) {
       this.intField = intField;
       this.stringField = stringField;
+      this.timestamp = timestamp;
     }
 
     @Override
@@ -292,29 +334,34 @@ public class PubsubIOTest {
       return MoreObjects.toStringHelper(getClass())
           .add("intField", intField)
           .add("stringField", stringField)
+          .add("timestamp", timestamp)
           .toString();
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(intField, stringField);
+      return Objects.hash(intField, stringField, timestamp);
     }
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
       if (other == null || !(other instanceof GenericClass)) {
         return false;
       }
       GenericClass o = (GenericClass) other;
-      return Objects.equals(intField, o.intField) && Objects.equals(stringField, o.stringField);
+      return intField == o.intField
+          && Objects.equals(stringField, o.stringField)
+          && Objects.equals(timestamp, o.timestamp);
     }
   }
 
   private transient PipelineOptions options;
   private static final SubscriptionPath SUBSCRIPTION =
       PubsubClient.subscriptionPathFromName("test-project", "testSubscription");
+  private static final TopicPath TOPIC =
+      PubsubClient.topicPathFromName("test-project", "testTopic");
   private static final Clock CLOCK = (Clock & Serializable) () -> 673L;
-  transient TestPipeline readPipeline;
+  transient TestPipeline pipeline;
 
   private static final String SCHEMA_STRING =
       "{\"namespace\": \"example.avro\",\n"
@@ -344,8 +391,8 @@ public class PubsubIOTest {
                 public void evaluate() throws Throwable {
                   options = TestPipeline.testingPipelineOptions();
                   options.as(PubsubOptions.class).setProject("test-project");
-                  readPipeline = TestPipeline.fromOptions(options);
-                  readPipeline.apply(base, description).evaluate();
+                  pipeline = TestPipeline.fromOptions(options);
+                  pipeline.apply(base, description).evaluate();
                 }
               };
           return withPipeline;
@@ -365,9 +412,10 @@ public class PubsubIOTest {
                 })
             .map(
                 ba ->
-                    new IncomingMessage(
-                        ba,
-                        null,
+                    IncomingMessage.of(
+                        com.google.pubsub.v1.PubsubMessage.newBuilder()
+                            .setData(ByteString.copyFrom(ba))
+                            .build(),
                         1234L,
                         0,
                         UUID.randomUUID().toString(),
@@ -388,8 +436,145 @@ public class PubsubIOTest {
   }
 
   @Test
+  public void testFailedParseWithDeadLetterConfigured() {
+    ByteString data = ByteString.copyFrom("Hello, World!".getBytes(StandardCharsets.UTF_8));
+    RuntimeException exception = new RuntimeException("Some error message");
+    ImmutableList<IncomingMessage> expectedReads =
+        ImmutableList.of(
+            IncomingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder().setData(data).build(),
+                1234L,
+                0,
+                UUID.randomUUID().toString(),
+                UUID.randomUUID().toString()));
+    ImmutableList<OutgoingMessage> expectedWrites =
+        ImmutableList.of(
+            OutgoingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder()
+                    .setData(data)
+                    .putAttributes("exceptionClassName", exception.getClass().getName())
+                    .putAttributes("exceptionMessage", exception.getMessage())
+                    .putAttributes("pubsubMessageId", "<null>")
+                    .build(),
+                1234L,
+                null,
+                null));
+    clientFactory =
+        PubsubTestClient.createFactoryForPullAndPublish(
+            SUBSCRIPTION, TOPIC, CLOCK, 60, expectedReads, expectedWrites, ImmutableList.of());
+
+    PCollection<String> read =
+        pipeline.apply(
+            PubsubIO.readStrings()
+                .fromSubscription(SUBSCRIPTION.getPath())
+                .withDeadLetterTopic(TOPIC.getPath())
+                .withClock(CLOCK)
+                .withClientFactory(clientFactory)
+                .withCoderAndParseFn(
+                    StringUtf8Coder.of(),
+                    SimpleFunction.fromSerializableFunctionWithOutputType(
+                        message -> {
+                          throw exception;
+                        },
+                        TypeDescriptors.strings())));
+
+    PAssert.that(read).empty();
+    pipeline.run();
+  }
+
+  @Test
+  public void testProto() {
+    ProtoCoder<Primitive> coder = ProtoCoder.of(Primitive.class);
+    ImmutableList<Primitive> inputs =
+        ImmutableList.of(
+            Primitive.newBuilder().setPrimitiveInt32(42).build(),
+            Primitive.newBuilder().setPrimitiveBool(true).build(),
+            Primitive.newBuilder().setPrimitiveString("Hello, World!").build());
+    setupTestClient(inputs, coder);
+    PCollection<Primitive> read =
+        pipeline.apply(
+            PubsubIO.readProtos(Primitive.class)
+                .fromSubscription(SUBSCRIPTION.getPath())
+                .withClock(CLOCK)
+                .withClientFactory(clientFactory));
+    PAssert.that(read).containsInAnyOrder(inputs);
+    pipeline.run();
+  }
+
+  @Test
+  public void testProtoDynamicMessages() {
+    ProtoCoder<Primitive> coder = ProtoCoder.of(Primitive.class);
+    ImmutableList<Primitive> inputs =
+        ImmutableList.of(
+            Primitive.newBuilder().setPrimitiveInt32(42).build(),
+            Primitive.newBuilder().setPrimitiveBool(true).build(),
+            Primitive.newBuilder().setPrimitiveString("Hello, World!").build());
+    setupTestClient(inputs, coder);
+
+    ProtoDomain domain = ProtoDomain.buildFrom(Primitive.getDescriptor());
+    String name = Primitive.getDescriptor().getFullName();
+    PCollection<Primitive> read =
+        pipeline
+            .apply(
+                PubsubIO.readProtoDynamicMessages(domain, name)
+                    .fromSubscription(SUBSCRIPTION.getPath())
+                    .withClock(CLOCK)
+                    .withClientFactory(clientFactory))
+            // DynamicMessage doesn't work well with PAssert, but if the content can be successfully
+            // converted back into the original Primitive, then that should be good enough to
+            // consider it a successful read.
+            .apply(
+                "Return To Primitive",
+                MapElements.into(TypeDescriptor.of(Primitive.class))
+                    .via(
+                        (DynamicMessage message) -> {
+                          try {
+                            return Primitive.parseFrom(message.toByteArray());
+                          } catch (InvalidProtocolBufferException e) {
+                            throw new RuntimeException("Could not return to Primitive", e);
+                          }
+                        }));
+
+    PAssert.that(read).containsInAnyOrder(inputs);
+    pipeline.run();
+  }
+
+  @Test
+  public void testProtoDynamicMessagesFromDescriptor() {
+    ProtoCoder<Primitive> coder = ProtoCoder.of(Primitive.class);
+    ImmutableList<Primitive> inputs =
+        ImmutableList.of(
+            Primitive.newBuilder().setPrimitiveInt32(42).build(),
+            Primitive.newBuilder().setPrimitiveBool(true).build(),
+            Primitive.newBuilder().setPrimitiveString("Hello, World!").build());
+    setupTestClient(inputs, coder);
+
+    PCollection<Primitive> read =
+        pipeline
+            .apply(
+                PubsubIO.readProtoDynamicMessages(Primitive.getDescriptor())
+                    .fromSubscription(SUBSCRIPTION.getPath())
+                    .withClock(CLOCK)
+                    .withClientFactory(clientFactory))
+            .apply(
+                "Return To Primitive",
+                MapElements.into(TypeDescriptor.of(Primitive.class))
+                    .via(
+                        (DynamicMessage message) -> {
+                          try {
+                            return Primitive.parseFrom(message.toByteArray());
+                          } catch (InvalidProtocolBufferException e) {
+                            throw new RuntimeException("Could not return to Primitive", e);
+                          }
+                        }));
+
+    PAssert.that(read).containsInAnyOrder(inputs);
+    pipeline.run();
+  }
+
+  @Test
   public void testAvroGenericRecords() {
-    AvroCoder<GenericRecord> coder = AvroCoder.of(GenericRecord.class, SCHEMA);
+    AvroCoder<GenericRecord> coder = AvroCoder.of(SCHEMA);
     List<GenericRecord> inputs =
         ImmutableList.of(
             new AvroGeneratedUser("Bob", 256, null),
@@ -397,34 +582,38 @@ public class PubsubIOTest {
             new AvroGeneratedUser("Ted", null, "white"));
     setupTestClient(inputs, coder);
     PCollection<GenericRecord> read =
-        readPipeline.apply(
+        pipeline.apply(
             PubsubIO.readAvroGenericRecords(SCHEMA)
                 .fromSubscription(SUBSCRIPTION.getPath())
                 .withClock(CLOCK)
                 .withClientFactory(clientFactory));
     PAssert.that(read).containsInAnyOrder(inputs);
-    readPipeline.run();
+    pipeline.run();
   }
 
   @Test
   public void testAvroPojo() {
     AvroCoder<GenericClass> coder = AvroCoder.of(GenericClass.class);
     List<GenericClass> inputs =
-        Lists.newArrayList(new GenericClass(1, "foo"), new GenericClass(2, "bar"));
+        Lists.newArrayList(
+            new GenericClass(
+                1, "foo", new DateTime().withDate(2019, 10, 1).withZone(DateTimeZone.UTC)),
+            new GenericClass(
+                2, "bar", new DateTime().withDate(1986, 10, 1).withZone(DateTimeZone.UTC)));
     setupTestClient(inputs, coder);
     PCollection<GenericClass> read =
-        readPipeline.apply(
+        pipeline.apply(
             PubsubIO.readAvrosWithBeamSchema(GenericClass.class)
                 .fromSubscription(SUBSCRIPTION.getPath())
                 .withClock(CLOCK)
                 .withClientFactory(clientFactory));
     PAssert.that(read).containsInAnyOrder(inputs);
-    readPipeline.run();
+    pipeline.run();
   }
 
   @Test
   public void testAvroSpecificRecord() {
-    AvroCoder<AvroGeneratedUser> coder = AvroCoder.of(AvroGeneratedUser.class);
+    AvroCoder<AvroGeneratedUser> coder = AvroCoder.specific(AvroGeneratedUser.class);
     List<AvroGeneratedUser> inputs =
         ImmutableList.of(
             new AvroGeneratedUser("Bob", 256, null),
@@ -432,12 +621,161 @@ public class PubsubIOTest {
             new AvroGeneratedUser("Ted", null, "white"));
     setupTestClient(inputs, coder);
     PCollection<AvroGeneratedUser> read =
-        readPipeline.apply(
+        pipeline.apply(
             PubsubIO.readAvrosWithBeamSchema(AvroGeneratedUser.class)
                 .fromSubscription(SUBSCRIPTION.getPath())
                 .withClock(CLOCK)
                 .withClientFactory(clientFactory));
     PAssert.that(read).containsInAnyOrder(inputs);
-    readPipeline.run();
+    pipeline.run();
+  }
+
+  @Test
+  public void testWriteWithPubsubGrpcClientFactory() {
+    String topic = "projects/project/topics/topic";
+    PubsubIO.Write<?> write =
+        PubsubIO.writeStrings()
+            .to(topic)
+            .withClientFactory(PubsubGrpcClient.FACTORY)
+            .withTimestampAttribute("myTimestamp")
+            .withIdAttribute("myId");
+
+    DisplayData displayData = DisplayData.from(write);
+
+    assertThat(displayData, hasDisplayItem("topic", topic));
+    assertThat(displayData, hasDisplayItem("timestampAttribute", "myTimestamp"));
+    assertThat(displayData, hasDisplayItem("idAttribute", "myId"));
+  }
+
+  static class StringPayloadParseFn extends SimpleFunction<PubsubMessage, String> {
+    @Override
+    public String apply(PubsubMessage input) {
+      return new String(input.getPayload(), StandardCharsets.UTF_8);
+    }
+  }
+
+  @Test
+  public void testReadMessagesWithCoderAndParseFn() {
+    Coder<PubsubMessage> coder = PubsubMessagePayloadOnlyCoder.of();
+    List<PubsubMessage> inputs =
+        ImmutableList.of(
+            new PubsubMessage("foo".getBytes(StandardCharsets.UTF_8), new HashMap<>()),
+            new PubsubMessage("bar".getBytes(StandardCharsets.UTF_8), new HashMap<>()));
+    setupTestClient(inputs, coder);
+
+    PCollection<String> read =
+        pipeline.apply(
+            PubsubIO.readMessagesWithCoderAndParseFn(
+                    StringUtf8Coder.of(), new StringPayloadParseFn())
+                .fromSubscription(SUBSCRIPTION.getPath())
+                .withClock(CLOCK)
+                .withClientFactory(clientFactory));
+
+    List<String> outputs = ImmutableList.of("foo", "bar");
+    PAssert.that(read).containsInAnyOrder(outputs);
+    pipeline.run();
+  }
+
+  @Test
+  public void testDynamicTopicsBounded() throws IOException {
+    testDynamicTopics(true);
+  }
+
+  @Test
+  public void testDynamicTopicsUnbounded() throws IOException {
+    testDynamicTopics(false);
+  }
+
+  public void testDynamicTopics(boolean isBounded) throws IOException {
+    List<OutgoingMessage> expectedOutgoing =
+        ImmutableList.of(
+            OutgoingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder()
+                    .setData(ByteString.copyFromUtf8("0"))
+                    .build(),
+                0,
+                null,
+                "projects/project/topics/topic1"),
+            OutgoingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder()
+                    .setData(ByteString.copyFromUtf8("1"))
+                    .build(),
+                1,
+                null,
+                "projects/project/topics/topic1"),
+            OutgoingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder()
+                    .setData(ByteString.copyFromUtf8("2"))
+                    .build(),
+                2,
+                null,
+                "projects/project/topics/topic2"),
+            OutgoingMessage.of(
+                com.google.pubsub.v1.PubsubMessage.newBuilder()
+                    .setData(ByteString.copyFromUtf8("3"))
+                    .build(),
+                3,
+                null,
+                "projects/project/topics/topic2"));
+
+    try (PubsubTestClientFactory factory =
+        PubsubTestClient.createFactoryForPublish(null, expectedOutgoing, ImmutableList.of())) {
+      List<TimestampedValue<PubsubMessage>> pubsubMessages =
+          expectedOutgoing.stream()
+              .map(
+                  o ->
+                      TimestampedValue.of(
+                          new PubsubMessage(
+                                  o.getMessage().getData().toByteArray(),
+                                  Collections.emptyMap(),
+                                  o.recordId())
+                              .withTopic(o.topic()),
+                          Instant.ofEpochMilli(o.getTimestampMsSinceEpoch())))
+              .collect(Collectors.toList());
+
+      PCollection<PubsubMessage> messages =
+          pipeline.apply(
+              Create.timestamped(pubsubMessages).withCoder(new PubsubMessageWithTopicCoder()));
+      if (!isBounded) {
+        messages = messages.setIsBoundedInternal(PCollection.IsBounded.UNBOUNDED);
+      }
+      messages.apply(PubsubIO.writeMessagesDynamic().withClientFactory(factory));
+      pipeline.run();
+    }
+  }
+
+  @Test
+  public void testBigMessageBounded() throws IOException {
+    String bigMsg =
+        IntStream.range(0, 100_000).mapToObj(_unused -> "x").collect(Collectors.joining(""));
+
+    OutgoingMessage msg =
+        OutgoingMessage.of(
+            com.google.pubsub.v1.PubsubMessage.newBuilder()
+                .setData(ByteString.copyFromUtf8(bigMsg))
+                .build(),
+            0,
+            null,
+            "projects/project/topics/topic1");
+
+    try (PubsubTestClientFactory factory =
+        PubsubTestClient.createFactoryForPublish(null, ImmutableList.of(msg), ImmutableList.of())) {
+      TimestampedValue<PubsubMessage> pubsubMsg =
+          TimestampedValue.of(
+              new PubsubMessage(
+                      msg.getMessage().getData().toByteArray(),
+                      Collections.emptyMap(),
+                      msg.recordId())
+                  .withTopic(msg.topic()),
+              Instant.ofEpochMilli(msg.getTimestampMsSinceEpoch()));
+
+      PCollection<PubsubMessage> messages =
+          pipeline.apply(
+              Create.timestamped(ImmutableList.of(pubsubMsg))
+                  .withCoder(new PubsubMessageWithTopicCoder()));
+      messages.setIsBoundedInternal(PCollection.IsBounded.BOUNDED);
+      messages.apply(PubsubIO.writeMessagesDynamic().withClientFactory(factory));
+      pipeline.run();
+    }
   }
 }

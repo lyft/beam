@@ -17,7 +17,7 @@
  */
 package org.apache.beam.runners.flink.translation.wrappers.streaming;
 
-import static org.apache.beam.vendor.guava.v20_0.com.google.common.base.Preconditions.checkState;
+import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -34,13 +34,14 @@ import org.apache.beam.runners.core.OutputWindowedValue;
 import org.apache.beam.runners.core.SplittableParDoViaKeyedWorkItems.ProcessFn;
 import org.apache.beam.runners.core.StateInternals;
 import org.apache.beam.runners.core.StateInternalsFactory;
+import org.apache.beam.runners.core.StepContext;
 import org.apache.beam.runners.core.TimerInternals;
 import org.apache.beam.runners.core.TimerInternalsFactory;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.state.TimeDomain;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker;
+import org.apache.beam.sdk.transforms.DoFnSchemaInformation;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -50,17 +51,22 @@ import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.WindowingStrategy;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.runtime.state.StateInitializationContext;
-import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Flink operator for executing splittable {@link DoFn DoFns}. Specifically, for executing the
  * {@code @ProcessElement} method of a splittable {@link DoFn}.
  */
-public class SplittableDoFnOperator<
-        InputT, OutputT, RestrictionT, TrackerT extends RestrictionTracker<RestrictionT, ?>>
+@SuppressWarnings({
+  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
+})
+public class SplittableDoFnOperator<InputT, OutputT, RestrictionT>
     extends DoFnOperator<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> {
+
+  private static final Logger LOG = LoggerFactory.getLogger(SplittableDoFnOperator.class);
 
   private transient ScheduledExecutorService executorService;
 
@@ -68,7 +74,6 @@ public class SplittableDoFnOperator<
       DoFn<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> doFn,
       String stepName,
       Coder<WindowedValue<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>>> windowedInputCoder,
-      Coder<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>> inputCoder,
       Map<TupleTag<?>, Coder<?>> outputCoders,
       TupleTag<OutputT> mainOutputTag,
       List<TupleTag<?>> additionalOutputTags,
@@ -83,7 +88,6 @@ public class SplittableDoFnOperator<
         doFn,
         stepName,
         windowedInputCoder,
-        inputCoder,
         outputCoders,
         mainOutputTag,
         additionalOutputTags,
@@ -93,13 +97,16 @@ public class SplittableDoFnOperator<
         sideInputs,
         options,
         keyCoder,
-        keySelector);
+        keySelector,
+        DoFnSchemaInformation.create(),
+        Collections.emptyMap());
   }
 
   @Override
   protected DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT>
       createWrappingDoFnRunner(
-          DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> wrappedRunner) {
+          DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> wrappedRunner,
+          StepContext stepContext) {
     // don't wrap in anything because we don't need state cleanup because ProcessFn does
     // all that
     return wrappedRunner;
@@ -123,6 +130,7 @@ public class SplittableDoFnOperator<
 
     ((ProcessFn) doFn).setStateInternalsFactory(stateInternalsFactory);
     ((ProcessFn) doFn).setTimerInternalsFactory(timerInternalsFactory);
+    ((ProcessFn) doFn).setSideInputReader(sideInputReader);
     ((ProcessFn) doFn)
         .setProcessElementInvoker(
             new OutputAndTimeBoundedSplittableProcessElementInvoker<>(
@@ -152,13 +160,14 @@ public class SplittableDoFnOperator<
                 sideInputReader,
                 executorService,
                 10000,
-                Duration.standardSeconds(10)));
+                Duration.standardSeconds(10),
+                this::getBundleFinalizer));
   }
 
   @Override
-  public void fireTimer(InternalTimer<?, TimerInternals.TimerData> timer) {
-    timerInternals.cleanupPendingTimer(timer.getNamespace());
-    if (timer.getNamespace().getDomain().equals(TimeDomain.EVENT_TIME)) {
+  protected void fireTimer(TimerInternals.TimerData timer) {
+    timerInternals.onFiredOrDeletedTimer(timer);
+    if (timer.getDomain().equals(TimeDomain.EVENT_TIME)) {
       // ignore this, it can only be a state cleanup timers from StatefulDoFnRunner and ProcessFn
       // does its own state cleanup and should never set event-time timers.
       return;
@@ -166,8 +175,7 @@ public class SplittableDoFnOperator<
     doFnRunner.processElement(
         WindowedValue.valueInGlobalWindow(
             KeyedWorkItems.timersWorkItem(
-                (byte[]) keyedStateInternals.getKey(),
-                Collections.singletonList(timer.getNamespace()))));
+                (byte[]) keyedStateInternals.getKey(), Collections.singletonList(timer))));
   }
 
   @Override

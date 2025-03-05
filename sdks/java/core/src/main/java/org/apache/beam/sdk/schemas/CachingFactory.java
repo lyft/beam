@@ -17,8 +17,9 @@
  */
 package org.apache.beam.sdk.schemas;
 
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.annotation.Nullable;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * A wrapper around a {@link Factory} that assumes the schema parameter never changes.
@@ -30,8 +31,12 @@ import javax.annotation.Nullable;
  * significant for larger schemas) on each lookup. This wrapper caches the value returned by the
  * inner factory, so the schema comparison only need happen on the first lookup.
  */
-class CachingFactory<CreatedT> implements Factory<CreatedT> {
-  @Nullable private transient ConcurrentHashMap<Class, CreatedT> cache = null;
+@SuppressWarnings({
+  "nullness", // TODO(https://github.com/apache/beam/issues/20497)
+  "rawtypes"
+})
+public class CachingFactory<CreatedT> implements Factory<CreatedT> {
+  private transient @Nullable ConcurrentHashMap<Class, CreatedT> cache = null;
 
   private final Factory<CreatedT> innerFactory;
 
@@ -51,5 +56,22 @@ class CachingFactory<CreatedT> implements Factory<CreatedT> {
     cached = innerFactory.create(clazz, schema);
     cache.put(clazz, cached);
     return cached;
+  }
+
+  @Override
+  public boolean equals(@Nullable Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    CachingFactory<?> that = (CachingFactory<?>) o;
+    return innerFactory.equals(that.innerFactory);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(innerFactory);
   }
 }
