@@ -236,13 +236,6 @@ public class Environments {
         .build();
   }
 
-  private static Environment createEmbeddedEnvironment(String config) {
-    return Environment.newBuilder()
-        .setUrn(ENVIRONMENT_EMBEDDED)
-        .setPayload(ByteString.copyFromUtf8(MoreObjects.firstNonNull(config, "")))
-        .build();
-  }
-
   private static Environment createProcessEnvironment(PortablePipelineOptions options) {
     if (options.getEnvironmentOptions() != null) {
       String processCommand =
@@ -271,6 +264,13 @@ public class Environments {
               options.getDefaultEnvironmentConfig()),
           e);
     }
+  }
+
+  public static Environment createEmbeddedEnvironment(String config) {
+    return Environment.newBuilder()
+        .setUrn(ENVIRONMENT_EMBEDDED)
+        .setPayload(ByteString.copyFromUtf8(MoreObjects.firstNonNull(config, "")))
+        .build();
   }
 
   public static Environment createProcessEnvironment(

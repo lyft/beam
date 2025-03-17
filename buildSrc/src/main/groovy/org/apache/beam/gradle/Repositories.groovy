@@ -22,6 +22,13 @@ import org.gradle.api.Project
 
 class Repositories {
 
+  static class Repository {
+    String url
+    String id
+    String username
+    String password
+  }
+
   static void register(Project project) {
 
     project.repositories {
@@ -40,7 +47,7 @@ class Repositories {
       mavenLocal()
 
       // Release staging repository
-      maven { url "https://oss.sonatype.org/content/repositories/staging/" }
+      // maven { url "https://oss.sonatype.org/content/repositories/staging/" }
 
       // Apache nightly snapshots
       maven { url "https://repository.apache.org/snapshots" }
@@ -53,7 +60,37 @@ class Repositories {
         url "https://packages.confluent.io/maven/"
         content { includeGroup "io.confluent" }
       }
+
+      //LYFT CUSTOM pull in the central repo override from settings, if any
+      Repository releasesConfig = fetchLyftRepositoryConfig("lyft-releases")
+      if (releasesConfig.url != null) {
+        maven {
+          url releasesConfig.url
+          name releasesConfig.id
+          credentials {
+            username releasesConfig.username
+            password releasesConfig.password
+          }
+        }
+      }
+
+      Repository snapshotsConfig = fetchLyftRepositoryConfig("lyft-snapshots")
+      if (snapshotsConfig.url != null) {
+        maven {
+          url snapshotsConfig.url
+          name snapshotsConfig.id
+          credentials {
+            username snapshotsConfig.username
+            password snapshotsConfig.password
+          }
+        }
+      }
+
     }
+
+    // plugin to support repository authentication via ~/.m2/settings.xml
+    // https://github.com/mark-vieira/gradle-maven-settings-plugin/
+    project.apply plugin: 'net.linguica.maven-settings'
 
     // Apply a plugin which provides the 'updateOfflineRepository' task that creates an offline
     // repository. This offline repository satisfies all Gradle build dependencies and Java
@@ -77,4 +114,31 @@ class Repositories {
       includeIvyXmls = false
     }
   }
+
+  /**
+   * parses the settings.xml in the home directory for repository configuration
+   * @param serverId : id given to repository in the settings.xml
+   * @return
+   */
+  static Repository fetchLyftRepositoryConfig(String serverId) {
+    def settingsXml = new File(System.getProperty('user.home'), '.m2/settings.xml')
+    if (!settingsXml.exists()) {
+      settingsXml = new File('/etc/maven/settings.xml')
+    }
+    def content = new XmlSlurper().parse(settingsXml)
+    def repo = content.'**'.find { n -> n.name() == 'repository' && serverId.equals(n.id.text()) }
+    Repositories.Repository repository = new Repositories.Repository()
+    if (repo) {
+      GroovyShell shell = new GroovyShell(new Binding([env: System.getenv()]))
+      repository.url = shell.evaluate('"' + repo.url.text() + '"')
+      repository.id = repo.id.text()
+      def m2SettingCreds = content.servers.server.find { server -> serverId.equals(server.id.text()) }
+      if (m2SettingCreds) {
+        repository.username = shell.evaluate('"' + m2SettingCreds.username.text() + '"')
+        repository.password = shell.evaluate('"' + m2SettingCreds.password.text() + '"')
+      }
+    }
+    return repository
+  }
 }
+

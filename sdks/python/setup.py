@@ -339,6 +339,7 @@ if __name__ == '__main__':
       ext_modules=extensions,
       install_requires=[
           'crcmod>=1.7,<2.0',
+          'cython==' + REQUIRED_CYTHON_VERSION,
           'orjson>=3.9.7,<4',
           # Dill doesn't have forwards-compatibility guarantees within minor
           # version. Pickles created with a new version of dill may not unpickle

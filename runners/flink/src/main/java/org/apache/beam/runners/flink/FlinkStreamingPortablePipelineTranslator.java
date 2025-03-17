@@ -251,6 +251,10 @@ public class FlinkStreamingPortablePipelineTranslator
     translatorMap.put(PTransformTranslation.TEST_STREAM_TRANSFORM_URN, this::translateTestStream);
 
     translatorMap.putAll(extraTranslations);
+    // LYFT CUSTOM
+    LyftFlinkStreamingPortableTranslations customTranslations =
+        new LyftFlinkStreamingPortableTranslations();
+    customTranslations.addTo(translatorMap);
 
     this.urnToTransformTranslator = translatorMap.build();
   }

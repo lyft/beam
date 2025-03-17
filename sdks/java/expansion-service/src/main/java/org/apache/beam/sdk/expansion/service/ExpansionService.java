@@ -670,19 +670,22 @@ public class ExpansionService extends ExpansionServiceGrpc.ExpansionServiceImplB
         rehydratedComponents
             .getSdkComponents(request.getRequirementsList())
             .withNewIdPrefix(request.getNamespace());
-    RunnerApi.Environment defaultEnvironment =
-        Environments.createOrGetDefaultEnvironment(
-            pipeline.getOptions().as(PortablePipelineOptions.class));
-    if (commandLineOptions.as(ExpansionServiceOptions.class).getAlsoStartLoopbackWorker()) {
-      PortablePipelineOptions externalOptions =
-          PipelineOptionsFactory.create().as(PortablePipelineOptions.class);
-      externalOptions.setDefaultEnvironmentType(Environments.ENVIRONMENT_EXTERNAL);
-      externalOptions.setDefaultEnvironmentConfig(loopbackAddress);
-      defaultEnvironment =
-          Environments.createAnyOfEnvironment(
-              defaultEnvironment, Environments.createOrGetDefaultEnvironment(externalOptions));
-    }
-    sdkComponents.registerEnvironment(defaultEnvironment);
+
+    // LYFT CUSTOM
+    // RunnerApi.Environment defaultEnvironment =
+    //     Environments.createOrGetDefaultEnvironment(
+    //         pipeline.getOptions().as(PortablePipelineOptions.class));
+    // if (commandLineOptions.as(ExpansionServiceOptions.class).getAlsoStartLoopbackWorker()) {
+    //   PortablePipelineOptions externalOptions =
+    //       PipelineOptionsFactory.create().as(PortablePipelineOptions.class);
+    //   externalOptions.setDefaultEnvironmentType(Environments.ENVIRONMENT_EXTERNAL);
+    //   externalOptions.setDefaultEnvironmentConfig(loopbackAddress);
+    //   defaultEnvironment =
+    //       Environments.createAnyOfEnvironment(
+    //           defaultEnvironment, Environments.createOrGetDefaultEnvironment(externalOptions));
+    // }
+    // sdkComponents.registerEnvironment(defaultEnvironment);
+    sdkComponents.registerEnvironment(Environments.createEmbeddedEnvironment(""));
     Map<String, String> outputMap =
         outputs.entrySet().stream()
             .collect(
